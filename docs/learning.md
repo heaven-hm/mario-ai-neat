@@ -2,9 +2,9 @@
 
 ## Training loop
 
-The Lua bot runs one genome at a time. Start SMB1 manually, then the bot saves the first active frame to FCEUX predefined slot 9. After a genome dies, reaches the flag, or stops making progress, the bot scores it, restores slot 9, and tests the next genome from the same point. Once all genomes have played, it forms the next generation and repeats. During death, title, and transition screens it releases every controller button; it never presses Start.
+The Lua AI runs one genome at a time. Start SMB1 manually, then the AI saves the first active frame to FCEUX predefined slot 9. After a genome dies, reaches the flag, or stops making progress, the AI scores it, restores slot 9, and tests the next genome from the same point. Once all genomes have played, it forms the next generation and repeats. During death, title, and transition screens it releases every controller button; it never presses Start.
 
-The bot uses a predefined slot because FCEUX keeps predefined states across loads. It selects the documented `savestate.object(slot)` API and falls back to the older `savestate.create(slot)` API when needed. It never calls `savestate.persist()`, which crashed in the Homebrew Apple Silicon FCEUX build. If neither API is available, training continues without resets and the log records the fallback. Episodes end after death, victory, 600 frames without new forward progress, or a 12,000-frame cap.
+The AI uses a predefined slot because FCEUX keeps predefined states across loads. It selects the documented `savestate.object(slot)` API and falls back to the older `savestate.create(slot)` API when needed. It never calls `savestate.persist()`, which crashed in the Homebrew Apple Silicon FCEUX build. If neither API is available, training continues without resets and the log records the fallback. Episodes end after death, victory, 600 frames without new forward progress, or a 12,000-frame cap.
 
 ## Observation and action
 
@@ -20,7 +20,7 @@ This is neuroevolution in the style of NEAT, used as an evolutionary reinforceme
 
 ## NEAT implementation details
 
-A genome is a directed neural graph. Every gene contains `into`, `out`, `weight`, `enabled`, and `innovation` fields. The evaluator loads the 184 observed features plus one bias node, follows enabled weighted connections, applies the NEAT sigmoid activation, and reads six action scores.
+A genome is a directed neural graph. Every gene contains `sourceNode`, `targetNode`, `weight`, `enabled`, and `innovation` fields. The evaluator loads the 184 observed features plus one bias node, follows enabled weighted connections, applies the NEAT sigmoid activation, and reads six action scores.
 
 The population starts from a sparse seeded controller rather than a fully connected network. Structural mutation can add links or split an enabled link into two links with a new hidden node. Weight mutation perturbs most existing weights and occasionally replaces a weight. Enable and disable mutations can restore or suppress individual connections. Each structural connection receives a population-wide innovation ID so crossover can match homologous genes.
 
@@ -32,13 +32,15 @@ The implementation is called NEAT-style because it adapts the algorithm to this 
 
 ## Saved database
 
-`mario_ai_heaven_neat.db` is a line-based database beside the Lua script. It contains the generation counter, population size, genome fitness, mutation rates, network connections, weights, and innovation IDs. Fresh databases start with 300 genomes. The bot writes a temporary file and replaces the database, saves after every episode, periodically during long attempts, and when FCEUX stops the script. On the next launch it resumes with that population. Deleting the database starts a fresh population.
+`mario_ai_neat.db` is a line-based database beside the Lua script. It contains the generation counter, population size, genome fitness, mutation rates, network connections, weights, and innovation IDs. Fresh databases start with 300 genomes. The AI writes a temporary file and replaces the database, saves after every episode, periodically during long attempts, and when FCEUX stops the script. On the next launch it resumes with that population. Deleting the database starts a fresh population.
 
-The database does not contain the ROM or a savestate. `mario_ai_heaven.log` records startup, episode starts and ends, and database-save failures. Keep the database with the version of the Lua script that created it; input/action layout changes can require a fresh database.
+The database does not contain the ROM or a savestate. `mario_ai_neat.log` records startup, episode starts and ends, and database-save failures. Keep the database with the version of the Lua script that created it; input/action layout changes can require a fresh database.
 
 ## Champion play
 
-Set `PLAY_CHAMPION_ONLY` to `true` after a trained database exists. The bot selects the highest-fitness genome, restores the fixed slot after each result, and does not modify the population. This mode is for observing a mature controller; set the option back to `false` to train again.
+Set `PLAY_CHAMPION_ONLY` to `true` after a trained database exists. The AI selects the highest-fitness genome, restores the fixed slot after each result, and does not modify the population. This mode is for observing a mature controller; set the option back to `false` to train again.
+
+To resume training, keep `mario_ai_neat.db` beside `mario_ai_neat.lua`, leave `PLAY_CHAMPION_ONLY` set to `false`, and reload the script in FCEUX. The loader restores the generation, all genomes, fitness values, mutation rates, weighted connections, and innovation IDs. To reset learning, stop FCEUX and delete the database before loading the script. The tracked starter database has valid NEAT data but has not played a real ROM session.
 
 ## References
 

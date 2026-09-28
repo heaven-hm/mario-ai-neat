@@ -1,14 +1,14 @@
-# Mario AI Heaven
+# Mario AI NEAT
 
-A learning bot for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads the SMB1 RAM layout, observes nearby tiles and enemies, and evolves a neural-network controller across repeated play attempts. Other games and emulators are outside the target.
+A learning AI for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads the SMB1 RAM layout, observes nearby tiles and enemies, and evolves a neural-network controller across repeated play attempts. Other games and emulators are outside the target.
 
-![Mario AI Heaven training in FCEUX](docs/images/mario-ai-heaven-training.png)
+![Mario AI NEAT training in FCEUX](docs/images/mario-ai-neat-training.png)
 
 *Live FCEUX training: the HUD explains the active NEAT genome, chosen action, sensed threat, progress, and saved-learning state.*
 
 ## What kind of AI is this?
 
-Mario AI Heaven is a **NEAT-style neuroevolution system**, which is a form of machine learning. It uses an evolutionary reinforcement signal: neural-network controllers play SMB1, receive fitness from their results, and reproduce according to that fitness. It is not a language model, generative AI, Q-learning, PPO, or a network trained with backpropagation.
+Mario AI NEAT is a **NEAT-style neuroevolution system**, which is a form of machine learning. It uses an evolutionary reinforcement signal: neural-network controllers play SMB1, receive fitness from their results, and reproduce according to that fitness. It is not a language model, generative AI, Q-learning, PPO, or a network trained with backpropagation.
 
 The controller is a hybrid system. NEAT learns which action to prefer, while a small deterministic safety layer removes immediately unsafe choices such as running directly into a close enemy. The learned neural network still decides whether to run, jump, brake, retreat, or walk among the allowed actions.
 
@@ -18,11 +18,11 @@ The controller is a hybrid system. NEAT learns which action to prefer, while a s
 | --- | --- | --- |
 | Game | NES Super Mario Bros. 1 | The only supported game; the ROM is not included |
 | Emulator | FCEUX 2.x | Runs SMB1, exposes RAM, controller, frame, GUI, and savestate APIs |
-| Runtime | Embedded Lua 5.1 | Executes the complete bot inside FCEUX |
+| Runtime | Embedded Lua 5.1 | Executes the complete AI inside FCEUX |
 | Machine learning | NEAT-style neuroevolution | Evolves neural-network connections, weights, nodes, and mutation rates |
 | Reinforcement signal | Episode fitness | Rewards progress, survival, stronger forms, and victory; penalizes death and stalls |
-| Model storage | `mario_ai_heaven_neat.db` | Persists generations, genomes, genes, innovation IDs, mutation rates, and fitness |
-| Diagnostics | `mario_ai_heaven.log` and FCEUX HUD | Records episodes and explains the live decision context |
+| Model storage | `mario_ai_neat.db` | Persists generations, genomes, genes, innovation IDs, mutation rates, and fitness |
+| Diagnostics | `mario_ai_neat.log` and FCEUX HUD | Records episodes and explains the live decision context |
 | Verification | Lua behavior and mocked-FCEUX tests | Checks sensors, networks, evolution, persistence, compatibility, and controller behavior |
 
 No Python process, ML framework, compiler, GPU runtime, cloud service, or network connection is required during training.
@@ -41,7 +41,7 @@ flowchart LR
     Result["Episode result<br/>progress, survival, power, death, victory"]
     Fitness["Fitness function"]
     Evolution["Speciation, selection,<br/>crossover and mutation"]
-    Database[("mario_ai_heaven_neat.db")]
+    Database[("mario_ai_neat.db")]
 
     Game --> RAM --> Encoder --> Genome --> Scores --> Shield --> Pad --> Game
     Game --> Result --> Fitness --> Evolution --> Genome
@@ -101,26 +101,34 @@ It implements NEAT's defining ideas—historical innovation numbers, topology gr
 ## Run and train
 
 1. Open a compatible SMB1 NES ROM in FCEUX, preferably at the start of World 1-1.
-2. Load `mario_ai_heaven.lua` from FCEUX's Lua script menu.
+2. Load `mario_ai_neat.lua` from FCEUX's Lua script menu.
 3. Leave the script running. On the first active SMB1 frame it saves a fixed training start in FCEUX savestate slot 9. It then tests each genome from that same state, scores the attempt, breeds a new generation, and repeats.
 4. Stop the script when you want. The population database is saved periodically, after every completed attempt, and when FCEUX stops the script. Leave the database beside the Lua script to continue learning later.
-5. Read `mario_ai_heaven.log` beside the script for startup, episode, and database-save events.
+5. Read `mario_ai_neat.log` beside the script for startup, episode, and database-save events.
 
-The bot uses FCEUX's predefined slot 9 for fair training episodes. This overwrites that slot, so reserve it for Mario AI Heaven. It uses `savestate.object()` when available and the older `savestate.create()` compatibility API otherwise. It never calls `savestate.persist()`, the native FCEUX function that crashed on the Homebrew Apple Silicon build. If a FCEUX build has no compatible savestate API, the bot logs the condition and continues with less-controlled input-only episodes.
+### Resume or restart training
 
-New databases contain 300 genomes. Existing databases retain their current population size so that previous learning is not discarded. Delete `mario_ai_heaven_neat.db` to begin a new 300-genome run.
+`mario_ai_neat.db` is the learner's checkpoint. To resume, keep that file in the same directory as `mario_ai_neat.lua`, leave `PLAY_CHAMPION_ONLY = false`, open the same SMB1 ROM in FCEUX, and load the Lua script again. The AI loads the saved generation, genomes, mutation rates, connection weights, innovation IDs, and fitness values before starting the next episode. Stopping FCEUX is safe because the script saves after episodes, at periodic checkpoints, and during the exit callback.
+
+The repository includes a small, valid starter database so the script can be run immediately. It is an untrained population checkpoint, not a claim of a mature model. Copy the database before experiments if you want a backup. To start over, stop FCEUX, remove `mario_ai_neat.db`, and load the script; a fresh 300-genome population is created automatically. To preserve a trained model, copy the database to a dated backup and restore it beside the script before launching FCEUX.
+
+To play the saved champion without changing the database, set `PLAY_CHAMPION_ONLY = true`, load the script, and begin SMB1 manually. Set it back to `false` and reload the script to resume evolution from the same database.
+
+The AI uses FCEUX's predefined slot 9 for fair training episodes. This overwrites that slot, so reserve it for Mario AI NEAT. It uses `savestate.object()` when available and the older `savestate.create()` compatibility API otherwise. It never calls `savestate.persist()`, the native FCEUX function that crashed on the Homebrew Apple Silicon build. If a FCEUX build has no compatible savestate API, the AI logs the condition and continues with less-controlled input-only episodes.
+
+New databases contain 300 genomes. Existing databases retain their current population size so that previous learning is not discarded. Delete `mario_ai_neat.db` to begin a new 300-genome run.
 
 ## Champion play
 
-After training, set `local PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_heaven.lua`. The bot loads the genome with the highest saved fitness and repeatedly plays it from slot 9 without mutation, crossover, or generation changes. Set it back to `false` to resume training.
+After training, set `local PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_neat.lua`. The AI loads the genome with the highest saved fitness and repeatedly plays it from slot 9 without mutation, crossover, or generation changes. Set it back to `false` to resume training.
 
 ## Testing aids
 
-The current testing build refreshes the SMB1 timer to `999` while gameplay is active and refreshes the lives byte at `0x075A` to `9`. This prevents a training run from reaching Game Over, while SMB1 still performs every normal death and respawn. The bot never presses Start automatically; begin a game manually in FCEUX. Before a real evaluation, change `TESTING_FREEZE_TIMER` and `TESTING_INFINITE_LIVES` near the top of `mario_ai_heaven.lua` to `false`.
+The current testing build refreshes the SMB1 timer to `999` while gameplay is active and refreshes the lives byte at `0x075A` to `9`. This prevents a training run from reaching Game Over, while SMB1 still performs every normal death and respawn. The AI never presses Start automatically; begin a game manually in FCEUX. Before a real evaluation, change `TESTING_FREEZE_TIMER` and `TESTING_INFINITE_LIVES` near the top of `mario_ai_neat.lua` to `false`.
 
 ## What it senses and learns
 
-The bot uses the SMB1 positions and tile data from the legacy script and MarI/O's SMB1 sensor layout: a nearby tile/enemy grid plus Mario movement and power state. The neural network scores controller actions. A safety filter removes forward-only actions when an unpowered Mario is close to an enemy, while preserving learned choices such as jumping, braking, and retreating. The original bot's jump-over-ground-enemies and fire-as-Fire-Mario behaviors inform that filter.
+The AI uses the SMB1 positions and tile data from the legacy script and MarI/O's SMB1 sensor layout: a nearby tile/enemy grid plus Mario movement and power state. The neural network scores controller actions. A safety filter removes forward-only actions when an unpowered Mario is close to an enemy, while preserving learned choices such as jumping, braking, and retreating. The original controller's jump-over-ground-enemies and fire-as-Fire-Mario behaviors inform that filter.
 
 Each attempt earns fitness for furthest forward progress and survival, with a large bonus for reaching the flag. Completed generations retain a champion, group related genomes into species, select fitter parents, cross over matching genes, and mutate connections and weights. This is evolutionary reinforcement learning: the learned population persists in the database and is evaluated during real SMB1 play sessions.
 
@@ -140,7 +148,7 @@ The target RAM layout is the SMB1 revision described by the original bot and the
 
 ## Files
 
-- `mario_ai_heaven.lua`: self-contained FCEUX SMB1 bot, sensors, NEAT trainer, episode loop, and database persistence.
+- `mario_ai_neat.lua`: self-contained FCEUX SMB1 AI, sensors, NEAT trainer, episode loop, and database persistence.
 - `legacy/LuaRio_Bot_v1.lua`: original bot preserved byte-for-byte.
 - `docs/learning.md`: training loop, fitness, genome database, and restart behavior.
 - `docs/requirements-and-weaknesses.md`: behavior inventory and remaining risks.
