@@ -4,4 +4,6 @@
 *.fm2
 *.trace
 *.log
+*.db
+*.db.tmp
 .DS_Store

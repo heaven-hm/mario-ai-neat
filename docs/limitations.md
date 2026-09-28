@@ -1,8 +1,10 @@
 # Known limitations
 
-- Some RAM semantics and tile-buffer indexing are inherited from `LuaRio_Bot.lua` and still need live verification against the supplied disassembly and target ROM.
-- No compatible ROM is present in this workspace, so clean-start gameplay validation is pending.
-- The Lost Levels and modified ROMs are outside the current target.
-- Jump physics and collision predictions are approximate. Swimming, moving platforms, castle mazes, and several special enemies need dedicated behavior.
-- The current policy is deterministic search with structured recovery, not a trained ML policy. RLHF and training from human play traces are future work.
-- Passing synthetic tests does not establish human-like behavior or full-campaign completion; those claims require clean-start gameplay runs.
+- The target is only NES Super Mario Bros. 1 running in FCEUX. Other games, ROM revisions, and emulators are not supported or validated.
+- RAM meanings and tile-buffer indexing are inherited from `LuaRio_Bot.lua` and the supplied SMB1 disassembly. The current container has no compatible ROM for live address verification.
+- No actual gameplay training was possible in this workspace. Synthetic tests verify the trainer and its safety filter, not winning behavior.
+- NEAT needs many complete episodes to improve. The default population has 100 genomes; one generation can take substantial emulator time. Evolution may initially perform worse than the original hand-coded bot.
+- Fitness rewards forward progress and survival, so it can favor fast progress over optional coins or score items. Powerups are visible to the policy and upgrades earn a fitness bonus, but path safety and item value are still approximated.
+- The safety filter reduces direct enemy collisions but cannot guarantee survival. Enemy speed, invulnerability, projectile timing, and Mario's precise collision box are only approximated.
+- FCEUX savestates restart genomes from the point where the Lua script first observes active gameplay. Starting the script mid-level makes that mid-level location the training start.
+- The learned population is local to `mario_ai_heaven_neat.db`. Back up that file to preserve training. Changing the input/action layout makes older databases incompatible.

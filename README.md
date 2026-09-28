@@ -1,44 +1,48 @@
 # Mario AI Heaven
 
-An autonomous Lua bot for **Super Mario Bros. on the NES**. The bot observes Mario, level tiles, enemies, and powerups, then chooses an action each frame. Its main file is self-contained and ready to load in FCEUX.
+A learning bot for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads the SMB1 RAM layout, observes nearby tiles and enemies, and evolves a neural-network controller across repeated play attempts. Other games and emulators are outside the target.
 
 ## Stack
 
-- **Game:** Super Mario Bros. for NES. The ROM is not included.
-- **Runtime:** FCEUX with its Lua scripting interface.
-- **Language:** Lua 5.1 syntax. LuaJIT 2.1 is used for local tests; FCEUX runs the bot.
-- **Build:** No compiler, C library, Lua packages, ML runtime, RL, or RLHF is required for this version. RLHF is deferred.
-- **Repository checks:** GitHub Actions runs synthetic behavior tests without a ROM.
+- **Game:** NES Super Mario Bros. 1. The ROM is not included.
+- **Runtime:** FCEUX 2.x Lua scripting.
+- **Language:** Lua 5.1 compatible; no compiler, external packages, or separate ML runtime.
+- **Learning:** NEAT-style neuroevolution, local to the Lua bot. It evolves neural-network topology and weights using episode fitness.
+- **Learning database:** `mario_ai_heaven_neat.db`, generated beside the script. It stores the population, genome weights, mutation settings, and generation so training continues after restarting FCEUX.
 
-The project is the game-playing bot. FCEUX supplies each frame's memory and controller interface; the bot's action selection and recovery are implemented in [`mario_ai_heaven.lua`](mario_ai_heaven.lua).
+## Run and train
 
-## Run it
-
-1. Open your own compatible NES Super Mario Bros. ROM in FCEUX.
+1. Open a compatible SMB1 NES ROM in FCEUX, preferably at the start of World 1-1.
 2. Load `mario_ai_heaven.lua` from FCEUX's Lua script menu.
-3. Let the bot start from the title screen. Stop the script in FCEUX to return to manual control.
+3. Leave the script running. It saves the starting game state, tests each genome from that same point, scores the attempt, breeds a new generation, and repeats.
+4. Stop the script when you want. The population database is saved periodically, after every completed attempt, and when FCEUX stops the script. Leave the database beside the Lua script to continue learning later.
 
-The target RAM layout is the SMB1 revision described by the original bot and the linked [SMB disassembly](https://gist.github.com/1wErt3r/4048722). Modified ROMs and The Lost Levels are not validated.
+Training episodes replay from an FCEUX in-memory savestate. That gives each genome the same starting situation for a fair comparison; it does not alter game RAM or grant the bot in-game abilities. If the script starts mid-level, that location becomes its training start.
 
-## How the bot chooses
+## What it senses and learns
 
-Every frame it compares running, short and long jumps, braking, safe retreat, fire attacks, and reachable powerup pursuit. It estimates short-term landing and collision risk, prefers survival over optional rewards, and replans after the next observation. Powerups can justify a bounded backward detour. Mario only retreats to attack when powered, the threat is close, and the ground behind him is present.
+The bot uses the SMB1 positions and tile data from the legacy script and MarI/O's SMB1 sensor layout: a nearby tile/enemy grid plus Mario movement and power state. The neural network scores controller actions. A safety filter removes forward-only actions when an unpowered Mario is close to an enemy, while preserving learned choices such as jumping, braking, and retreating. The original bot's jump-over-ground-enemies and fire-as-Fire-Mario behaviors inform that filter.
 
-When Mario makes no progress for 42 frames, the bot records the action that failed in that local situation. On the next decision it penalizes that same action and evaluates alternatives. This is structured exploration, not random button mashing. It never raises or teleports Mario, writes game RAM, deletes enemy slots, or overrides collision state.
+Each attempt earns fitness for furthest forward progress and survival, with a large bonus for reaching the flag. Completed generations retain a champion, group related genomes into species, select fitter parents, cross over matching genes, and mutate connections and weights. This is evolutionary reinforcement learning: the learned population persists in the database and is evaluated during real SMB1 play sessions.
 
-## Tests
+The implementation is inspired by the MarI/O approach, but does not redistribute its code. The supplied MarI/O gist says its code may be used but should not be redistributed. This project implements its own NEAT-style trainer and adapts the sensor/runtime to FCEUX SMB1.
+
+## Tests and limitations
 
 ```sh
 sh tests/run.sh
 ```
 
-The suite checks gap handling, unsafe landings, stuck recovery, powerup backtracking, powered attacks, one input per frame, and that the production loop never writes RAM. These synthetic checks do not prove full-game completion. See [evaluation](docs/evaluation.md) and [limitations](docs/limitations.md).
+Tests cover neural-network evaluation, enemy sensors, enemy safety filtering, population save/load, generation breeding, and the FCEUX control loop without RAM writes. They do not establish that a learned genome beats the game. No compatible ROM is present in the workspace, so real training and playthrough validation remain necessary. See [evaluation](docs/evaluation.md), [learning](docs/learning.md), [limitations](docs/limitations.md), and [RAM map](docs/ram-map.md).
 
-## Project files
+The target RAM layout is the SMB1 revision described by the original bot and the linked [SMB disassembly](https://gist.github.com/1wErt3r/4048722). Other revisions and ROM hacks are not validated.
 
-- `mario_ai_heaven.lua`: self-contained FCEUX bot and decision logic.
-- `legacy/LuaRio_Bot_v1.lua`: original script preserved byte-for-byte.
-- `docs/requirements-and-weaknesses.md`: behavior inventory and recovery requirements.
+## Files
+
+- `mario_ai_heaven.lua`: self-contained FCEUX SMB1 bot, sensors, NEAT trainer, episode loop, and database persistence.
+- `legacy/LuaRio_Bot_v1.lua`: original bot preserved byte-for-byte.
+- `docs/learning.md`: training loop, fitness, genome database, and restart behavior.
+- `docs/requirements-and-weaknesses.md`: behavior inventory and remaining risks.
 - `docs/ram-map.md`: inherited RAM addresses and verification status.
 
 The legacy header credits Haseeb Mir, SethBling, and doppelganger. The original file did not declare a license, so this repository does not add one without rights confirmation.
