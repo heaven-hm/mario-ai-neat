@@ -1,0 +1,21 @@
+name: Lua checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - name: Run syntax and behavior tests
+        run: sh tests/run.sh
+      - name: Reject production RAM writes
+        run: |
+          if grep -n 'memory\.writebyte\|memory\.write' mario_ai_heaven.lua; then
+            echo 'Production bot must use controller input only.'
+            exit 1
+          fi

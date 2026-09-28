@@ -1,46 +1,44 @@
 # Mario AI Heaven
 
-Mario AI Heaven is an autonomous controller for **Super Mario Bros. on the NES**, intended to run as a Lua script inside FCEUX. The project reads game memory and sends ordinary controller buttons. It does not modify the game state to escape hazards or get unstuck.
+An autonomous Lua bot for **Super Mario Bros. on the NES**. The bot observes Mario, level tiles, enemies, and powerups, then chooses an action each frame. Its main file is self-contained and ready to load in FCEUX.
 
-## Technology stack
+## Stack
 
-| Component | Use |
-| --- | --- |
-| Nintendo Entertainment System (NES) | Target game platform; the project controls SMB1, it does not emulate or compile the console |
-| FCEUX 2.x | NES emulator and Lua host |
-| Lua 5.1 | Script language expected by FCEUX's Lua API |
-| LuaJIT 2.1 | Optional local Lua 5.1-compatible runtime for fast, ROM-free tests |
-| GitHub Actions | Runs syntax checks and deterministic tests without a ROM |
-| C/6502 assembler | Not used to build this project; no game ROM or emulator is included |
+- **Game:** Super Mario Bros. for NES. The ROM is not included.
+- **Runtime:** FCEUX with its Lua scripting interface.
+- **Language:** Lua 5.1 syntax. LuaJIT 2.1 is used for local tests; FCEUX runs the bot.
+- **Build:** No compiler, C library, Lua packages, ML runtime, RL, or RLHF is required for this version. RLHF is deferred.
+- **Repository checks:** GitHub Actions runs synthetic behavior tests without a ROM.
 
-The code has no Lua package dependencies. The target is the original SMB1 NES ROM revision described in the project's RAM notes. Modified ROMs and The Lost Levels are not yet validated.
+The project is the game-playing bot. FCEUX supplies each frame's memory and controller interface; the bot's action selection and recovery are implemented in [`mario_ai_heaven.lua`](mario_ai_heaven.lua).
 
-## Run in FCEUX
+## Run it
 
-1. Obtain and open your own compatible SMB1 NES ROM in FCEUX.
-2. Start the game at the title screen or enter a level.
-3. In FCEUX, open the Lua script dialog and load `bot.lua` from this directory.
-4. The on-screen status display shows the phase, target, current action, and recovery count.
-5. Stop the Lua script from FCEUX's Lua window to return to manual control.
+1. Open your own compatible NES Super Mario Bros. ROM in FCEUX.
+2. Load `mario_ai_heaven.lua` from FCEUX's Lua script menu.
+3. Let the bot start from the title screen. Stop the script in FCEUX to return to manual control.
 
-The script requires FCEUX's `memory.readbyte`, `joypad.set`, and `emu.frameadvance`. HUD drawing is optional. The bot advances exactly one frame after each observation and action.
+The target RAM layout is the SMB1 revision described by the original bot and the linked [SMB disassembly](https://gist.github.com/1wErt3r/4048722). Modified ROMs and The Lost Levels are not validated.
 
-## Local checks
+## How the bot chooses
 
-From this directory, run:
+Every frame it compares running, short and long jumps, braking, safe retreat, fire attacks, and reachable powerup pursuit. It estimates short-term landing and collision risk, prefers survival over optional rewards, and replans after the next observation. Powerups can justify a bounded backward detour. Mario only retreats to attack when powered, the threat is close, and the ground behind him is present.
+
+When Mario makes no progress for 42 frames, the bot records the action that failed in that local situation. On the next decision it penalizes that same action and evaluates alternatives. This is structured exploration, not random button mashing. It never raises or teleports Mario, writes game RAM, deletes enemy slots, or overrides collision state.
+
+## Tests
 
 ```sh
-luajit tests/run.lua
+sh tests/run.sh
 ```
 
-LuaJIT is optional for FCEUX itself. Lua 5.1 can run the ROM-free tests too. CI installs Lua 5.1 and never needs a ROM.
+The suite checks gap handling, unsafe landings, stuck recovery, powerup backtracking, powered attacks, one input per frame, and that the production loop never writes RAM. These synthetic checks do not prove full-game completion. See [evaluation](docs/evaluation.md) and [limitations](docs/limitations.md).
 
-## Behavior
+## Project files
 
-The bot evaluates survival, reachable routes, gaps, obstacles, enemy danger, power-up reward, and backward movement. When an action stalls, it records the failed state/action and tries a different bounded approach, such as changing takeoff timing, jump hold, speed, or route. Ties among safe actions can be broken with a seeded choice so runs remain reproducible. Recovery uses controller inputs only; it never raises Mario, teleports him, edits collision state, or clears enemy slots.
+- `mario_ai_heaven.lua`: self-contained FCEUX bot and decision logic.
+- `legacy/LuaRio_Bot_v1.lua`: original script preserved byte-for-byte.
+- `docs/requirements-and-weaknesses.md`: behavior inventory and recovery requirements.
+- `docs/ram-map.md`: inherited RAM addresses and verification status.
 
-See [behavior inventory and weakness audit](docs/requirements-and-weaknesses.md), [architecture](docs/architecture.md), [RAM map status](docs/ram-map.md), [evaluation protocol](docs/evaluation.md), and [known limitations](docs/limitations.md).
-
-## Attribution and licensing
-
-The original [LuaRio_Bot.lua](legacy/LuaRio_Bot_v1.lua) was written by Haseeb Mir. Its header credits SethBling and doppelganger and identifies the SMB disassembly gist used for game data. The original file is preserved verbatim. The repository does not add a license until rights for the original and derived code are confirmed.
+The legacy header credits Haseeb Mir, SethBling, and doppelganger. The original file did not declare a license, so this repository does not add one without rights confirmation.
