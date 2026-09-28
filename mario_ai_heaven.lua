@@ -4,6 +4,11 @@
 
 local Bot = {}
 
+-- Testing-only aid. Set this to false before a real, timed evaluation.
+-- SMB1 stores each timer digit separately; keeping all three at 9 prevents a
+-- training attempt from ending solely because the in-game clock expires.
+local TESTING_FREEZE_TIMER = true
+
 local RAM = {
   player_state=0x000E, enemy_present=0x000F, enemy_id=0x0016,
   enemy_state=0x001E, player_page=0x006D, enemy_page=0x006E,
@@ -12,6 +17,7 @@ local RAM = {
   player_screen_x=0x03AD, death_music=0x0712,
   flag_event=0x010E, flag_y=0x070F, tiles=0x0500,
   player_size=0x0754, power=0x0756, operation_mode=0x0770,
+  timer_hundreds=0x07F8, timer_tens=0x07F9, timer_ones=0x07FA,
 }
 
 local ENEMY_NAME = {
@@ -542,6 +548,14 @@ function Bot.appendLog(message,path)
   return true
 end
 
+function Bot.freezeTimerForTesting()
+  if not TESTING_FREEZE_TIMER or not memory or not memory.writebyte then return false end
+  memory.writebyte(RAM.timer_hundreds,0x09)
+  memory.writebyte(RAM.timer_tens,0x09)
+  memory.writebyte(RAM.timer_ones,0x09)
+  return true
+end
+
 function Bot.save(pool,path)
   path=path or path_for_database()
   local temporary=path..".tmp"
@@ -727,8 +741,9 @@ function Bot.run()
     if not bot.databaseOK then Bot.appendLog("database save failed: "..context,log_path) end
     return bot.databaseOK
   end
-  Bot.appendLog(string.format("started | database=%s | generation=%d | population=%d | no savestate API",
-    loaded and "loaded" or "new",bot.pool.generation,#bot.pool.genomes),log_path)
+  Bot.appendLog(string.format("started | database=%s | generation=%d | population=%d | no savestate API | test_timer=%s",
+    loaded and "loaded" or "new",bot.pool.generation,#bot.pool.genomes,
+    TESTING_FREEZE_TIMER and "999" or "off"),log_path)
   if not loaded then save_pool("initial population") end
   emu.registerexit(function()
     save_pool("FCEUX exit")
@@ -743,6 +758,7 @@ function Bot.run()
         bot.pool.generation,bot.genomeIndex,#bot.pool.genomes,state.x,state.power),log_path)
     end
     if state.phase=="playing" then
+      Bot.freezeTimerForTesting()
       local action=Bot.decide(bot,state)
       local buttons={}
       for _,name in ipairs({"left","right","up","down","A","B","start","select"}) do
@@ -756,6 +772,7 @@ function Bot.run()
         gui.text(8,18,tostring(action.reason or "learning"),"white","black")
         gui.text(8,28,string.format("best x:%d | episodes:%d",bot.maxX or state.x,bot.totalEpisodes),"white","black")
         gui.text(8,38,"population database: "..(bot.databaseOK==false and "save failed" or "active"),"white","black")
+        if TESTING_FREEZE_TIMER then gui.text(8,48,"TEST MODE: timer frozen at 999","yellow","black") end
       end
       if bot.episodeFrames>=12000 or bot.episodeFrames-bot.lastProgressFrame>600 then
         local reason=bot.episodeFrames>=12000 and "timeout" or "stuck"

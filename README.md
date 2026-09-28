@@ -20,6 +20,10 @@ A learning bot for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads th
 
 The bot never creates, loads, persists, or restores FCEUX savestates. This avoids a crash in the Homebrew Apple Silicon FCEUX build where `savestate.persist()` faults natively. It interacts with SMB1 through controller inputs only. Training segments can begin at different game positions, so compare results across longer sessions rather than treating individual genome scores as directly equivalent.
 
+## Testing timer
+
+The current testing build refreshes the SMB1 timer to `999` while gameplay is active. It writes only the three timer digits at `0x07F8..0x07FA`; Mario movement, collision, health, position, and physics remain game-controlled. Before a real timed evaluation, change `local TESTING_FREEZE_TIMER = true` near the top of `mario_ai_heaven.lua` to `false`.
+
 ## What it senses and learns
 
 The bot uses the SMB1 positions and tile data from the legacy script and MarI/O's SMB1 sensor layout: a nearby tile/enemy grid plus Mario movement and power state. The neural network scores controller actions. A safety filter removes forward-only actions when an unpowered Mario is close to an enemy, while preserving learned choices such as jumping, braking, and retreating. The original bot's jump-over-ground-enemies and fire-as-Fire-Mario behaviors inform that filter.

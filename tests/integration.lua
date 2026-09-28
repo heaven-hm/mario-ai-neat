@@ -22,7 +22,7 @@ end,registerexit=function(callback) exit_callback=callback end}
 local ok,err=pcall(dofile,"mario_ai_heaven.lua")
 assert(not ok and tostring(err):find("normal test stop",1,true),tostring(err))
 assert(frames==20 and inputs==20,"one input and one advance per AI decision")
-assert(writes==0,"game RAM must never be changed")
+assert(writes==frames*3,"testing mode refreshes the three SMB1 timer digits each active frame")
 assert(persist_calls==0,"the bot must not call FCEUX savestate.persist")
 assert(type(exit_callback)=="function","stopping FCEUX registers a final database save")
 exit_callback()

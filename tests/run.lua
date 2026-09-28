@@ -96,4 +96,10 @@ local log_file=io.open(log_path,"r")
 local log_text=log_file:read("*a");log_file:close();os.remove(log_path)
 test("runtime log includes its event text",log_text:find("test event",1,true)~=nil)
 
+local timer_writes={}
+memory={writebyte=function(address,value) timer_writes[address]=value end}
+test("testing timer writes all SMB1 timer digits",Bot.freezeTimerForTesting()==true)
+test("testing timer is refreshed to 999",timer_writes[0x07F8]==9 and timer_writes[0x07F9]==9 and timer_writes[0x07FA]==9)
+memory=nil
+
 print(string.format("%d NEAT behavior checks passed",checks))
