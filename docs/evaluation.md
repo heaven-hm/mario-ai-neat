@@ -6,7 +6,7 @@ No full-game result is claimed until training and validation run against a real 
 
 Start the bot at the beginning of World 1-1. Let it evaluate full generations. Keep the generated `mario_ai_heaven_neat.db` so later sessions continue evolving the population. Record the FCEUX version, ROM label/hash locally, bot commit, generation, best fitness, best world position, completion count, and database backup. Do not publish ROM bytes or ROM-derived savestates.
 
-The training loop deliberately reloads an in-memory FCEUX savestate between genomes so each candidate starts from the same point. Do not treat those training episodes as independent clean-start completion trials.
+The training loop uses only controller input and does not reload FCEUX savestates. Record game position and episode context with each result because candidates can begin in different game situations. Do not treat training episodes as independent clean-start completion trials.
 
 ## Validation
 

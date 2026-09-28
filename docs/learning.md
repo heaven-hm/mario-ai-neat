@@ -2,9 +2,9 @@
 
 ## Training loop
 
-The Lua bot runs one genome at a time. When SMB1 first enters active gameplay, it stores that game state in a persistent, in-memory FCEUX savestate. After each genome dies, reaches the flag, or stops making progress, the bot scores it and reloads that start state for the next genome. Once all genomes have played, it forms the next generation and repeats.
+The Lua bot runs one genome at a time. When SMB1 enters active gameplay, it starts a real controller-input episode. After a genome dies, reaches the flag, or stops making progress, the bot scores it and moves to the next genome. Once all genomes have played, it forms the next generation and repeats. At title or death screens it presses Start periodically to begin or retry.
 
-All genomes therefore see the same starting state within a generation. Episodes end after death, victory, 600 frames without new forward progress, or a 12,000-frame cap. A player can leave the bot running for repeated generations; training is automatic after the script starts.
+The bot deliberately does not use FCEUX savestates. FCEUX 2.6.6 on Homebrew Apple Silicon can crash inside `savestate.persist()` when a script starts. Episode conditions can therefore vary as SMB1 advances, so fitness provides a learning signal rather than a perfectly controlled comparison. Episodes end after death, victory, 600 frames without new forward progress, or a 12,000-frame cap. A player can leave the bot running for repeated generations; training is automatic after the script starts.
 
 ## Observation and action
 
@@ -22,10 +22,9 @@ This is neuroevolution in the style of NEAT, used as an evolutionary reinforceme
 
 `mario_ai_heaven_neat.db` is a line-based database beside the Lua script. It contains the generation counter, population size, genome fitness, mutation rates, network connections, weights, and innovation IDs. The bot writes a temporary file and replaces the database, saves after every episode, periodically during long attempts, and when FCEUX stops the script. On the next launch it resumes with that population. Deleting the database starts a fresh population.
 
-The database does not contain the ROM or a savestate. Keep it with the version of the Lua script that created it; input/action layout changes can require a fresh database.
+The database does not contain the ROM or a savestate. `mario_ai_heaven.log` records startup, episode starts and ends, and database-save failures. Keep the database with the version of the Lua script that created it; input/action layout changes can require a fresh database.
 
 ## References
 
 - [MarI/O Lua gist supplied for this project](https://gist.github.com/d12frosted/7471e2123f10485d96bb). Its header requests that the code not be redistributed; this project uses the general NEAT approach and implements its own code.
-- [FCEUX Lua help: savestates](https://fceux.com/web/help/LuaFunctionsList.html). FCEUX documents creating, saving, loading, and preserving an in-memory savestate.
 - [FCEUX Lua help: controller input and frame advance](https://fceux.com/web/help/Commands.html).

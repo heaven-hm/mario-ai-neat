@@ -14,10 +14,11 @@ A learning bot for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads th
 
 1. Open a compatible SMB1 NES ROM in FCEUX, preferably at the start of World 1-1.
 2. Load `mario_ai_heaven.lua` from FCEUX's Lua script menu.
-3. Leave the script running. It saves the starting game state, tests each genome from that same point, scores the attempt, breeds a new generation, and repeats.
+3. Leave the script running. It scores each real play segment, tests the next genome after death, victory, or no progress, breeds a new generation, and repeats.
 4. Stop the script when you want. The population database is saved periodically, after every completed attempt, and when FCEUX stops the script. Leave the database beside the Lua script to continue learning later.
+5. Read `mario_ai_heaven.log` beside the script for startup, episode, and database-save events.
 
-Training episodes replay from an FCEUX in-memory savestate. That gives each genome the same starting situation for a fair comparison; it does not alter game RAM or grant the bot in-game abilities. If the script starts mid-level, that location becomes its training start.
+The bot never creates, loads, persists, or restores FCEUX savestates. This avoids a crash in the Homebrew Apple Silicon FCEUX build where `savestate.persist()` faults natively. It interacts with SMB1 through controller inputs only. Training segments can begin at different game positions, so compare results across longer sessions rather than treating individual genome scores as directly equivalent.
 
 ## What it senses and learns
 

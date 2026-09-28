@@ -6,5 +6,5 @@
 - NEAT needs many complete episodes to improve. The default population has 100 genomes; one generation can take substantial emulator time. Evolution may initially perform worse than the original hand-coded bot.
 - Fitness rewards forward progress and survival, so it can favor fast progress over optional coins or score items. Powerups are visible to the policy and upgrades earn a fitness bonus, but path safety and item value are still approximated.
 - The safety filter reduces direct enemy collisions but cannot guarantee survival. Enemy speed, invulnerability, projectile timing, and Mario's precise collision box are only approximated.
-- FCEUX savestates restart genomes from the point where the Lua script first observes active gameplay. Starting the script mid-level makes that mid-level location the training start.
+- The bot avoids FCEUX savestate APIs because the Homebrew Apple Silicon FCEUX 2.6.6 build can crash in `savestate.persist()`. Without state restoration, training episodes can begin in different game situations and are less directly comparable.
 - The learned population is local to `mario_ai_heaven_neat.db`. Back up that file to preserve training. Changing the input/action layout makes older databases incompatible.
