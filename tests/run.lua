@@ -14,48 +14,80 @@ local function state(x)
     enemies={},items={},tiles=tiles,grounded=true}
 end
 
-local bot=Bot.new()
-local clear=state()
-local action=Bot.decide(bot,clear)
-test("forward progress is the default",action.right and action.B and not action.A)
+math.randomseed(117)
+local pool=Bot.newPool(12)
+test("trainer initializes a population of independently mutated genomes",#pool.genomes==12)
+test("new genomes contain executable action outputs",#pool.genomes[1].genes>0)
 
--- A visible pit produces a jump action before Mario reaches its edge.
+local probe=Bot.newGenome(pool)
+probe.genes={{into=1,out=Bot.output_node(1),weight=2,enabled=true,innovation=9001},
+  {into=Bot.input_count(),out=Bot.output_node(1),weight=0.5,enabled=true,innovation=9002}}
+local outputs=Bot.evaluate(probe,{[1]=1})
+test("genome maps sensor values to controller action scores",outputs[1]>0.5)
+
+local input_state=state()
+input_state.enemies={{slot=0,id=6,name="goomba",status=0,x=input_state.x+24,y=input_state.y,vx=0}}
+local inputs=Bot.inputs(input_state)
+test("nearby enemy is encoded as a negative local sensor",inputs[Bot.sensor_index(16,0)]==-1)
+test("sensor input has fixed grid and player feature dimensions",#inputs==Bot.input_count()-1)
+
+-- The learned policy may choose among safe responses, but the safety shield
+-- removes forward-only actions when an unpowered Mario is about to hit an enemy.
+local approaching=state(100)
+approaching.enemies={{slot=0,id=6,name="goomba",status=0,x=164,y=192,vx=0}}
+local runner=Bot.new(pool)
+local action=Bot.decide(runner,approaching)
+test("close ground enemy is visible to the controller",action.reason:find("threat goomba",1,true)~=nil)
+test("safety shield prevents running into a close enemy",action.name~="run" and action.name~="walk")
+
+local seed=Bot.new(Bot.newPool(1))
+action=Bot.decide(seed,state())
+test("seed policy keeps moving across clear ground",action.name=="run")
 local gap=state()
 for col=6,9 do gap.tiles[10*16+col]=0 end
-action=Bot.decide(Bot.new(),gap)
-test("jump candidate chosen before a reachable gap",action.A==true)
+action=Bot.decide(Bot.new(Bot.newPool(1)),gap)
+test("seed policy jumps before an observed gap",action.name=="jump_run")
+local nearEnemy=state(100)
+nearEnemy.enemies={{slot=0,id=6,name="goomba",status=0,x=135,y=192,vx=0}}
+action=Bot.decide(Bot.new(Bot.newPool(1)),nearEnemy)
+test("seed policy starts a forward jump before a close ground enemy",action.name=="jump_run")
+local close=state(100)
+close.enemies={{slot=0,id=6,name="goomba",status=0,x=118,y=192,vx=0}}
+action=Bot.decide(Bot.new(Bot.newPool(1)),close)
+test("contact-range enemy removes forward and forward-jump actions",
+  action.name=="jump_place")
+local fireMario=state(100)
+fireMario.power=2
+fireMario.enemies={{slot=0,id=6,name="goomba",status=0,x=180,y=192,vx=0}}
+action=Bot.decide(Bot.new(Bot.newPool(1)),fireMario)
+test("Fire Mario keeps firing forward when the enemy is at safe range",action.name=="run" and action.B==true)
+local rearThreat=state(100)
+rearThreat.power=2
+rearThreat.enemies={{slot=0,id=6,name="goomba",status=0,x=52,y=192,vx=0}}
+action=Bot.decide(Bot.new(Bot.newPool(1)),rearThreat)
+test("Fire Mario can turn back to attack a nearby rear enemy",action.name=="retreat" and action.B==true)
 
--- An unseen landing cannot be treated as a safe jump destination.
-local pit=state()
-for col=6,15 do pit.tiles[10*16+col]=0 end
-action=Bot.decide(Bot.new(),pit)
-test("unknown or unlandable pit does not trigger a blind jump",action.A~=true)
+local fitness_bot=Bot.new(Bot.newPool(2))
+local small=state();Bot.beginEpisode(fitness_bot,small)
+fitness_bot.maxX=small.x+10
+local death=state();death.phase="death";death.power=0;death.size=1
+local fitness=Bot.finishEpisode(fitness_bot,death)
+test("death is penalized and no unearned powerup is added",fitness==-20)
+local victor=Bot.new(Bot.newPool(2))
+Bot.beginEpisode(victor,small)
+local win=state();win.phase="victory"
+test("reaching the flag earns a completion bonus",Bot.finishEpisode(victor,win)==10000)
 
--- Repeated no-progress output is remembered and replaced with a different
--- candidate rather than issuing the same buttons indefinitely.
-local stuck=Bot.new()
-local previous
-for frame=1,43 do
-  local sample=state();sample.frame=frame
-  action=Bot.decide(stuck,sample)
-  if frame==42 then previous=action.name end
-end
-test("stuck detector activates",stuck.recovery>0)
-test("recovery changes its action",action.name~=previous)
-test("recovery uses controller actions only",stuck.recovery>0 and action.reason~=nil)
+local save_path=os.tmpname()
+pool.genomes[1].fitness=100
+test("evolved genome population is saved to a persistent database",Bot.save(pool,save_path)==true)
+local restored=Bot.load(save_path)
+test("generation and genome structure reload from the database",
+  restored~=nil and #restored.genomes==12 and #restored.genomes[1].genes>0)
+local next_pool=Bot.nextGeneration(restored)
+test("fitness selection creates a full mutated next generation",
+  #next_pool.genomes==12 and next_pool.generation==restored.generation+1)
+test("best-scoring genome survives into the next generation",next_pool.genomes[1].fitness==100)
+os.remove(save_path)
 
--- Valuable item pursuit can move backwards when the backward route is safe.
-local powerup=state()
-powerup.items={{kind="powerup",type=0,x=48,y=190}}
-action=Bot.decide(Bot.new(),powerup)
-test("bot may backtrack for a reachable mushroom",action.left==true)
-
--- A rearward enemy is a valid fire objective for powered Mario.
-local hunter=state()
-hunter.power=2
-hunter.enemies={{slot=0,id=6,name="goomba",status=0,x=48,y=192,vx=3}}
-action=Bot.decide(Bot.new(),hunter)
-assert(action.left==true and action.B==true,"backward attack action was "..tostring(action.name))
-checks=checks+1
-
-print(string.format("%d behavior checks passed",checks))
+print(string.format("%d NEAT behavior checks passed",checks))

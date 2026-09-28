@@ -35,23 +35,6 @@ local function clamp(value, low, high) return math.max(low, math.min(high, value
 
 local function read(address) return memory.readbyte(address) end
 
-local function tile_at(state, world_x, screen_y)
-  local row = math.floor((screen_y - 32) / 16)
-  if row < 0 or row >= 13 then return nil end
-  local screen_left = state.x - state.screen_x
-  if world_x < screen_left - 16 or world_x >= screen_left + 272 then return nil end
-  local column = math.floor(world_x / 16)
-  local page = math.floor(column / 16) % 2
-  local col = column % 16
-  return state.tiles[page * 208 + row * 16 + col]
-end
-
-local function solid_at(state, x, y)
-  local tile = tile_at(state,x,y)
-  if tile == nil then return nil end
-  return not NONSOLID[tile]
-end
-
 function Bot.observe(frame)
   local x=read(RAM.player_page)*256+read(RAM.player_x)
   local mode=read(RAM.operation_mode)
@@ -89,241 +72,677 @@ function Bot.observe(frame)
   return state
 end
 
-local function terrain(state)
-  local p=state
-  local result={gap=nil,landing=nil,obstacle=nil,ceiling=false,grounded=false,
-    ground_behind=solid_at(p,p.x-8,p.y+5)}
-  local support=solid_at(p,p.x+8,p.y+5)
-  result.grounded=support==true and p.vy>=0 and p.vy<=1
-  local gap=false
-  for dx=12,152,8 do
-    local floor=solid_at(p,p.x+dx,p.y+5)
-    if floor==false and not gap then result.gap=dx;gap=true
-    elseif floor==true and gap then result.landing=dx;break end
-  end
-  for dx=12,64,8 do
-    if solid_at(p,p.x+dx,p.y-10) then result.obstacle=dx;break end
-  end
-  for dx=0,24,8 do
-    if solid_at(p,p.x+dx,p.y-30) then result.ceiling=true;break end
-  end
-  return result
+
+-- The policy learns with NEAT-style neuroevolution. Each genome controls one
+-- episode from the same FCEUX savestate; episode fitness selects parents for
+-- the next generation. No game RAM is written by the bot.
+local RADIUS = 6
+local GRID_WIDTH = RADIUS * 2 + 1
+local GRID_INPUTS = GRID_WIDTH * GRID_WIDTH
+local GLOBAL_INPUTS = 15
+local FEATURE_INPUTS = GRID_INPUTS + GLOBAL_INPUTS
+local INPUTS = FEATURE_INPUTS + 1 -- final input is the bias node
+local ACTIONS = 6
+local MAX_NODES = 1000000
+local POPULATION = 100
+local SPECIES_THRESHOLD = 1.0
+local STALE_SPECIES = 15
+local SAVE_EVERY_FRAMES = 600
+
+local ACTIONS_MAP = {
+  {name="run", right=true, B=true},
+  {name="jump_run", right=true, B=true, A=true},
+  {name="retreat", left=true, B=true},
+  {name="brake"},
+  {name="jump_place", A=true},
+  {name="walk", right=true},
+}
+local NON_STOMPABLE = {[0x07]=true,[0x0C]=true,[0x0D]=true,[0x11]=true,[0x12]=true}
+
+local function safe_write(file, value) file:write(value, "\n") end
+
+function Bot.input_count() return INPUTS end
+function Bot.output_node(index) return MAX_NODES + index end
+function Bot.sensor_index(dx, dy)
+  local col = math.floor((dx + RADIUS * 16) / 16)
+  local row = math.floor((dy + RADIUS * 16) / 16)
+  return row * GRID_WIDTH + col + 1
 end
 
-local function nearest_threat(state)
-  local selected,selected_time
-  for _,enemy in ipairs(state.enemies) do
-    local dx=enemy.x-state.x
-    local active=not STOMPED[enemy.status]
-    if active and dx>-112 and dx<144 and math.abs(enemy.y-state.y)<72 then
-      local closing=dx>=0 and state.vx-enemy.vx or enemy.vx-state.vx
-      local frames=closing>0 and math.max(0,(math.abs(dx)-16)/closing) or 1000
-      if not selected_time or frames<selected_time then selected,selected_time=enemy,frames end
+local function grid_solid(state, dx, dy)
+  local world_x=state.x+dx
+  local world_y=state.y+dy-16
+  local col=math.floor((world_x+8)/16)
+  local row=math.floor((world_y-32)/16)
+  if row<0 or row>=13 then return false end
+  local tile=state.tiles[(math.floor(col/16)%2)*208+row*16+col%16]
+  return tile~=nil and tile~=0 and not NONSOLID[tile]
+end
+
+local function forward_gap(state)
+  for dx=16,64,16 do
+    if not grid_solid(state,dx,16) then return 1 end
+  end
+  return 0
+end
+
+local function cell_value(state, dx, dy)
+  local world_x = state.x + dx
+  local world_y = state.y + dy - 16
+  local column = math.floor((world_x + 8) / 16)
+  local row = math.floor((world_y - 32) / 16)
+  if row < 0 or row >= 13 then return 0 end
+  local page = math.floor(column / 16) % 2
+  local col = column % 16
+  local tile = state.tiles[page * 208 + row * 16 + col]
+  local occupied = tile ~= nil and tile ~= 0 and not NONSOLID[tile]
+  local value = occupied and 1 or 0
+  for _, enemy in ipairs(state.enemies) do
+    if not STOMPED[enemy.status]
+      and math.abs(enemy.x - (state.x + dx)) <= 8
+      and math.abs(enemy.y - (state.y + dy)) <= 8 then
+      value = -1
+      break
     end
   end
-  return selected,selected_time
+  return value
 end
 
-local function valuable_powerup(state)
-  for _,item in ipairs(state.items) do
-    if (item.type==0 and state.size==1) or (item.type==1 and state.power~=2) or item.type==2 or item.type==3 then
-      return item
+local function nearest_enemy(state)
+  local chosen, distance
+  for _, enemy in ipairs(state.enemies) do
+    if not STOMPED[enemy.status] then
+      local dx, dy = enemy.x - state.x, enemy.y - state.y
+      local d = math.abs(dx) + math.abs(dy) * 1.5
+      if d < 240 and (not distance or d < distance) then chosen, distance = enemy, d end
     end
   end
+  return chosen, distance
 end
 
-function Bot.new()
-  return {frame=0,last_x=nil,still=0,recovery=0,jump_left=0,jump_active=false,
-    phase_frames=0,last_reason="starting",last_decision=nil,failed={},
-    item_target=nil,item_frames=0,
-    abandoned_items={}}
-end
-
-local function no_input(reason)
-  return {reason=reason}
-end
-
-local function signature(state,t,enemy)
-  local e="none"
-  if enemy then e=tostring(enemy.id)..":"..math.floor(math.abs(enemy.x-state.x)/24) end
-  local gap=t.gap and math.floor(t.gap/16) or "clear"
-  local obstacle=t.obstacle and math.floor(t.obstacle/16) or "clear"
-  return table.concat({math.floor(state.x/16),math.floor(state.y/16),
-    state.player_state,gap,obstacle,e},"|")
-end
-
-local function simulate(state, candidate, horizon)
-  local x,y,vx,vy=state.x,state.y,state.vx,state.vy
-  local grounded=state.grounded
-  local result={x=x,y=y,risk=0,landed=false}
-  for frame=1,horizon do
-    local direction=(candidate.right and 1 or 0)-(candidate.left and 1 or 0)
-    local cap=candidate.B and 2.5 or 1.7
-    if direction~=0 then vx=clamp(vx+direction*0.14,-cap,cap)
-    else vx=vx*0.78 end
-    if frame==1 and candidate.hold and grounded then
-      vy=-5.4;grounded=false
-    end
-    x=x+vx
-    if grounded and solid_at(state,x+8,y+5)==false then
-      grounded=false;vy=0
-    end
-    if not grounded then
-      local gravity=frame<=(candidate.hold or 0) and 0.30 or 0.40
-      local old_y=y
-      vy=math.min(5,vy+gravity);y=y+vy
-      if vy>0 and solid_at(state,x+8,y+4)==true then
-        grounded=true;result.landed=true;vy=0
-        -- Approximate contact by the first supporting tile boundary.
-        y=math.floor((y+4)/16)*16-4
-      elseif y>state.y+42 then
-        local floor=solid_at(state,x+8,y+4)
-        if floor==false then result.risk=result.risk+100
-        elseif floor==nil then result.risk=result.risk+20 end
-      end
-      if y<old_y and solid_at(state,x+8,y-10)==true then result.risk=result.risk+80 end
-    elseif solid_at(state,x+8,y-10)==true then
-      result.risk=result.risk+45
-    end
-    for _,enemy in ipairs(state.enemies) do
-      if not STOMPED[enemy.status] then
-        local ex=enemy.x+enemy.vx*frame
-        local facing_enemy=(enemy.x<state.x and candidate.left) or
-          (enemy.x>state.x and candidate.right)
-        local shot_expected=candidate.fire and facing_enemy and frame>=5 and
-          math.abs(enemy.y-state.y)<24
-        if not shot_expected and math.abs(x-ex)<16 and math.abs(y-enemy.y)<20 then
-          local safe_stomp=candidate.hold and vy>0 and y<enemy.y-4
-          if not safe_stomp then result.risk=result.risk+65 end
-        end
-      end
+function Bot.inputs(state)
+  local input = {}
+  for dy=-RADIUS*16,RADIUS*16,16 do
+    for dx=-RADIUS*16,RADIUS*16,16 do
+      input[#input+1] = cell_value(state,dx,dy)
     end
   end
-  result.x,result.y,result.vx,result.vy=x,y,vx,vy
-  return result
-end
-
-local function action_candidates(state,t,enemy,item,bot,sig)
-  local candidates={{name="run",right=true,B=true}}
-  local gap_has_landing=not t.gap or t.landing~=nil
-  if t.grounded and not t.ceiling and gap_has_landing then
-    candidates[#candidates+1]={name="short_jump",right=true,B=true,hold=9}
-    candidates[#candidates+1]={name="long_jump",right=true,B=true,hold=22}
-    candidates[#candidates+1]={name="standing_jump",right=false,B=false,hold=18}
+  local enemy = nearest_enemy(state)
+  local dx, dy, evx, kind = 0, 0, 0, 0
+  if enemy then
+    dx = clamp((enemy.x-state.x)/128,-1,1)
+    dy = clamp((enemy.y-state.y)/96,-1,1)
+    evx = clamp(enemy.vx/4,-1,1)
+    kind = (enemy.id or 0)/51
   end
-  candidates[#candidates+1]={name="brake"}
-  if t.ground_behind==true then candidates[#candidates+1]={name="retreat",left=true,B=true} end
-  if state.power==2 and enemy then
-    candidates[#candidates+1]={name="fire_forward",right=true,B=true,fire=true}
-    if t.ground_behind==true then candidates[#candidates+1]={name="fire_backward",left=true,B=true,fire=true} end
-  end
+  input[#input+1] = clamp(state.vx/4,-1,1)
+  input[#input+1] = clamp(state.vy/8,-1,1)
+  input[#input+1] = state.grounded and 1 or -1
+  input[#input+1] = state.size == 1 and -1 or 1
+  input[#input+1] = state.power == 2 and 1 or (state.power == 1 and 0 or -1)
+  input[#input+1] = dx
+  input[#input+1] = dy
+  input[#input+1] = evx
+  input[#input+1] = kind
+  local item = state.items and state.items[1]
   if item then
-    local direction=item.x>=state.x and 1 or -1
-    candidates[#candidates+1]={name="seek_powerup",right=direction>0,left=direction<0,B=true,
-      objective_x=item.x,reward=item.type==2 and 80 or (item.type==0 and state.size==1 and 72 or 54)}
+    input[#input+1] = 1
+    input[#input+1] = clamp((item.x-state.x)/160,-1,1)
+    input[#input+1] = clamp((item.y-state.y)/96,-1,1)
+    input[#input+1] = clamp((item.type or 0)/3,-1,1)
+  else
+    input[#input+1],input[#input+2],input[#input+3],input[#input+4] = -1,0,0,0
   end
-  local selected,selected_score
-  for _,candidate in ipairs(candidates) do
-    local predicted=simulate(state,candidate,20)
-    local score=predicted.x-state.x-predicted.risk*3
-    if candidate.objective_x then
-      score=math.abs(candidate.objective_x-state.x)-math.abs(candidate.objective_x-predicted.x)
-        +candidate.reward-predicted.risk*3
+  input[#input+1] = forward_gap(state)
+  input[#input+1] = enemy~=nil and enemy.x>state.x and enemy.x-state.x<32 and 1 or 0
+  return input
+end
+
+local function sigmoid(value)
+  value = clamp(value,-60,60)
+  return 2/(1+math.exp(-4.9*value))-1
+end
+
+function Bot.evaluate(genome, input)
+  local values, incoming, nodes = {}, {}, {}
+  for i=1,FEATURE_INPUTS do values[i] = input[i] or 0 end
+  values[INPUTS] = 1
+  nodes[INPUTS] = true
+  for i=1,ACTIONS do nodes[MAX_NODES+i] = true end
+  for _, gene in ipairs(genome.genes) do
+    if gene.enabled then
+      incoming[gene.out] = incoming[gene.out] or {}
+      incoming[gene.out][#incoming[gene.out]+1] = gene
+      nodes[gene.into], nodes[gene.out] = true, true
     end
-    if enemy and candidate.fire then
-      score=score+math.max(0,42-math.abs(enemy.x-state.x))*0.55
-      if candidate.name=="fire_backward" and enemy.vx>state.vx and math.abs(enemy.x-state.x)<64 then
-        score=score+132-math.abs(enemy.x-state.x)*0.35
+  end
+  local order = {}
+  for id in pairs(nodes) do if id > INPUTS then order[#order+1] = id end end
+  table.sort(order)
+  for _, id in ipairs(order) do
+    local links = incoming[id]
+    if links then
+      local sum = 0
+      for _, gene in ipairs(links) do sum = sum + (values[gene.into] or 0)*gene.weight end
+      values[id] = sigmoid(sum)
+    end
+  end
+  local output = {}
+  for i=1,ACTIONS do output[i] = values[MAX_NODES+i] or 0 end
+  return output
+end
+
+local function fresh_genome()
+  return {genes={},fitness=0,adjustedFitness=0,maxneuron=INPUTS,
+    mutationRates={connections=0.8,link=1.0,bias=0.4,node=0.12,enable=0.2,disable=0.2,step=0.1}}
+end
+
+local function link_key(into, out) return tostring(into)..":"..tostring(out) end
+local function innovation(pool, into, out)
+  local key = link_key(into,out)
+  if not pool.innovations[key] then
+    pool.nextInnovation = pool.nextInnovation + 1
+    pool.innovations[key] = pool.nextInnovation
+  end
+  return pool.innovations[key]
+end
+
+local function new_gene(into, out, weight, id)
+  return {into=into,out=out,weight=weight,enabled=true,innovation=id}
+end
+
+local function contains_link(genome, into, out)
+  for _, gene in ipairs(genome.genes) do
+    if gene.into==into and gene.out==out then return true end
+  end
+  return false
+end
+
+local function random_node(genome, pool, input_only)
+  local candidates = {}
+  for i=1,INPUTS do candidates[#candidates+1]=i end
+  if not input_only then
+    for _, gene in ipairs(genome.genes) do
+      if gene.into > INPUTS and gene.into < MAX_NODES then candidates[#candidates+1]=gene.into end
+      if gene.out > INPUTS and gene.out < MAX_NODES then candidates[#candidates+1]=gene.out end
+    end
+  end
+  return candidates[math.random(#candidates)]
+end
+
+local function link_mutate(genome,pool,bias_only)
+  local into = bias_only and INPUTS or random_node(genome,pool,false)
+  local out = MAX_NODES + math.random(ACTIONS)
+  if not bias_only then
+    local hidden = {}
+    for _, gene in ipairs(genome.genes) do
+      if gene.into > INPUTS and gene.into < MAX_NODES then hidden[#hidden+1]=gene.into end
+      if gene.out > INPUTS and gene.out < MAX_NODES then hidden[#hidden+1]=gene.out end
+    end
+    if #hidden>0 and math.random(2)==1 then out=hidden[math.random(#hidden)] end
+  end
+  if into >= out or contains_link(genome,into,out) then return end
+  table.insert(genome.genes,new_gene(into,out,math.random()*4-2,innovation(pool,into,out)))
+end
+
+local function node_mutate(genome,pool)
+  local enabled = {}
+  for _, gene in ipairs(genome.genes) do if gene.enabled then enabled[#enabled+1]=gene end end
+  if #enabled==0 then return end
+  local old = enabled[math.random(#enabled)]
+  old.enabled=false
+  genome.maxneuron=math.max(genome.maxneuron,INPUTS)+1
+  if genome.maxneuron>=MAX_NODES then return end
+  local node=genome.maxneuron
+  table.insert(genome.genes,new_gene(old.into,node,1,innovation(pool,old.into,node)))
+  table.insert(genome.genes,new_gene(node,old.out,old.weight,innovation(pool,node,old.out)))
+end
+
+local function repeat_mutation(rate, callback)
+  while rate > 0 do
+    if math.random() < math.min(1,rate) then callback() end
+    rate = rate - 1
+  end
+end
+
+function Bot.mutate(genome,pool)
+  for name,rate in pairs(genome.mutationRates) do
+    if name~="step" then
+      genome.mutationRates[name] = rate * (math.random(2)==1 and 0.95 or 1.05263)
+    end
+  end
+  if math.random() < genome.mutationRates.connections then
+    for _, gene in ipairs(genome.genes) do
+      if math.random()<0.9 then gene.weight=gene.weight+(math.random()*2-1)*genome.mutationRates.step
+      else gene.weight=math.random()*4-2 end
+    end
+  end
+  repeat_mutation(genome.mutationRates.link,function() link_mutate(genome,pool,false) end)
+  repeat_mutation(genome.mutationRates.bias,function() link_mutate(genome,pool,true) end)
+  repeat_mutation(genome.mutationRates.node,function() node_mutate(genome,pool) end)
+  repeat_mutation(genome.mutationRates.enable,function()
+    local choices={}; for _,gene in ipairs(genome.genes) do if not gene.enabled then choices[#choices+1]=gene end end
+    if #choices>0 then choices[math.random(#choices)].enabled=true end
+  end)
+  repeat_mutation(genome.mutationRates.disable,function()
+    local choices={}; for _,gene in ipairs(genome.genes) do if gene.enabled then choices[#choices+1]=gene end end
+    if #choices>0 then choices[math.random(#choices)].enabled=false end
+  end)
+end
+
+local function copy_genome(genome)
+  local copy={genes={},fitness=genome.fitness or 0,adjustedFitness=0,
+    maxneuron=genome.maxneuron,mutationRates={}}
+  for key,value in pairs(genome.mutationRates) do copy.mutationRates[key]=value end
+  for _,gene in ipairs(genome.genes) do
+    copy.genes[#copy.genes+1]={into=gene.into,out=gene.out,weight=gene.weight,
+      enabled=gene.enabled,innovation=gene.innovation}
+  end
+  return copy
+end
+
+function Bot.newGenome(pool)
+  local genome=fresh_genome()
+  -- Sparse initial networks keep the first generation diverse and inexpensive.
+  for action=1,ACTIONS do
+    local into=math.random(INPUTS)
+    table.insert(genome.genes,new_gene(into,MAX_NODES+action,
+      (math.random()*2-1)*0.5,innovation(pool,into,MAX_NODES+action)))
+  end
+  return genome
+end
+
+local function seeded_genome(pool)
+  local genome=fresh_genome()
+  local enemy_dx=GRID_INPUTS+6
+  local item_dx=GRID_INPUTS+11
+  local gap=GRID_INPUTS+14
+  local contact=GRID_INPUTS+15
+  local function connect(into,action,weight)
+    table.insert(genome.genes,new_gene(into,MAX_NODES+action,weight,
+      innovation(pool,into,MAX_NODES+action)))
+  end
+  -- Start from sensible SMB1 play: run on clear ground, jump for an enemy or
+  -- pit, and turn back toward a visible reward. Evolution can change all links.
+  connect(INPUTS,1,0.55)
+  connect(INPUTS,2,-0.28)
+  connect(enemy_dx,2,3.4)
+  connect(gap,2,3.0)
+  connect(item_dx,3,-1.2)
+  connect(enemy_dx,3,-2.0)
+  connect(INPUTS,5,-0.2)
+  connect(contact,5,1.5)
+  return genome
+end
+
+local function genome_distance(a,b)
+  local by_id={}
+  for _,gene in ipairs(b.genes) do by_id[gene.innovation]=gene end
+  local matches,weight_diff,unmatched=0,0,0
+  for _,gene in ipairs(a.genes) do
+    local other=by_id[gene.innovation]
+    if other then matches=matches+1;weight_diff=weight_diff+math.abs(gene.weight-other.weight)
+    else unmatched=unmatched+1 end
+  end
+  unmatched=unmatched + math.max(0,#b.genes-matches)
+  local normalizer=math.max(1,#a.genes,#b.genes)
+  local weight=matches>0 and weight_diff/matches or 0
+  return 2*unmatched/normalizer + 0.4*weight
+end
+
+local function assign_species(pool)
+  local old=pool.species or {}
+  local species={}
+  for _,genome in ipairs(pool.genomes) do
+    local match
+    for _,group in ipairs(species) do
+      if genome_distance(genome,group.representative)<SPECIES_THRESHOLD then match=group;break end
+    end
+    if not match then
+      local prior
+      for _,group in ipairs(old) do
+        if genome_distance(genome,group.representative)<SPECIES_THRESHOLD then prior=group;break end
+      end
+      match={id=prior and prior.id or (#species+1),genomes={},topFitness=prior and prior.topFitness or 0,
+        staleness=prior and prior.staleness or 0,representative=copy_genome(genome)}
+      species[#species+1]=match
+    end
+    match.genomes[#match.genomes+1]=genome
+    genome.species=match.id
+  end
+  pool.species=species
+end
+
+function Bot.newPool(population)
+  local pool={generation=1,nextInnovation=ACTIONS,innovations={},genomes={},species={},
+    bestFitness=0,population=population or POPULATION}
+  for i=1,pool.population do
+    local genome
+    if i==1 then genome=seeded_genome(pool)
+    else genome=copy_genome(pool.genomes[1]);Bot.mutate(genome,pool) end
+    pool.genomes[#pool.genomes+1]=genome
+  end
+  assign_species(pool)
+  return pool
+end
+
+local function crossover(first,second)
+  if second.fitness>first.fitness then first,second=second,first end
+  local child=fresh_genome()
+  local other={};for _,gene in ipairs(second.genes) do other[gene.innovation]=gene end
+  for _,gene in ipairs(first.genes) do
+    local match=other[gene.innovation]
+    local picked=match and math.random(2)==1 and match or gene
+    local copy={into=picked.into,out=picked.out,weight=picked.weight,enabled=picked.enabled,innovation=picked.innovation}
+    if match and ((not gene.enabled) or (not match.enabled)) and math.random()<0.75 then copy.enabled=false end
+    child.genes[#child.genes+1]=copy
+  end
+  child.maxneuron=math.max(first.maxneuron,second.maxneuron)
+  for key,value in pairs(first.mutationRates) do child.mutationRates[key]=value end
+  return child
+end
+
+local function rank_species(pool)
+  table.sort(pool.genomes,function(a,b)return a.fitness>b.fitness end)
+  for rank,genome in ipairs(pool.genomes) do genome.globalRank=#pool.genomes-rank+1 end
+  local champion=pool.genomes[1]
+  pool.bestFitness=math.max(pool.bestFitness or 0,champion and champion.fitness or 0)
+  for _,group in ipairs(pool.species) do
+    table.sort(group.genomes,function(a,b)return a.fitness>b.fitness end)
+    local top=group.genomes[1] and group.genomes[1].fitness or 0
+    if top>group.topFitness then group.topFitness=top;group.staleness=0
+    else group.staleness=(group.staleness or 0)+1 end
+    local sum=0
+    for _,genome in ipairs(group.genomes) do
+      genome.adjustedFitness=genome.globalRank/math.max(1,#group.genomes)
+      sum=sum+genome.adjustedFitness
+    end
+    group.averageFitness=sum/math.max(1,#group.genomes)
+  end
+end
+
+local function choose_species(species)
+  local total=0
+  for _,group in ipairs(species) do total=total+math.max(0,group.averageFitness or 0) end
+  if total<=0 then return species[math.random(#species)] end
+  local point=math.random()*total
+  for _,group in ipairs(species) do
+    point=point-math.max(0,group.averageFitness or 0)
+    if point<=0 then return group end
+  end
+  return species[#species]
+end
+
+local function breed_child(group,pool)
+  local members=group.genomes
+  if #members==1 then
+    local child=copy_genome(members[1]);child.fitness=0;child.adjustedFitness=0;return child
+  end
+  local first=members[math.random(#members)]
+  local second=members[math.random(#members)]
+  local child=math.random()<0.75 and crossover(first,second) or copy_genome(first)
+  child.fitness,child.adjustedFitness=0,0
+  Bot.mutate(child,pool)
+  return child
+end
+
+function Bot.nextGeneration(pool)
+  rank_species(pool)
+  local champion=pool.genomes[1]
+  local kept={}
+  for _,group in ipairs(pool.species) do
+    if group.staleness<STALE_SPECIES or group.genomes[1]==champion then
+      local keep=math.max(1,math.ceil(#group.genomes/2))
+      for i=#group.genomes,keep+1,-1 do group.genomes[i]=nil end
+      kept[#kept+1]=group
+    end
+  end
+  if #kept==0 then kept={{id=1,genomes={champion},topFitness=champion.fitness,staleness=0,representative=copy_genome(champion),averageFitness=1}} end
+  local next_pool={generation=pool.generation+1,nextInnovation=pool.nextInnovation,
+    innovations=pool.innovations,species=kept,genomes={copy_genome(champion)},
+    bestFitness=pool.bestFitness,population=pool.population}
+  local target=pool.population or POPULATION
+  while #next_pool.genomes<target do
+    local group=choose_species(kept)
+    next_pool.genomes[#next_pool.genomes+1]=breed_child(group,next_pool)
+  end
+  assign_species(next_pool)
+  return next_pool
+end
+
+local function path_for_database()
+  local source=debug and debug.getinfo and debug.getinfo(1,"S").source or ""
+  if source:sub(1,1)=="@" then
+    local script=source:sub(2)
+    local folder=script:match("^(.*[/\\])") or ""
+    return folder.."mario_ai_heaven_neat.db"
+  end
+  return "mario_ai_heaven_neat.db"
+end
+
+function Bot.save(pool,path)
+  path=path or path_for_database()
+  local temporary=path..".tmp"
+  local file=io and io.open and io.open(temporary,"w")
+  if not file then return false end
+  safe_write(file,table.concat({"MARIO_AI_NEAT_V1",pool.generation,pool.nextInnovation,
+    pool.bestFitness or 0,pool.population or #pool.genomes,#pool.genomes},","))
+  for i,genome in ipairs(pool.genomes) do
+    safe_write(file,table.concat({"G",i,genome.fitness or 0,genome.maxneuron or INPUTS,genome.species or 0},","))
+    for key,value in pairs(genome.mutationRates) do safe_write(file,table.concat({"R",i,key,value},",")) end
+    for _,gene in ipairs(genome.genes) do
+      safe_write(file,table.concat({"N",i,gene.into,gene.out,string.format("%.17g",gene.weight),
+        gene.enabled and 1 or 0,gene.innovation},","))
+    end
+  end
+  file:close()
+  local ok=os and os.rename and os.rename(temporary,path)
+  if not ok then
+    local input=io.open(temporary,"r");local output=io.open(path,"w")
+    if not input or not output then if input then input:close() end;if output then output:close() end;return false end
+    output:write(input:read("*a"));input:close();output:close();os.remove(temporary)
+  end
+  return true
+end
+
+function Bot.load(path)
+  path=path or path_for_database()
+  if not io or not io.open then return nil end
+  local file=io.open(path,"r");if not file then return nil end
+  local header=file:read("*l") or ""
+  local generation,innovation_id,best,population,count=header:match("^MARIO_AI_NEAT_V1,(%d+),([%d%.]+),([%d%.%-]+),(%d+),(%d+)$")
+  if not generation then file:close();return nil end
+  local pool={generation=tonumber(generation),nextInnovation=tonumber(innovation_id),
+    bestFitness=tonumber(best),population=tonumber(population),genomes={},species={},innovations={}}
+  for i=1,tonumber(count) do pool.genomes[i]=fresh_genome() end
+  for i=1,tonumber(count) do pool.genomes[i].fitness=0 end
+  for line in file:lines() do
+    local fields={}
+    for field in (line..","):gmatch("(.-),") do fields[#fields+1]=field end
+    if fields[1]=="G" then
+      local index=tonumber(fields[2]);if pool.genomes[index] then
+        pool.genomes[index].fitness=tonumber(fields[3]) or 0
+        pool.genomes[index].maxneuron=tonumber(fields[4]) or INPUTS
+        pool.genomes[index].species=tonumber(fields[5]) or 0
+      end
+    elseif fields[1]=="R" then
+      local index=tonumber(fields[2]);if pool.genomes[index] then
+        pool.genomes[index].mutationRates[fields[3]]=tonumber(fields[4]) or 0
+      end
+    elseif fields[1]=="N" then
+      local index=tonumber(fields[2]);if pool.genomes[index] then
+        local gene={into=tonumber(fields[3]),out=tonumber(fields[4]),weight=tonumber(fields[5]),
+          enabled=tonumber(fields[6])==1,innovation=tonumber(fields[7])}
+        pool.genomes[index].genes[#pool.genomes[index].genes+1]=gene
+        pool.innovations[link_key(gene.into,gene.out)]=gene.innovation
       end
     end
-    if t.gap and t.gap<56 and not candidate.hold and candidate.name~="retreat" then score=score-75 end
-    if t.gap and t.gap<56 and candidate.hold and not t.landing then score=score-80 end
-    if t.obstacle and t.obstacle<44 and candidate.hold then score=score+18 end
-    if enemy and enemy.x>state.x and candidate.hold and not STOMPED[enemy.status] then score=score+14 end
-    if candidate.name=="short_jump" or candidate.name=="long_jump" or candidate.name=="standing_jump" then
-      if not t.gap and not t.obstacle and not (enemy and enemy.x>state.x) then score=score-7 end
+  end
+  file:close()
+  assign_species(pool)
+  return pool
+end
+
+local function closest_threat(state)
+  local enemy,distance
+  for _,item in ipairs(state.enemies) do
+    local dx=item.x-state.x
+    local dy=math.abs(item.y-state.y)
+    if not STOMPED[item.status] and dy<72 and dx>-32 and dx<144 then
+      local d=math.abs(dx)+dy
+      if not distance or d<distance then enemy,distance=item,d end
     end
-    local failed=bot.failed[sig] and bot.failed[sig][candidate.name] or 0
-    score=score-failed*90
-    if predicted.risk>=60 then score=-math.huge end
-    if not selected_score or score>selected_score then selected,selected_score=candidate,score end
   end
-  if not selected or selected_score==-math.huge then
-    return {name="no_safe_action",reason="no safe predicted action"},selected_score
+  return enemy
+end
+
+local function allowed_actions(state,enemy)
+  local allowed={}
+  if enemy then
+    local dx=enemy.x-state.x
+    if dx>0 and dx<112 then
+      -- Preserve the original bot's stomp response for ground enemies. Close
+      -- contact and non-stompable enemies remove forward motion from the policy.
+      allowed[3],allowed[4]=true,true
+      if not NON_STOMPABLE[enemy.id] and dx>=28 then
+        allowed[2]=true
+        if state.grounded then allowed[5]=true end
+      elseif state.grounded then
+        allowed[5]=true
+      end
+      if state.power==2 and dx>36 and dx>=28 then allowed[1]=true end
+      return allowed
+    elseif dx<=0 and dx>-32 then
+      allowed[1],allowed[2],allowed[3],allowed[4],allowed[5]=true,true,true,true,true
+      return allowed
+    end
   end
-  selected.reason=selected.name
-  return selected,selected_score
+  for i=1,ACTIONS do allowed[i]=true end
+  return allowed
+end
+
+local function choose_action(genome,state)
+  local enemy=closest_threat(state)
+  local allowed=allowed_actions(state,enemy)
+  local outputs=Bot.evaluate(genome,Bot.inputs(state))
+  if state.power==2 and enemy and enemy.x-state.x>36 then outputs[1]=outputs[1]+0.3 end
+  local selected,score
+  for i=1,ACTIONS do
+    if allowed[i] and (not score or outputs[i]>score) then selected,score=i,outputs[i] end
+  end
+  return ACTIONS_MAP[selected or 4],selected or 4,enemy,outputs
+end
+
+function Bot.new(pool)
+  return {pool=pool or Bot.newPool(),genomeIndex=1,episodeFrames=0,
+    startX=nil,maxX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
+    lastAction=nil,frames=0,finished=false}
+end
+
+function Bot.beginEpisode(bot,state)
+  bot.episodeFrames=0;bot.episodeReward=0;bot.startX=state.x;bot.maxX=state.x
+  bot.lastProgressFrame=0;bot.finished=false
+  bot.bestForm=state.power==2 and 2 or (state.size==1 and 0 or 1)
 end
 
 function Bot.decide(bot,state)
-  bot.frame=state.frame
+  bot.frames=bot.frames+1
   if state.phase~="playing" then
-    bot.phase_frames=bot.phase_frames+1
-    bot.jump_left=0;bot.jump_active=false
-    if state.phase=="title" and state.frame%90==1 then return {start=true,reason="start game"} end
-    return no_input(state.phase)
+    if state.phase=="title" and state.frame%90==1 then return {start=true,name="start",reason="start game"} end
+    return {reason=state.phase}
   end
-  bot.phase_frames=0
-  local t=terrain(state);state.grounded=t.grounded
-  local enemy=nearest_threat(state)
-  local item=valuable_powerup(state)
-  if item then
-    local key=tostring(item.type)..":"..math.floor(item.x/16)
-    if bot.item_target~=key then bot.item_target=key;bot.item_frames=0 end
-    bot.item_frames=bot.item_frames+1
-    if bot.item_frames>90 then bot.abandoned_items[key]=true;item=nil end
-    if bot.abandoned_items[key] then item=nil end
-  else
-    bot.item_target=nil;bot.item_frames=0
-  end
-  local sig=signature(state,t,enemy)
-  local action=action_candidates(state,t,enemy,item,bot,sig)
-
-  -- A no-progress action is remembered for this local state. The next visit
-  -- scores different actions higher instead of replaying the failed output.
-  if bot.last_x and math.abs(state.x-bot.last_x)<1 and t.grounded then bot.still=bot.still+1
-  elseif bot.last_x and state.x>bot.last_x+3 then
-    bot.still=0;bot.recovery=0
-  else bot.still=math.max(0,bot.still-1) end
-  bot.last_x=state.x
-  if bot.still>=42 then
-    bot.recovery=bot.recovery+1
-    local failed=bot.failed[sig] or {}
-    local failed_name=bot.last_decision or "run"
-    failed[failed_name]=(failed[failed_name] or 0)+1
-    bot.failed[sig]=failed
-    bot.still=0;bot.jump_left=0;bot.jump_active=false
-    -- Re-evaluate after recording the failure so the next output differs.
-    action=action_candidates(state,t,enemy,item,bot,sig)
-  end
-  if action.hold and t.grounded and bot.jump_left==0 and not bot.jump_active then
-    bot.jump_left=clamp(action.hold,4,26);bot.jump_active=true
-  end
-  if bot.jump_left>0 then action.A=true;bot.jump_left=bot.jump_left-1
-  else bot.jump_active=false;action.A=nil end
-  action.reason=(bot.recovery>0 and "recovery "..bot.recovery..": " or "")..tostring(action.reason or "run")
-  bot.last_reason=action.reason
-  bot.last_decision=action.name
+  if bot.startX==nil then Bot.beginEpisode(bot,state) end
+  bot.episodeFrames=bot.episodeFrames+1
+  if state.x>bot.maxX then bot.maxX=state.x;bot.lastProgressFrame=bot.episodeFrames end
+  bot.bestForm=math.max(bot.bestForm or 0,state.power==2 and 2 or (state.size==1 and 0 or 1))
+  local genome=bot.pool.genomes[bot.genomeIndex]
+  local action,index,enemy=choose_action(genome,state)
+  action.name=ACTIONS_MAP[index].name
+  action.reason=enemy and ("learned "..action.name.." | threat "..enemy.name)
+    or ("learned "..action.name)
+  bot.lastAction=index
   return action
 end
 
+function Bot.finishEpisode(bot,state,forced_reason)
+  local genome=bot.pool.genomes[bot.genomeIndex]
+  local progress=math.max(0,(bot.maxX or state.x)-(bot.startX or state.x))
+  local survival=math.min(bot.episodeFrames,12000)*0.02
+  local power=(bot.bestForm or 0)*150
+  local fitness=progress*10+survival+power+math.max(0,bot.episodeReward)
+  if state and state.phase=="death" then fitness=fitness-120
+  elseif state and state.phase=="victory" then fitness=fitness+10000 end
+  if forced_reason=="stuck" then fitness=fitness-20 end
+  if forced_reason=="timeout" then fitness=fitness-80 end
+  genome.fitness=fitness
+  bot.totalEpisodes=bot.totalEpisodes+1
+  bot.genomeIndex=bot.genomeIndex+1
+  bot.startX=nil
+  if bot.genomeIndex>#bot.pool.genomes then
+    bot.pool=Bot.nextGeneration(bot.pool)
+    bot.genomeIndex=1
+  end
+  bot.finished=true
+  return fitness
+end
+
 function Bot.run()
-  assert(memory and memory.readbyte and joypad and joypad.set and emu and emu.frameadvance,
+  assert(memory and memory.readbyte and joypad and joypad.set and emu and emu.frameadvance
+    and emu.registerexit and savestate and savestate.create and savestate.save
+    and savestate.load and savestate.persist,
     "Load Mario AI Heaven in FCEUX with an NES SMB1 ROM open")
-  local bot=Bot.new()
+  math.randomseed(os.time())
+  local db=path_for_database()
+  local loaded=Bot.load(db)
+  local bot=Bot.new(loaded or Bot.newPool())
+  if not loaded then bot.databaseOK=Bot.save(bot.pool,db) end
+  emu.registerexit(function() bot.databaseOK=Bot.save(bot.pool,db) end)
+  local start_state=savestate.create()
+  if savestate.persist then savestate.persist(start_state) end
+  local saved_start=false
+  local last_save=0
   while true do
-    local state=Bot.observe(bot.frame+1)
-    local action=Bot.decide(bot,state)
-    local buttons={}
-    for _,name in ipairs({"left","right","up","down","A","B","start","select"}) do
-      if action[name] then buttons[name]=true end
+    local state=Bot.observe(bot.frames+1)
+    if state.phase=="playing" and not saved_start then
+      savestate.save(start_state)
+      saved_start=true
+      bot.baseline={x=state.x,power=state.power,size=state.size}
+      Bot.beginEpisode(bot,state)
     end
-    joypad.set(1,buttons)
-    if gui and gui.text then
-      gui.text(8,8,"MARIO AI HEAVEN | "..tostring(action.reason or "idle"),"white","black")
-      local enemy=nearest_threat(state)
-      gui.text(8,18,string.format("x:%d enemy:%s recovery:%d",state.x,
-        (enemy and enemy.name) or "none",bot.recovery),"white","black")
+    if saved_start and state.phase=="playing" then
+      local action=Bot.decide(bot,state)
+      local buttons={}
+      for _,name in ipairs({"left","right","up","down","A","B","start","select"}) do
+        if action[name] then buttons[name]=true end
+      end
+      joypad.set(1,buttons)
+      if gui and gui.text then
+        local gen=bot.pool.generation
+        gui.text(8,8,string.format("MARIO AI HEAVEN | NEAT gen %d / genome %d of %d",gen,
+          bot.genomeIndex,#bot.pool.genomes),"white","black")
+        gui.text(8,18,tostring(action.reason or "learning"),"white","black")
+        gui.text(8,28,string.format("best x:%d | episodes:%d",bot.maxX or state.x,bot.totalEpisodes),"white","black")
+        gui.text(8,38,"population database: "..(bot.databaseOK==false and "save failed" or "active"),"white","black")
+      end
+      if bot.episodeFrames>=12000 or bot.episodeFrames-bot.lastProgressFrame>600 then
+        Bot.finishEpisode(bot,state,bot.episodeFrames>=12000 and "timeout" or "stuck")
+        bot.databaseOK=Bot.save(bot.pool,db)
+        savestate.load(start_state)
+        Bot.beginEpisode(bot,bot.baseline)
+      end
+    elseif saved_start and (state.phase=="death" or state.phase=="victory") then
+      Bot.finishEpisode(bot,state)
+      bot.databaseOK=Bot.save(bot.pool,db)
+      joypad.set(1,{})
+      savestate.load(start_state)
+      Bot.beginEpisode(bot,bot.baseline)
+    else
+      local action=Bot.decide(bot,state)
+      local buttons={};if action.start then buttons.start=true end
+      joypad.set(1,buttons)
+    end
+    if bot.frames-last_save>=SAVE_EVERY_FRAMES then
+      bot.databaseOK=Bot.save(bot.pool,db);last_save=bot.frames
     end
     emu.frameadvance()
   end
