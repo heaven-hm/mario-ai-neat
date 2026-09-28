@@ -20,15 +20,17 @@ A learning bot for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads th
 
 The bot never creates, loads, persists, or restores FCEUX savestates. This avoids a crash in the Homebrew Apple Silicon FCEUX build where `savestate.persist()` faults natively. It interacts with SMB1 through controller inputs only. Training segments can begin at different game positions, so compare results across longer sessions rather than treating individual genome scores as directly equivalent.
 
-## Testing timer
+## Testing aids
 
-The current testing build refreshes the SMB1 timer to `999` while gameplay is active. It writes only the three timer digits at `0x07F8..0x07FA`; Mario movement, collision, health, position, and physics remain game-controlled. Before a real timed evaluation, change `local TESTING_FREEZE_TIMER = true` near the top of `mario_ai_heaven.lua` to `false`.
+The current testing build refreshes the SMB1 timer to `999` while gameplay is active and refreshes the lives byte at `0x075A` to `9`. This prevents a training run from reaching Game Over, while SMB1 still performs every normal death and respawn. The bot never presses Start automatically; begin a game manually in FCEUX. Before a real evaluation, change `TESTING_FREEZE_TIMER` and `TESTING_INFINITE_LIVES` near the top of `mario_ai_heaven.lua` to `false`.
 
 ## What it senses and learns
 
 The bot uses the SMB1 positions and tile data from the legacy script and MarI/O's SMB1 sensor layout: a nearby tile/enemy grid plus Mario movement and power state. The neural network scores controller actions. A safety filter removes forward-only actions when an unpowered Mario is close to an enemy, while preserving learned choices such as jumping, braking, and retreating. The original bot's jump-over-ground-enemies and fire-as-Fire-Mario behaviors inform that filter.
 
 Each attempt earns fitness for furthest forward progress and survival, with a large bonus for reaching the flag. Completed generations retain a champion, group related genomes into species, select fitter parents, cross over matching genes, and mutate connections and weights. This is evolutionary reinforcement learning: the learned population persists in the database and is evaluated during real SMB1 play sessions.
+
+The FCEUX overlay shows the active generation, genome, species, current lesson, chosen action, observed threat or gap, progress, and database status. It does not show testing-aid settings.
 
 The implementation is inspired by the MarI/O approach, but does not redistribute its code. The supplied MarI/O gist says its code may be used but should not be redistributed. This project implements its own NEAT-style trainer and adapts the sensor/runtime to FCEUX SMB1.
 
