@@ -73,9 +73,9 @@ function Bot.observe(frame)
 end
 
 
--- The policy learns with NEAT-style neuroevolution. Each genome controls one
--- episode from the same FCEUX savestate; episode fitness selects parents for
--- the next generation. No game RAM is written by the bot.
+-- The policy learns with NEAT-style neuroevolution. Each genome controls a
+-- real SMB1 play segment; episode fitness selects parents for the next
+-- generation. No game RAM is written by the bot or restored by the bot.
 local RADIUS = 6
 local GRID_WIDTH = RADIUS * 2 + 1
 local GRID_INPUTS = GRID_WIDTH * GRID_WIDTH
@@ -520,6 +520,28 @@ local function path_for_database()
   return "mario_ai_heaven_neat.db"
 end
 
+local function path_for_log()
+  local source=debug and debug.getinfo and debug.getinfo(1,"S").source or ""
+  if source:sub(1,1)=="@" then
+    local script=source:sub(2)
+    local folder=script:match("^(.*[/\\])") or ""
+    return folder.."mario_ai_heaven.log"
+  end
+  return "mario_ai_heaven.log"
+end
+
+function Bot.appendLog(message,path)
+  path=path or path_for_log()
+  if not io or not io.open then return false end
+  local file=io.open(path,"a")
+  if not file then return false end
+  local stamp=os and os.date and os.date("%Y-%m-%d %H:%M:%S") or "time-unknown"
+  file:write("[",stamp,"] ",tostring(message),"\n")
+  file:flush()
+  file:close()
+  return true
+end
+
 function Bot.save(pool,path)
   path=path or path_for_database()
   local temporary=path..".tmp"
@@ -636,19 +658,22 @@ end
 function Bot.new(pool)
   return {pool=pool or Bot.newPool(),genomeIndex=1,episodeFrames=0,
     startX=nil,maxX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
-    lastAction=nil,frames=0,finished=false}
+    lastAction=nil,frames=0,finished=false,episodeActive=false}
 end
 
 function Bot.beginEpisode(bot,state)
   bot.episodeFrames=0;bot.episodeReward=0;bot.startX=state.x;bot.maxX=state.x
   bot.lastProgressFrame=0;bot.finished=false
+  bot.episodeActive=true
   bot.bestForm=state.power==2 and 2 or (state.size==1 and 0 or 1)
 end
 
 function Bot.decide(bot,state)
   bot.frames=bot.frames+1
   if state.phase~="playing" then
-    if state.phase=="title" and state.frame%90==1 then return {start=true,name="start",reason="start game"} end
+    if (state.phase=="title" or state.phase=="death") and state.frame%90==1 then
+      return {start=true,name="start",reason="start or retry"}
+    end
     return {reason=state.phase}
   end
   if bot.startX==nil then Bot.beginEpisode(bot,state) end
@@ -665,6 +690,7 @@ function Bot.decide(bot,state)
 end
 
 function Bot.finishEpisode(bot,state,forced_reason)
+  if not bot.episodeActive then return nil end
   local genome=bot.pool.genomes[bot.genomeIndex]
   local progress=math.max(0,(bot.maxX or state.x)-(bot.startX or state.x))
   local survival=math.min(bot.episodeFrames,12000)*0.02
@@ -678,6 +704,7 @@ function Bot.finishEpisode(bot,state,forced_reason)
   bot.totalEpisodes=bot.totalEpisodes+1
   bot.genomeIndex=bot.genomeIndex+1
   bot.startX=nil
+  bot.episodeActive=false
   if bot.genomeIndex>#bot.pool.genomes then
     bot.pool=Bot.nextGeneration(bot.pool)
     bot.genomeIndex=1
@@ -688,28 +715,34 @@ end
 
 function Bot.run()
   assert(memory and memory.readbyte and joypad and joypad.set and emu and emu.frameadvance
-    and emu.registerexit and savestate and savestate.create and savestate.save
-    and savestate.load and savestate.persist,
+    and emu.registerexit,
     "Load Mario AI Heaven in FCEUX with an NES SMB1 ROM open")
   math.randomseed(os.time())
   local db=path_for_database()
   local loaded=Bot.load(db)
   local bot=Bot.new(loaded or Bot.newPool())
-  if not loaded then bot.databaseOK=Bot.save(bot.pool,db) end
-  emu.registerexit(function() bot.databaseOK=Bot.save(bot.pool,db) end)
-  local start_state=savestate.create()
-  if savestate.persist then savestate.persist(start_state) end
-  local saved_start=false
+  local log_path=path_for_log()
+  local function save_pool(context)
+    bot.databaseOK=Bot.save(bot.pool,db)
+    if not bot.databaseOK then Bot.appendLog("database save failed: "..context,log_path) end
+    return bot.databaseOK
+  end
+  Bot.appendLog(string.format("started | database=%s | generation=%d | population=%d | no savestate API",
+    loaded and "loaded" or "new",bot.pool.generation,#bot.pool.genomes),log_path)
+  if not loaded then save_pool("initial population") end
+  emu.registerexit(function()
+    save_pool("FCEUX exit")
+    Bot.appendLog("stopped | episodes="..bot.totalEpisodes.." | generation="..bot.pool.generation,log_path)
+  end)
   local last_save=0
   while true do
     local state=Bot.observe(bot.frames+1)
-    if state.phase=="playing" and not saved_start then
-      savestate.save(start_state)
-      saved_start=true
-      bot.baseline={x=state.x,power=state.power,size=state.size}
+    if state.phase=="playing" and not bot.episodeActive then
       Bot.beginEpisode(bot,state)
+      Bot.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
+        bot.pool.generation,bot.genomeIndex,#bot.pool.genomes,state.x,state.power),log_path)
     end
-    if saved_start and state.phase=="playing" then
+    if state.phase=="playing" then
       local action=Bot.decide(bot,state)
       local buttons={}
       for _,name in ipairs({"left","right","up","down","A","B","start","select"}) do
@@ -725,24 +758,25 @@ function Bot.run()
         gui.text(8,38,"population database: "..(bot.databaseOK==false and "save failed" or "active"),"white","black")
       end
       if bot.episodeFrames>=12000 or bot.episodeFrames-bot.lastProgressFrame>600 then
-        Bot.finishEpisode(bot,state,bot.episodeFrames>=12000 and "timeout" or "stuck")
-        bot.databaseOK=Bot.save(bot.pool,db)
-        savestate.load(start_state)
-        Bot.beginEpisode(bot,bot.baseline)
+        local reason=bot.episodeFrames>=12000 and "timeout" or "stuck"
+        local fitness=Bot.finishEpisode(bot,state,reason)
+        Bot.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",
+          reason,fitness or 0,bot.maxX or state.x,bot.episodeFrames),log_path)
+        save_pool("episode "..reason)
       end
-    elseif saved_start and (state.phase=="death" or state.phase=="victory") then
-      Bot.finishEpisode(bot,state)
-      bot.databaseOK=Bot.save(bot.pool,db)
+    elseif (state.phase=="death" or state.phase=="victory") and bot.episodeActive then
+      local fitness=Bot.finishEpisode(bot,state)
+      Bot.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",
+        state.phase,fitness or 0,bot.maxX or state.x,bot.episodeFrames),log_path)
+      save_pool("episode "..state.phase)
       joypad.set(1,{})
-      savestate.load(start_state)
-      Bot.beginEpisode(bot,bot.baseline)
     else
       local action=Bot.decide(bot,state)
       local buttons={};if action.start then buttons.start=true end
       joypad.set(1,buttons)
     end
     if bot.frames-last_save>=SAVE_EVERY_FRAMES then
-      bot.databaseOK=Bot.save(bot.pool,db);last_save=bot.frames
+      save_pool("periodic checkpoint");last_save=bot.frames
     end
     emu.frameadvance()
   end

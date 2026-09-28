@@ -11,12 +11,9 @@ memory={
 }
 joypad={set=function(player,buttons) assert(player==1);inputs=inputs+1 end}
 gui={text=function() end}
-local fake_state={}
+local persist_calls=0
 savestate={
-  create=function() return fake_state end,
-  persist=function(state) assert(state==fake_state) end,
-  save=function(state) assert(state==fake_state);state.saved=true end,
-  load=function(state) assert(state==fake_state and state.saved) end,
+  persist=function() persist_calls=persist_calls+1 end,
 }
 emu={frameadvance=function()
   frames=frames+1
@@ -26,9 +23,11 @@ local ok,err=pcall(dofile,"mario_ai_heaven.lua")
 assert(not ok and tostring(err):find("normal test stop",1,true),tostring(err))
 assert(frames==20 and inputs==20,"one input and one advance per AI decision")
 assert(writes==0,"game RAM must never be changed")
+assert(persist_calls==0,"the bot must not call FCEUX savestate.persist")
 assert(type(exit_callback)=="function","stopping FCEUX registers a final database save")
 exit_callback()
 local db=io.open("mario_ai_heaven_neat.db","r")
 assert(db~=nil,"final FCEUX exit saves the evolved population")
 db:close();os.remove("mario_ai_heaven_neat.db")
+os.remove("mario_ai_heaven.log")
 print("FCEUX loop smoke test passed")

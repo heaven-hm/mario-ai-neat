@@ -90,4 +90,10 @@ test("fitness selection creates a full mutated next generation",
 test("best-scoring genome survives into the next generation",next_pool.genomes[1].fitness==100)
 os.remove(save_path)
 
+local log_path=os.tmpname()
+test("runtime log appends and flushes episode diagnostics",Bot.appendLog("test event",log_path)==true)
+local log_file=io.open(log_path,"r")
+local log_text=log_file:read("*a");log_file:close();os.remove(log_path)
+test("runtime log includes its event text",log_text:find("test event",1,true)~=nil)
+
 print(string.format("%d NEAT behavior checks passed",checks))
