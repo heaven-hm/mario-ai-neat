@@ -1,6 +1,6 @@
 # Mario AI NEAT
 
-A learning AI for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads the SMB1 RAM layout, observes nearby tiles and enemies, and evolves a neural-network controller across repeated play attempts. Other games and emulators are outside the target.
+A learning AI for **Super Mario Bros. 1 on NES, running only in FCEUX**. It reads the SMB1 RAM layout, observes nearby tiles and enemies, and evolves a neural-network controller across repeated play attempts. It is based on the MarI/O project and NEAT approach described below, adapted specifically for SMB1 and FCEUX. Super Mario World, other games, and other emulators are outside this project's scope.
 
 ![Mario AI NEAT training in FCEUX](docs/images/mario-ai-neat-training.png)
 
@@ -94,6 +94,54 @@ The implementation includes the main NEAT mechanisms:
 - **Elitism:** the strongest genome is copied unchanged into the next generation.
 - **Seeded prior:** generation one begins with a small useful bias toward running and jumping for enemies or gaps; evolution may replace all of it.
 
+### What a genome represents
+
+A genome is one candidate controller. Its **nodes** are neural-network inputs, optional hidden neurons, and action outputs. Its **genes** are the weighted connections between those nodes. The 185 observations and six action scores stay fixed; evolution changes the connections, their weights, and sometimes the number of hidden nodes.
+
+```mermaid
+flowchart LR
+    Obs["SMB1 observations<br/>185 input values"] --> Inputs["Input nodes<br/>tile grid + Mario state"]
+    Inputs -->|"connection gene"| Hidden["Hidden nodes<br/>zero or more; topology evolves"]
+    Hidden -->|"connection gene"| Actions["6 action outputs<br/>run · jump · retreat<br/>brake · jump in place · walk"]
+    Inputs -->|"connection gene"| Actions
+```
+
+Each connection gene stores its source node, target node, weight, enabled state, and innovation ID. The innovation ID is the historical label used to recognize corresponding connections during species comparison and crossover.
+
+### How topology grows
+
+An add-node mutation splits an existing connection. The old connection is disabled, a hidden node is inserted, and two new connection genes are created. This lets evolution add complexity gradually while preserving a path for the signal through the network.
+
+```mermaid
+flowchart LR
+    subgraph Before["Before: one connection"]
+        SourceA["Input"] -->|"weight 0.7 · innovation 42"| ActionA["Action output"]
+    end
+    subgraph After["After: add-node mutation"]
+        SourceB["Input"] -->|"new gene · weight 1.0"| HiddenB["New hidden node"]
+        HiddenB -->|"new gene · weight 0.7"| ActionB["Action output"]
+    end
+    Before -. "split connection" .-> After
+```
+
+### How parents produce a new genome
+
+After every genome has played an episode, the trainer ranks results and groups similar genomes into species. Parents are selected within species. Matching innovation IDs identify corresponding genes; a child can inherit either parent's version of a matching gene. Unmatched genes come from the fitter parent, then mutation can change weights or topology.
+
+```mermaid
+flowchart TD
+    Fitter["Fitter parent<br/>genes 4, 7, 9"] --> Align["Align connections<br/>by innovation ID"]
+    Other["Other parent<br/>genes 4, 8, 9"] --> Align
+    Align --> Match["Matching genes 4 and 9<br/>inherit from either parent"]
+    Align --> Unique["Unmatched gene 7<br/>keep from fitter parent"]
+    Match --> Child["Child genome"]
+    Unique --> Child
+    Child --> Mutate["Mutate weights and topology"]
+    Mutate --> Evaluate["Evaluate in SMB1"]
+```
+
+In this illustration, gene 8 is unique to the less-fit parent, so it is not copied. Species protect different network structures while they are being evaluated; fitness sharing and champion preservation help balance exploration with retaining the strongest result.
+
 ### Why the project says “NEAT-style”
 
 It implements NEAT's defining ideas—historical innovation numbers, topology growth, speciation, crossover, mutation, fitness sharing, and champion preservation—but it is specialized for SMB1 rather than a byte-for-byte copy of the original NEAT paper. Its six outputs select complete controller actions, the first genome has an SMB1 movement prior, fitness uses game progress and survival, and a deterministic safety layer rejects immediately dangerous actions. These choices make the learner practical inside FCEUX while keeping the neural policy and its topology trainable through evolution.
@@ -108,9 +156,18 @@ It implements NEAT's defining ideas—historical innovation numbers, topology gr
 
 ### Resume or restart training
 
-`mario_ai_neat.db` is the learner's checkpoint. To resume, keep that file in the same directory as `mario_ai_neat.lua`, leave `PLAY_CHAMPION_ONLY = false`, open the same SMB1 ROM in FCEUX, and load the Lua script again. The AI loads the saved generation, genomes, mutation rates, connection weights, innovation IDs, and fitness values before starting the next episode. Stopping FCEUX is safe because the script saves after episodes, at periodic checkpoints, and during the exit callback.
+`mario_ai_neat.db` is the included learning checkpoint. It contains the saved NEAT population, including its generation, genomes, mutation rates, connection weights, innovation IDs, and fitness values. The database is a plain-text file tracked in this repository; `.gitignore` explicitly allows this file while ignoring other local databases.
 
-The repository includes a small, valid starter database so the script can be run immediately. It is an untrained population checkpoint, not a claim of a mature model. Copy the database before experiments if you want a backup. To start over, stop FCEUX, remove `mario_ai_neat.db`, and load the script; a fresh 300-genome population is created automatically. To preserve a trained model, copy the database to a dated backup and restore it beside the script before launching FCEUX.
+### Load the included database in FCEUX
+
+1. Keep `mario_ai_neat.lua` and `mario_ai_neat.db` together in the same folder. The repository already places them together; if you copy the Lua script elsewhere, copy the database beside it too.
+2. Open the compatible Super Mario Bros. 1 ROM in FCEUX.
+3. Use FCEUX's Lua script menu to load `mario_ai_neat.lua`. Do not load the `.db` file as a Lua script or through a separate database-import menu.
+4. The script automatically looks for `mario_ai_neat.db` beside its own Lua file, loads the saved population, and logs the loaded generation/population. Keep `PLAY_CHAMPION_ONLY = false` to continue training from that population.
+
+The script loads and saves the exact filename `mario_ai_neat.db`; it does not automatically discover `mario_ai_heaven_neat.db` or other names. If your trained checkpoint has a different name, stop the Lua script in FCEUX first, make a backup, then copy or rename that checkpoint to `mario_ai_neat.db` beside the script. Keep the backup outside the active filename so FCEUX cannot overwrite it. Do not replace the included database while training is running.
+
+The learner periodically saves after attempts and at checkpoints, so loading the script again resumes from the last saved population. To start over, stop the script, move `mario_ai_neat.db` to a backup location, and load the Lua script; a fresh 300-genome population is created automatically.
 
 To play the saved champion without changing the database, set `PLAY_CHAMPION_ONLY = true`, load the script, and begin SMB1 manually. Set it back to `false` and reload the script to resume evolution from the same database.
 
@@ -134,7 +191,11 @@ Each attempt earns fitness for furthest forward progress and survival, with a la
 
 The FCEUX overlay shows the active generation, genome, species, current lesson, chosen action, observed threat or gap, progress, and database status. It does not show testing-aid settings.
 
-The implementation is inspired by the MarI/O approach, but does not redistribute its code. The supplied MarI/O gist says its code may be used but should not be redistributed. This project implements its own NEAT-style trainer and adapts the sensor/runtime to FCEUX SMB1.
+## Background and attribution
+
+This project is based on [MarI/O by SethBling](https://gist.github.com/d12frosted/7471e2123f10485d96bb), which demonstrated NEAT neuroevolution playing **Super Mario World**. Watch SethBling's [MarI/O: Machine Learning for Video Games](https://www.youtube.com/watch?v=qv6UVOQ0F44). Mario AI NEAT adapts that project's learning approach to **Super Mario Bros. 1 for the NES, running exclusively in the FCEUX emulator**. It is not a Super Mario World project and does not target other games or emulators.
+
+The neuroevolution method is based on the original paper by Kenneth O. Stanley and Risto Miikkulainen, [“Evolving Neural Networks through Augmenting Topologies”](https://direct.mit.edu/evco/article/10/2/99/1123/Evolving-Neural-Networks-through-Augmenting), *Evolutionary Computation*, 10(2), 99–127 (2002). This repository contains its own SMB1/FCEUX-oriented implementation and does not redistribute MarI/O's source code. The referenced MarI/O gist requests that its code not be redistributed.
 
 ## Tests and limitations
 
@@ -148,7 +209,8 @@ The target RAM layout is the SMB1 revision described by the original bot and the
 
 ## Files
 
-- `mario_ai_neat.lua`: self-contained FCEUX SMB1 AI, sensors, NEAT trainer, episode loop, and database persistence.
+- `mario_ai_neat.lua`: self-contained FCEUX SMB1 AI, sensors, NEAT trainer, episode loop, and database persistence; automatically loads the adjacent database.
+- `mario_ai_neat.db`: included NEAT population checkpoint used to resume training or play its saved champion.
 - `legacy/LuaRio_Bot_v1.lua`: original bot preserved byte-for-byte.
 - `docs/learning.md`: training loop, fitness, genome database, and restart behavior.
 - `docs/requirements-and-weaknesses.md`: behavior inventory and remaining risks.
