@@ -14,11 +14,17 @@ A learning bot for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads th
 
 1. Open a compatible SMB1 NES ROM in FCEUX, preferably at the start of World 1-1.
 2. Load `mario_ai_heaven.lua` from FCEUX's Lua script menu.
-3. Leave the script running. It scores each real play segment, tests the next genome after death, victory, or no progress, breeds a new generation, and repeats.
+3. Leave the script running. On the first active SMB1 frame it saves a fixed training start in FCEUX savestate slot 9. It then tests each genome from that same state, scores the attempt, breeds a new generation, and repeats.
 4. Stop the script when you want. The population database is saved periodically, after every completed attempt, and when FCEUX stops the script. Leave the database beside the Lua script to continue learning later.
 5. Read `mario_ai_heaven.log` beside the script for startup, episode, and database-save events.
 
-The bot never creates, loads, persists, or restores FCEUX savestates. This avoids a crash in the Homebrew Apple Silicon FCEUX build where `savestate.persist()` faults natively. It interacts with SMB1 through controller inputs only. Training segments can begin at different game positions, so compare results across longer sessions rather than treating individual genome scores as directly equivalent.
+The bot uses FCEUX's predefined slot 9 for fair training episodes. This overwrites that slot, so reserve it for Mario AI Heaven. It uses `savestate.object()` when available and the older `savestate.create()` compatibility API otherwise. It never calls `savestate.persist()`, the native FCEUX function that crashed on the Homebrew Apple Silicon build. If a FCEUX build has no compatible savestate API, the bot logs the condition and continues with less-controlled input-only episodes.
+
+New databases contain 300 genomes. Existing databases retain their current population size so that previous learning is not discarded. Delete `mario_ai_heaven_neat.db` to begin a new 300-genome run.
+
+## Champion play
+
+After training, set `local PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_heaven.lua`. The bot loads the genome with the highest saved fitness and repeatedly plays it from slot 9 without mutation, crossover, or generation changes. Set it back to `false` to resume training.
 
 ## Testing aids
 
