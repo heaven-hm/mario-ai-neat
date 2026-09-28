@@ -11,6 +11,12 @@ local TESTING_FREEZE_TIMER = true
 -- Testing-only aid. This keeps the SMB1 life counter replenished. It does not
 -- revive Mario or skip the normal death and respawn sequence.
 local TESTING_INFINITE_LIVES = true
+-- FCEUX slot 9 is reserved for the bot's fixed training start. Named slots
+-- reload safely without the persist() call that crashes some FCEUX builds.
+local USE_FIXED_TRAINING_STATE = true
+local TRAINING_SAVESTATE_SLOT = 9
+-- Set true after training to replay the strongest saved genome only.
+local PLAY_CHAMPION_ONLY = false
 
 local RAM = {
   player_state=0x000E, enemy_present=0x000F, enemy_id=0x0016,
@@ -94,7 +100,7 @@ local FEATURE_INPUTS = GRID_INPUTS + GLOBAL_INPUTS
 local INPUTS = FEATURE_INPUTS + 1 -- final input is the bias node
 local ACTIONS = 6
 local MAX_NODES = 1000000
-local POPULATION = 100
+local POPULATION = 300
 local SPECIES_THRESHOLD = 1.0
 local STALE_SPECIES = 15
 local SAVE_EVERY_FRAMES = 600
@@ -552,6 +558,30 @@ function Bot.appendLog(message,path)
   return true
 end
 
+-- object(slot) is the current FCEUX API. create(slot) is retained by FCEUX
+-- for older builds and uses an offset slot number. Never call persist().
+function Bot.createStateAdapter(api,slot)
+  if type(api)~="table" or type(api.save)~="function" or type(api.load)~="function" then
+    return nil,"savestate API unavailable"
+  end
+  local constructor,argument,kind
+  if type(api.object)=="function" then constructor,argument,kind=api.object,slot,"object"
+  elseif type(api.create)=="function" then constructor,argument,kind=api.create,slot+1,"create"
+  else return nil,"savestate constructor unavailable" end
+  local ok,handle=pcall(constructor,argument)
+  if not ok or handle==nil then return nil,"could not create slot handle" end
+  local adapter={handle=handle,slot=slot,kind=kind}
+  function adapter:save()
+    local saved,result=pcall(api.save,self.handle)
+    return saved and result~=false
+  end
+  function adapter:load()
+    local loaded,result=pcall(api.load,self.handle)
+    return loaded and result~=false
+  end
+  return adapter
+end
+
 function Bot.freezeTimerForTesting()
   if not TESTING_FREEZE_TIMER or not memory or not memory.writebyte then return false end
   memory.writebyte(RAM.timer_hundreds,0x09)
@@ -718,7 +748,15 @@ end
 function Bot.new(pool)
   return {pool=pool or Bot.newPool(),genomeIndex=1,episodeFrames=0,
     startX=nil,maxX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
-    lastAction=nil,frames=0,finished=false,episodeActive=false}
+    lastAction=nil,frames=0,finished=false,episodeActive=false,championMode=false}
+end
+
+function Bot.bestGenomeIndex(pool)
+  local index,best=1,nil
+  for i,genome in ipairs(pool.genomes) do
+    if best==nil or (genome.fitness or 0)>best then index,best=i,genome.fitness or 0 end
+  end
+  return index,best or 0
 end
 
 function Bot.beginEpisode(bot,state)
@@ -757,14 +795,17 @@ function Bot.finishEpisode(bot,state,forced_reason)
   elseif state and state.phase=="victory" then fitness=fitness+10000 end
   if forced_reason=="stuck" then fitness=fitness-20 end
   if forced_reason=="timeout" then fitness=fitness-80 end
-  genome.fitness=fitness
   bot.totalEpisodes=bot.totalEpisodes+1
-  bot.genomeIndex=bot.genomeIndex+1
   bot.startX=nil
   bot.episodeActive=false
-  if bot.genomeIndex>#bot.pool.genomes then
-    bot.pool=Bot.nextGeneration(bot.pool)
-    bot.genomeIndex=1
+  bot.lastFitness=fitness
+  if not bot.championMode then
+    genome.fitness=fitness
+    bot.genomeIndex=bot.genomeIndex+1
+    if bot.genomeIndex>#bot.pool.genomes then
+      bot.pool=Bot.nextGeneration(bot.pool)
+      bot.genomeIndex=1
+    end
   end
   bot.finished=true
   return fitness
@@ -779,24 +820,53 @@ function Bot.run()
   local loaded=Bot.load(db)
   local bot=Bot.new(loaded or Bot.newPool())
   local log_path=path_for_log()
+  local state_adapter,state_problem
+  if USE_FIXED_TRAINING_STATE then state_adapter,state_problem=Bot.createStateAdapter(savestate,TRAINING_SAVESTATE_SLOT) end
+  local fixed_training=state_adapter~=nil
+  local state_saved=false
+  if PLAY_CHAMPION_ONLY and loaded then
+    bot.championMode=true
+    bot.genomeIndex=Bot.bestGenomeIndex(bot.pool)
+  end
   local function save_pool(context)
     bot.databaseOK=Bot.save(bot.pool,db)
     if not bot.databaseOK then Bot.appendLog("database save failed: "..context,log_path) end
     return bot.databaseOK
   end
-  Bot.appendLog(string.format("started | database=%s | generation=%d | population=%d | no savestate API | test_timer=%s | test_lives=%s",
+  Bot.appendLog(string.format("started | database=%s | generation=%d | population=%d | mode=%s | state=%s | test_timer=%s | test_lives=%s",
     loaded and "loaded" or "new",bot.pool.generation,#bot.pool.genomes,
+    bot.championMode and "champion" or "training",
+    fixed_training and ("slot "..TRAINING_SAVESTATE_SLOT.." via "..state_adapter.kind) or (state_problem or "continuous"),
     TESTING_FREEZE_TIMER and "999" or "off",TESTING_INFINITE_LIVES and "refreshed" or "off"),log_path)
   if not loaded then save_pool("initial population") end
   emu.registerexit(function()
     save_pool("FCEUX exit")
     Bot.appendLog("stopped | episodes="..bot.totalEpisodes.." | generation="..bot.pool.generation,log_path)
   end)
+  local function restore_training_state(reason)
+    if not fixed_training then return end
+    joypad.set(1,{})
+    if state_adapter:load() then
+      Bot.appendLog("restored training slot "..TRAINING_SAVESTATE_SLOT.." after "..reason,log_path)
+    else
+      fixed_training=false
+      Bot.appendLog("training slot restore failed; switched to continuous training",log_path)
+    end
+  end
   local last_save=0
   while true do
     local state=Bot.observe(bot.frames+1)
     Bot.keepLivesForTesting()
     if state.phase=="playing" and not bot.episodeActive then
+      if fixed_training and not state_saved then
+        if state_adapter:save() then
+          state_saved=true
+          Bot.appendLog("saved fixed training start in slot "..TRAINING_SAVESTATE_SLOT,log_path)
+        else
+          fixed_training=false
+          Bot.appendLog("training slot save failed; switched to continuous training",log_path)
+        end
+      end
       Bot.beginEpisode(bot,state)
       Bot.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
         bot.pool.generation,bot.genomeIndex,#bot.pool.genomes,state.x,state.power),log_path)
@@ -813,7 +883,7 @@ function Bot.run()
         local gen=bot.pool.generation
         local genome=bot.pool.genomes[bot.genomeIndex]
         local learning=Bot.learningStatus(bot,state,action)
-        gui.text(8,8,"MARIO AI HEAVEN  |  LIVE LEARNING","cyan","black")
+        gui.text(8,8,bot.championMode and "MARIO AI HEAVEN  |  CHAMPION PLAY" or "MARIO AI HEAVEN  |  LIVE LEARNING","cyan","black")
         gui.text(8,18,string.format("NEAT  Gen %d  |  Genome %d/%d  |  Species %d",gen,
           bot.genomeIndex,#bot.pool.genomes,genome.species or 0),"white","black")
         gui.text(8,28,"LEARNING  "..learning.lesson,"yellow","black")
@@ -828,14 +898,15 @@ function Bot.run()
         local fitness=Bot.finishEpisode(bot,state,reason)
         Bot.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",
           reason,fitness or 0,bot.maxX or state.x,bot.episodeFrames),log_path)
-        save_pool("episode "..reason)
+        if not bot.championMode then save_pool("episode "..reason) end
+        restore_training_state(reason)
       end
     elseif (state.phase=="death" or state.phase=="victory") and bot.episodeActive then
       local fitness=Bot.finishEpisode(bot,state)
       Bot.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",
         state.phase,fitness or 0,bot.maxX or state.x,bot.episodeFrames),log_path)
-      save_pool("episode "..state.phase)
-      joypad.set(1,{})
+      if not bot.championMode then save_pool("episode "..state.phase) end
+      restore_training_state(state.phase)
     else
       local action=Bot.decide(bot,state)
       joypad.set(1,{})

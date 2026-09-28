@@ -90,6 +90,22 @@ test("fitness selection creates a full mutated next generation",
 test("best-scoring genome survives into the next generation",next_pool.genomes[1].fitness==100)
 os.remove(save_path)
 
+local saved_handle,loaded_handle
+local modern_state=Bot.createStateAdapter({
+  object=function(slot) return {slot=slot} end,
+  save=function(handle) saved_handle=handle end,
+  load=function(handle) loaded_handle=handle end,
+},9)
+test("modern FCEUX state adapter uses the requested predefined slot",modern_state~=nil and modern_state.kind=="object" and modern_state.handle.slot==9)
+test("modern FCEUX state adapter saves and loads without persist",modern_state:save() and modern_state:load() and saved_handle==loaded_handle)
+local legacy_state=Bot.createStateAdapter({
+  create=function(slot) return {slot=slot} end,
+  save=function() end,load=function() end,
+},9)
+test("legacy FCEUX state adapter maps slot 9 to create slot 10",legacy_state~=nil and legacy_state.kind=="create" and legacy_state.handle.slot==10)
+pool.genomes[2].fitness=125
+test("champion selection finds the highest-fitness genome",Bot.bestGenomeIndex(pool)==2)
+
 local log_path=os.tmpname()
 test("runtime log appends and flushes episode diagnostics",Bot.appendLog("test event",log_path)==true)
 local log_file=io.open(log_path,"r")
