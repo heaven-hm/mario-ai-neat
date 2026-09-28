@@ -6,13 +6,97 @@ A learning bot for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads th
 
 *Live FCEUX training: the HUD explains the active NEAT genome, chosen action, sensed threat, progress, and saved-learning state.*
 
-## Stack
+## What kind of AI is this?
 
-- **Game:** NES Super Mario Bros. 1. The ROM is not included.
-- **Runtime:** FCEUX 2.x Lua scripting.
-- **Language:** Lua 5.1 compatible; no compiler, external packages, or separate ML runtime.
-- **Learning:** NEAT-style neuroevolution, local to the Lua bot. It evolves neural-network topology and weights using episode fitness.
-- **Learning database:** `mario_ai_heaven_neat.db`, generated beside the script. It stores the population, genome weights, mutation settings, and generation so training continues after restarting FCEUX.
+Mario AI Heaven is a **NEAT-style neuroevolution system**, which is a form of machine learning. It uses an evolutionary reinforcement signal: neural-network controllers play SMB1, receive fitness from their results, and reproduce according to that fitness. It is not a language model, generative AI, Q-learning, PPO, or a network trained with backpropagation.
+
+The controller is a hybrid system. NEAT learns which action to prefer, while a small deterministic safety layer removes immediately unsafe choices such as running directly into a close enemy. The learned neural network still decides whether to run, jump, brake, retreat, or walk among the allowed actions.
+
+## Technology stack
+
+| Layer | Technology | Role |
+| --- | --- | --- |
+| Game | NES Super Mario Bros. 1 | The only supported game; the ROM is not included |
+| Emulator | FCEUX 2.x | Runs SMB1, exposes RAM, controller, frame, GUI, and savestate APIs |
+| Runtime | Embedded Lua 5.1 | Executes the complete bot inside FCEUX |
+| Machine learning | NEAT-style neuroevolution | Evolves neural-network connections, weights, nodes, and mutation rates |
+| Reinforcement signal | Episode fitness | Rewards progress, survival, stronger forms, and victory; penalizes death and stalls |
+| Model storage | `mario_ai_heaven_neat.db` | Persists generations, genomes, genes, innovation IDs, mutation rates, and fitness |
+| Diagnostics | `mario_ai_heaven.log` and FCEUX HUD | Records episodes and explains the live decision context |
+| Verification | Lua behavior and mocked-FCEUX tests | Checks sensors, networks, evolution, persistence, compatibility, and controller behavior |
+
+No Python process, ML framework, compiler, GPU runtime, cloud service, or network connection is required during training.
+
+## AI architecture
+
+```mermaid
+flowchart LR
+    Game["SMB1 running in FCEUX"]
+    RAM["RAM observer<br/>tiles, Mario, enemies, items"]
+    Encoder["Observation encoder<br/>185 neural inputs"]
+    Genome["NEAT genome<br/>evolving nodes and weighted genes"]
+    Scores["6 action scores"]
+    Shield["Safety layer<br/>removes immediately unsafe actions"]
+    Pad["NES controller input<br/>A, B, Left, Right"]
+    Result["Episode result<br/>progress, survival, power, death, victory"]
+    Fitness["Fitness function"]
+    Evolution["Speciation, selection,<br/>crossover and mutation"]
+    Database[("mario_ai_heaven_neat.db")]
+
+    Game --> RAM --> Encoder --> Genome --> Scores --> Shield --> Pad --> Game
+    Game --> Result --> Fitness --> Evolution --> Genome
+    Evolution <--> Database
+```
+
+### Observation and action model
+
+| Neural interface | Size | Contents |
+| --- | ---: | --- |
+| Local grid | 169 | A 13×13 area around Mario: solid tile `1`, active enemy `-1`, empty space `0` |
+| Global features | 15 | Velocity, grounded state, size/power, closest enemy, visible power-up, forward gap, contact danger |
+| Bias | 1 | Constant input that lets actions activate without a particular sensor |
+| **Total inputs** | **185** | Values evaluated by each genome every decision frame |
+| Outputs | 6 | Run, running jump, retreat, brake, jump in place, controlled walk |
+
+## How NEAT learns
+
+Each genome is one candidate neural-network brain. A gene records a source node, destination node, weight, enabled state, and historical innovation ID. Innovation IDs let crossover align equivalent connections even after different genomes evolve different structures.
+
+```mermaid
+flowchart TD
+    Start["Create or load population<br/>300 genomes for a new database"]
+    State["Save one fixed SMB1 start<br/>in FCEUX slot 9"]
+    Run["Run one genome from the fixed state"]
+    Score["Calculate episode fitness"]
+    More{"Every genome evaluated?"}
+    Group["Group compatible genomes into species"]
+    Cull["Cull weak and stale genomes<br/>preserve the champion"]
+    Breed["Crossover fitter parents"]
+    Mutate["Mutate weights, links, nodes,<br/>enabled genes and mutation rates"]
+    Next["Next generation"]
+    Save["Save population database"]
+
+    Start --> State --> Run --> Score --> More
+    More -- No --> State
+    More -- Yes --> Group --> Cull --> Breed --> Mutate --> Next --> Save --> State
+```
+
+The implementation includes the main NEAT mechanisms:
+
+- **Topology evolution:** mutations can add a connection or split an existing connection to create a hidden node.
+- **Weight evolution:** connection weights are perturbed or replaced.
+- **Historical markings:** innovation IDs align matching genes during crossover.
+- **Speciation:** structural and weight distance separates different network families so new structures have time to improve.
+- **Fitness sharing:** global rank is adjusted by species size before parent selection.
+- **Crossover:** matching genes can come from either parent; unmatched structure follows the fitter parent.
+- **Adaptive mutation:** mutation probabilities themselves drift slightly between generations.
+- **Staleness control:** species that stop improving are removed after 15 generations unless they contain the global champion.
+- **Elitism:** the strongest genome is copied unchanged into the next generation.
+- **Seeded prior:** generation one begins with a small useful bias toward running and jumping for enemies or gaps; evolution may replace all of it.
+
+### Why the project says “NEAT-style”
+
+It implements NEAT's defining ideas—historical innovation numbers, topology growth, speciation, crossover, mutation, fitness sharing, and champion preservation—but it is specialized for SMB1 rather than a byte-for-byte copy of the original NEAT paper. Its six outputs select complete controller actions, the first genome has an SMB1 movement prior, fitness uses game progress and survival, and a deterministic safety layer rejects immediately dangerous actions. These choices make the learner practical inside FCEUX while keeping the neural policy and its topology trainable through evolution.
 
 ## Run and train
 
@@ -50,7 +134,7 @@ The implementation is inspired by the MarI/O approach, but does not redistribute
 sh tests/run.sh
 ```
 
-Tests cover neural-network evaluation, enemy sensors, enemy safety filtering, population save/load, generation breeding, and the FCEUX control loop without RAM writes. They do not establish that a learned genome beats the game. No compatible ROM is present in the workspace, so real training and playthrough validation remain necessary. See [evaluation](docs/evaluation.md), [learning](docs/learning.md), [limitations](docs/limitations.md), and [RAM map](docs/ram-map.md).
+Tests cover neural-network evaluation, enemy sensors, enemy safety filtering, population save/load, generation breeding, the FCEUX compatibility layer, and the controller loop. RAM writes are restricted to the documented testing timer and lives aids. Tests do not establish that a learned genome beats the game. See [evaluation](docs/evaluation.md), [learning](docs/learning.md), [limitations](docs/limitations.md), and [RAM map](docs/ram-map.md).
 
 The target RAM layout is the SMB1 revision described by the original bot and the linked [SMB disassembly](https://gist.github.com/1wErt3r/4048722). Other revisions and ROM hacks are not validated.
 

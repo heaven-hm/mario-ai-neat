@@ -91,7 +91,7 @@ end
 
 -- The policy learns with NEAT-style neuroevolution. Each genome controls a
 -- real SMB1 play segment; episode fitness selects parents for the next
--- generation. No game RAM is written by the bot or restored by the bot.
+-- generation. RAM writes are limited to the optional timer and lives test aids.
 local RADIUS = 6
 local GRID_WIDTH = RADIUS * 2 + 1
 local GRID_INPUTS = GRID_WIDTH * GRID_WIDTH

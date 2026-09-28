@@ -18,6 +18,18 @@ Fitness is based on furthest rightward progress from the episode start and frame
 
 This is neuroevolution in the style of NEAT, used as an evolutionary reinforcement-learning method. The FCEUX play result supplies the reward signal; no labeled human action traces or external training service are used.
 
+## NEAT implementation details
+
+A genome is a directed neural graph. Every gene contains `into`, `out`, `weight`, `enabled`, and `innovation` fields. The evaluator loads the 184 observed features plus one bias node, follows enabled weighted connections, applies the NEAT sigmoid activation, and reads six action scores.
+
+The population starts from a sparse seeded controller rather than a fully connected network. Structural mutation can add links or split an enabled link into two links with a new hidden node. Weight mutation perturbs most existing weights and occasionally replaces a weight. Enable and disable mutations can restore or suppress individual connections. Each structural connection receives a population-wide innovation ID so crossover can match homologous genes.
+
+Compatibility distance combines unmatched genes and the average weight difference of matching genes. Genomes below the distance threshold share a species. Global fitness rank is divided by species size for selection pressure, while the champion remains protected. Species stop reproducing after 15 stale generations unless they contain the global champion. In a species with multiple genomes, crossover is chosen with a 75% probability and the resulting child is mutated; the alternative copies one selected parent and mutates it. A species containing only one genome currently reproduces by cloning that genome.
+
+Mutation rates are stored per genome and multiplied by either `0.95` or `1.05263` as evolution proceeds. This allows different lineages to explore different rates of weight, link, node, bias, enable, and disable mutation. The database persists these rates along with every connection and innovation ID.
+
+The implementation is called NEAT-style because it adapts the algorithm to this game. Six outputs represent complete SMB1 controller actions, the initial population includes one seeded movement prior, and a deterministic safety filter can remove an immediately dangerous option before the highest remaining output is used. The evolving genome still supplies the learned policy; the filter does not move Mario or manufacture a jump through RAM.
+
 ## Saved database
 
 `mario_ai_heaven_neat.db` is a line-based database beside the Lua script. It contains the generation counter, population size, genome fitness, mutation rates, network connections, weights, and innovation IDs. Fresh databases start with 300 genomes. The bot writes a temporary file and replaces the database, saves after every episode, periodically during long attempts, and when FCEUX stops the script. On the next launch it resumes with that population. Deleting the database starts a fresh population.
