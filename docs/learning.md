@@ -2,7 +2,7 @@
 
 ## Training loop
 
-The Lua bot runs one genome at a time. When SMB1 enters active gameplay, it starts a real controller-input episode. After a genome dies, reaches the flag, or stops making progress, the bot scores it and moves to the next genome. Once all genomes have played, it forms the next generation and repeats. At title or death screens it presses Start periodically to begin or retry.
+The Lua bot runs one genome at a time. Start SMB1 manually, then the bot begins a real controller-input episode. After a genome dies, reaches the flag, or stops making progress, the bot scores it and moves to the next genome. Once all genomes have played, it forms the next generation and repeats. During death, title, and transition screens it releases every controller button; it never presses Start.
 
 The bot deliberately does not use FCEUX savestates. FCEUX 2.6.6 on Homebrew Apple Silicon can crash inside `savestate.persist()` when a script starts. Episode conditions can therefore vary as SMB1 advances, so fitness provides a learning signal rather than a perfectly controlled comparison. Episodes end after death, victory, 600 frames without new forward progress, or a 12,000-frame cap. A player can leave the bot running for repeated generations; training is automatic after the script starts.
 

@@ -100,6 +100,17 @@ local timer_writes={}
 memory={writebyte=function(address,value) timer_writes[address]=value end}
 test("testing timer writes all SMB1 timer digits",Bot.freezeTimerForTesting()==true)
 test("testing timer is refreshed to 999",timer_writes[0x07F8]==9 and timer_writes[0x07F9]==9 and timer_writes[0x07FA]==9)
+test("testing lives counter is refreshed",Bot.keepLivesForTesting()==true and timer_writes[0x075A]==9)
 memory=nil
+
+local paused=state();paused.phase="death"
+test("bot never presses Start after death",Bot.decide(Bot.new(Bot.newPool(1)),paused).start==nil)
+paused.phase="title"
+test("bot never presses Start at the title screen",Bot.decide(Bot.new(Bot.newPool(1)),paused).start==nil)
+
+local lesson_state=state(100)
+lesson_state.enemies={{slot=0,id=6,name="goomba",status=0,x=140,y=192,vx=0}}
+local lesson=Bot.learningStatus(Bot.new(Bot.newPool(1)),lesson_state,{name="jump_run"})
+test("learning HUD explains an enemy jump lesson",lesson.lesson=="jump timing to clear an enemy")
 
 print(string.format("%d NEAT behavior checks passed",checks))

@@ -8,6 +8,9 @@ local Bot = {}
 -- SMB1 stores each timer digit separately; keeping all three at 9 prevents a
 -- training attempt from ending solely because the in-game clock expires.
 local TESTING_FREEZE_TIMER = true
+-- Testing-only aid. This keeps the SMB1 life counter replenished. It does not
+-- revive Mario or skip the normal death and respawn sequence.
+local TESTING_INFINITE_LIVES = true
 
 local RAM = {
   player_state=0x000E, enemy_present=0x000F, enemy_id=0x0016,
@@ -18,6 +21,7 @@ local RAM = {
   flag_event=0x010E, flag_y=0x070F, tiles=0x0500,
   player_size=0x0754, power=0x0756, operation_mode=0x0770,
   timer_hundreds=0x07F8, timer_tens=0x07F9, timer_ones=0x07FA,
+  lives=0x075A,
 }
 
 local ENEMY_NAME = {
@@ -556,6 +560,14 @@ function Bot.freezeTimerForTesting()
   return true
 end
 
+function Bot.keepLivesForTesting()
+  if not TESTING_INFINITE_LIVES or not memory or not memory.writebyte then return false end
+  -- The inherited LuaRio test section identifies 0x075A as the lives byte.
+  -- Refreshing 9 gives the practical effect of infinite lives during tests.
+  memory.writebyte(RAM.lives,0x09)
+  return true
+end
+
 function Bot.save(pool,path)
   path=path or path_for_database()
   local temporary=path..".tmp"
@@ -669,6 +681,40 @@ local function choose_action(genome,state)
   return ACTIONS_MAP[selected or 4],selected or 4,enemy,outputs
 end
 
+local ACTION_LABEL = {
+  run="run with speed", jump_run="running jump", retreat="retreat and reassess",
+  brake="brake for control", jump_place="vertical jump", walk="controlled walk",
+}
+
+function Bot.learningStatus(bot,state,action)
+  local enemy=closest_threat(state)
+  local gap_ahead=forward_gap(state)>0
+  local item=state.items and state.items[1]
+  local lesson="forward movement and momentum control"
+  local sensing="clear ground ahead"
+  if enemy then
+    sensing=string.format("%s %d px ahead",enemy.name,math.max(0,enemy.x-state.x))
+    if action.name=="jump_run" or action.name=="jump_place" then
+      lesson="jump timing to clear an enemy"
+    elseif action.name=="retreat" or action.name=="brake" then
+      lesson="safe spacing and enemy avoidance"
+    else
+      lesson="choosing a safe response to an enemy"
+    end
+  elseif gap_ahead then
+    sensing="gap or missing floor ahead"
+    lesson=action.name=="jump_run" and "jump timing and landing distance" or "safe gap approach"
+  elseif item then
+    sensing="power-up visible"
+    lesson=action.name=="retreat" and "positioning for a power-up" or "power-up value versus safe progress"
+  elseif not state.grounded then
+    sensing="Mario is airborne"
+    lesson="air control and landing alignment"
+  end
+  return {lesson=lesson,sensing=sensing,action=ACTION_LABEL[action.name] or action.name,
+    progress=math.max(0,(bot.maxX or state.x)-(bot.startX or state.x))}
+end
+
 function Bot.new(pool)
   return {pool=pool or Bot.newPool(),genomeIndex=1,episodeFrames=0,
     startX=nil,maxX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
@@ -685,9 +731,6 @@ end
 function Bot.decide(bot,state)
   bot.frames=bot.frames+1
   if state.phase~="playing" then
-    if (state.phase=="title" or state.phase=="death") and state.frame%90==1 then
-      return {start=true,name="start",reason="start or retry"}
-    end
     return {reason=state.phase}
   end
   if bot.startX==nil then Bot.beginEpisode(bot,state) end
@@ -741,9 +784,9 @@ function Bot.run()
     if not bot.databaseOK then Bot.appendLog("database save failed: "..context,log_path) end
     return bot.databaseOK
   end
-  Bot.appendLog(string.format("started | database=%s | generation=%d | population=%d | no savestate API | test_timer=%s",
+  Bot.appendLog(string.format("started | database=%s | generation=%d | population=%d | no savestate API | test_timer=%s | test_lives=%s",
     loaded and "loaded" or "new",bot.pool.generation,#bot.pool.genomes,
-    TESTING_FREEZE_TIMER and "999" or "off"),log_path)
+    TESTING_FREEZE_TIMER and "999" or "off",TESTING_INFINITE_LIVES and "refreshed" or "off"),log_path)
   if not loaded then save_pool("initial population") end
   emu.registerexit(function()
     save_pool("FCEUX exit")
@@ -752,6 +795,7 @@ function Bot.run()
   local last_save=0
   while true do
     local state=Bot.observe(bot.frames+1)
+    Bot.keepLivesForTesting()
     if state.phase=="playing" and not bot.episodeActive then
       Bot.beginEpisode(bot,state)
       Bot.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
@@ -761,18 +805,23 @@ function Bot.run()
       Bot.freezeTimerForTesting()
       local action=Bot.decide(bot,state)
       local buttons={}
-      for _,name in ipairs({"left","right","up","down","A","B","start","select"}) do
+      for _,name in ipairs({"left","right","up","down","A","B","select"}) do
         if action[name] then buttons[name]=true end
       end
       joypad.set(1,buttons)
       if gui and gui.text then
         local gen=bot.pool.generation
-        gui.text(8,8,string.format("MARIO AI HEAVEN | NEAT gen %d / genome %d of %d",gen,
-          bot.genomeIndex,#bot.pool.genomes),"white","black")
-        gui.text(8,18,tostring(action.reason or "learning"),"white","black")
-        gui.text(8,28,string.format("best x:%d | episodes:%d",bot.maxX or state.x,bot.totalEpisodes),"white","black")
-        gui.text(8,38,"population database: "..(bot.databaseOK==false and "save failed" or "active"),"white","black")
-        if TESTING_FREEZE_TIMER then gui.text(8,48,"TEST MODE: timer frozen at 999","yellow","black") end
+        local genome=bot.pool.genomes[bot.genomeIndex]
+        local learning=Bot.learningStatus(bot,state,action)
+        gui.text(8,8,"MARIO AI HEAVEN  |  LIVE LEARNING","cyan","black")
+        gui.text(8,18,string.format("NEAT  Gen %d  |  Genome %d/%d  |  Species %d",gen,
+          bot.genomeIndex,#bot.pool.genomes,genome.species or 0),"white","black")
+        gui.text(8,28,"LEARNING  "..learning.lesson,"yellow","black")
+        gui.text(8,38,"ACTION    "..learning.action,"green","black")
+        gui.text(8,48,"SENSING   "..learning.sensing,"white","black")
+        gui.text(8,58,string.format("PROGRESS  +%d px  |  Best X %d  |  Episode %d",learning.progress,
+          bot.maxX or state.x,bot.totalEpisodes+1),"white","black")
+        gui.text(8,68,"MEMORY    "..(bot.databaseOK==false and "save failed" or "population saved"),"white","black")
       end
       if bot.episodeFrames>=12000 or bot.episodeFrames-bot.lastProgressFrame>600 then
         local reason=bot.episodeFrames>=12000 and "timeout" or "stuck"
@@ -789,8 +838,7 @@ function Bot.run()
       joypad.set(1,{})
     else
       local action=Bot.decide(bot,state)
-      local buttons={};if action.start then buttons.start=true end
-      joypad.set(1,buttons)
+      joypad.set(1,{})
     end
     if bot.frames-last_save>=SAVE_EVERY_FRAMES then
       save_pool("periodic checkpoint");last_save=bot.frames

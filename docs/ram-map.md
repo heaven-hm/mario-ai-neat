@@ -22,6 +22,7 @@ The user-provided [SMB disassembly gist](https://gist.github.com/1wErt3r/4048722
 | `0x0754`, `0x0756` | Player size and power state | Inherited from legacy code |
 | `0x0770`, `0x0772` | Candidate game/operation mode bytes | `0x0772` is used in legacy death clear; exact phase meanings need disassembly confirmation |
 | `0x07F8..0x07FA` | Hundreds, tens, and ones timer digits | Confirmed by the legacy bot's commented `999 Timer` test aid; written only when `TESTING_FREEZE_TIMER` is enabled |
+| `0x075A` | Lives counter | Confirmed by the legacy bot's commented lives test aid; refreshed to `9` only when `TESTING_INFINITE_LIVES` is enabled |
 | Power-up bytes in `checkPowerUp()` | Drawn/type/direction/screen position | Inherited, but world coordinates and semantics need confirmation |
 
 Before enabling a value in `src/config.lua`, update this table with the disassembly symbol, definition/use location, and observed emulator value. Unverified values must not cause blocking, unsafe movement, or a false completion result. The gist page exceeds the current web reader's content limit; the executing developer must inspect the specific source lines locally or through the gist's raw file view.
