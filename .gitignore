@@ -1,0 +1,7 @@
+*.nes
+*.fds
+*.state
+*.fm2
+*.trace
+*.log
+.DS_Store
