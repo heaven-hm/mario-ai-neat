@@ -2,6 +2,10 @@
 
 A learning bot for **Super Mario Bros. 1 on NES, running in FCEUX**. It reads the SMB1 RAM layout, observes nearby tiles and enemies, and evolves a neural-network controller across repeated play attempts. Other games and emulators are outside the target.
 
+![Mario AI Heaven training in FCEUX](docs/images/mario-ai-heaven-training.png)
+
+*Live FCEUX training: the HUD explains the active NEAT genome, chosen action, sensed threat, progress, and saved-learning state.*
+
 ## Stack
 
 - **Game:** NES Super Mario Bros. 1. The ROM is not included.
