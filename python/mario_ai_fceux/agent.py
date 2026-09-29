@@ -1,4 +1,4 @@
-"""Double-DQN learner with dueling network, n-step returns, and replay."""
+"""Complete Rainbow DQN: C51, Double DQN, dueling, NoisyNets, PER and n-step."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from .model import DuelingQNetwork
-from .replay import ReplayDatabase, Transition
+from .model import RainbowNetwork
+from .replay import PrioritizedReplayBuffer, Transition
 
 
 @dataclass
@@ -22,108 +22,79 @@ class AgentConfig:
     observation_size: int = 184
     action_count: int = 6
     gamma: float = 0.99
-    learning_rate: float = 2.5e-4
+    learning_rate: float = 6.25e-5
     batch_size: int = 128
-    learning_starts: int = 5_000
+    learning_starts: int = 10_000
     target_sync_steps: int = 2_000
     n_step: int = 3
-    epsilon_start: float = 1.0
-    epsilon_end: float = 0.05
-    epsilon_decay_steps: int = 250_000
-    guided_exploration_share: float = 0.90
+    atom_count: int = 51
+    value_min: float = -20.0
+    value_max: float = 20.0
+    per_beta_start: float = 0.4
+    per_beta_steps: int = 1_000_000
+    seed: int = 7
 
 
-class RainbowLiteAgent:
-    """Practical Rainbow subset: double DQN, dueling, PER, and n-step returns."""
+class RainbowAgent:
+    """One reproducible full-Rainbow learner. It contains no Mario action prior."""
 
-    def __init__(self, replay: ReplayDatabase, config: AgentConfig | None = None, device: str | None = None):
+    def __init__(self, replay: PrioritizedReplayBuffer, config: AgentConfig | None = None,
+                 device: str | None = None) -> None:
         self.replay = replay
         self.config = config or AgentConfig(observation_size=replay.observation_size)
-        self.device = torch.device(device or ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"))
-        self.online = DuelingQNetwork(self.config.observation_size, self.config.action_count).to(self.device)
-        self.target = DuelingQNetwork(self.config.observation_size, self.config.action_count).to(self.device)
+        self.device = torch.device(device or ("mps" if torch.backends.mps.is_available()
+                                              else "cuda" if torch.cuda.is_available() else "cpu"))
+        self._set_seeds(self.config.seed)
+        self.support = torch.linspace(self.config.value_min, self.config.value_max,
+                                      self.config.atom_count, device=self.device)
+        self.delta_z = (self.config.value_max - self.config.value_min) / (self.config.atom_count - 1)
+        self.online = RainbowNetwork(self.config.observation_size, self.config.action_count,
+                                     self.config.atom_count).to(self.device)
+        self.target = RainbowNetwork(self.config.observation_size, self.config.action_count,
+                                     self.config.atom_count).to(self.device)
         self.target.load_state_dict(self.online.state_dict())
         self.target.eval()
-        self.optimizer = torch.optim.Adam(self.online.parameters(), lr=self.config.learning_rate)
+        self.optimizer = torch.optim.Adam(self.online.parameters(), lr=self.config.learning_rate, eps=1.5e-4)
         self.steps = 0
         self.optimizer_steps = 0
         self.pending: dict[str, Deque[Transition]] = {}
 
+    @staticmethod
+    def _set_seeds(seed: int) -> None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     @property
-    def epsilon(self) -> float:
-        fraction = min(1.0, self.steps / self.config.epsilon_decay_steps)
-        return self.config.epsilon_start + fraction * (self.config.epsilon_end - self.config.epsilon_start)
+    def per_beta(self) -> float:
+        fraction = min(1.0, self.optimizer_steps / self.config.per_beta_steps)
+        return self.config.per_beta_start + fraction * (1.0 - self.config.per_beta_start)
 
     def select_actions(self, states: np.ndarray, explore: bool = True) -> np.ndarray:
-        return self.choose_actions(self.action_values(states), explore=explore)
-
-    def safety_actions(self, states: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return a conservative SMB1 action prior and its immediate-danger mask.
-
-        The prior is demonstration-free curriculum guidance, not a replacement
-        for the Q network: it makes exploration useful by running right and
-        holding jump+run when the RAM observation says an enemy is ahead.
-        """
+        """Choose actions from learned noisy Q-values; evaluation disables parameter noise."""
         states = np.asarray(states, dtype=np.float32).reshape(-1, self.config.observation_size)
-        actions = np.zeros(len(states), dtype=np.int64)  # run right
-        grounded = states[:, 171] > 0.0
-        enemy_dx = states[:, 174]
-        enemy_dy = states[:, 175]
-        enemy_near = states[:, 183] > 0.0
-        enemy_ahead = (enemy_dx > 0.02) & (enemy_dx < 0.42) & (enemy_dy > -0.55) & (enemy_dy < 0.55)
-        danger = enemy_ahead | enemy_near
-        # A held jump has to begin on the ground; while airborne we keep the
-        # action instead of replacing it with a random direction mid-arc.
-        actions[grounded & danger] = 1  # jump + run
-        actions[(~grounded) & danger] = 1
-        return actions, danger
-
-    def choose_actions(self, scores: np.ndarray, states: np.ndarray | None = None,
-                       explore: bool = True) -> np.ndarray:
-        """Choose batched actions with safe, useful exploration for SMB1."""
-        scores = np.asarray(scores, dtype=np.float32).reshape(-1, self.config.action_count)
-        actions = scores.argmax(axis=1)
-        safety_actions = danger = None
-        if states is not None:
-            safety_actions, danger = self.safety_actions(states)
+        self.online.train(mode=explore)
         if explore:
-            for index in range(len(actions)):
-                if random.random() < self.epsilon:
-                    # Uniform random exploration spent half its trials moving
-                    # away from the goal or standing still.  Prefer an action
-                    # that can produce a meaningful SMB1 trajectory, while a
-                    # small random share still discovers alternatives.
-                    if safety_actions is not None and random.random() < self.config.guided_exploration_share:
-                        actions[index] = safety_actions[index]
-                    else:
-                        actions[index] = random.choice((0, 1, 4))
-        # Never ask a newly trained, untrusted Q network to walk directly into
-        # an immediately visible enemy.  The resulting successful jump
-        # transitions enter replay and teach the network the same behaviour.
-        if safety_actions is not None and danger is not None:
-            actions[danger] = safety_actions[danger]
-        return actions.astype(np.int64)
-
-    def action_values(self, states: np.ndarray) -> np.ndarray:
-        """Return the current online network's six action values for the HUD."""
-        return self.inspect(states)[0]
+            self.online.reset_noise()
+        with torch.no_grad():
+            actions = self.online(torch.from_numpy(states).to(self.device), self.support).argmax(dim=1)
+        return actions.cpu().numpy().astype(np.int64)
 
     def inspect(self, states: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return Q-values and a 4x4 summary of the live 256-unit encoder."""
+        """Return expected Q-values and a small encoder summary for the FCEUX HUD."""
         states = np.asarray(states, dtype=np.float32).reshape(-1, self.config.observation_size)
+        self.online.eval()
         with torch.no_grad():
             tensor = torch.from_numpy(states).to(self.device)
-            first_layer = self.online.encoder[1](self.online.encoder[0](tensor))
-            encoded = self.online.encoder[3](self.online.encoder[2](first_layer))
-            advantage = self.online.advantage(encoded)
-            q_values = self.online.value(encoded) + advantage - advantage.mean(dim=1, keepdim=True)
-            # Each square represents the mean activation of 16 encoder units.
+            encoded = self.online.encoder(tensor)
+            q_values = self.online(tensor, self.support)
             summary = encoded.reshape(-1, 16, 16).mean(dim=2)
         return q_values.cpu().numpy(), summary.cpu().numpy()
 
     def observe(self, worker_id: str, state: np.ndarray, action: int, reward: float,
                 next_state: np.ndarray, terminated: bool) -> None:
-        """Add a worker transition and materialize mature n-step transitions."""
         pending = self.pending.setdefault(worker_id, deque())
         pending.append(Transition(np.asarray(state, dtype=np.float32), action, reward,
                                   np.asarray(next_state, dtype=np.float32), terminated, self.config.gamma))
@@ -133,60 +104,82 @@ class RainbowLiteAgent:
     def _drain_pending(self, worker_id: str, force: bool) -> None:
         pending = self.pending[worker_id]
         while pending and (force or len(pending) >= self.config.n_step):
-            accumulated_reward = 0.0
-            discount = 1.0
-            terminal = False
+            reward, discount, terminal = 0.0, 1.0, False
             next_state = pending[0].next_state
             for transition in list(pending)[:self.config.n_step]:
-                accumulated_reward += discount * transition.reward
+                reward += discount * transition.reward
                 discount *= self.config.gamma
-                next_state = transition.next_state
-                terminal = transition.terminated
+                next_state, terminal = transition.next_state, transition.terminated
                 if terminal:
                     break
             first = pending.popleft()
-            self.replay.add(Transition(first.state, first.action, accumulated_reward, next_state,
-                                       terminal, 0.0 if terminal else discount, priority=1.0))
+            self.replay.add(Transition(first.state, first.action, reward, next_state, terminal,
+                                       0.0 if terminal else discount, self.replay.max_priority))
             if not force and len(pending) < self.config.n_step:
                 break
+
+    def _project_distribution(self, next_distribution: torch.Tensor, rewards: torch.Tensor,
+                              discounts: torch.Tensor, terminated: torch.Tensor) -> torch.Tensor:
+        batch_size = rewards.shape[0]
+        target_values = rewards[:, None] + (~terminated).float()[:, None] * discounts[:, None] * self.support
+        target_values = target_values.clamp(self.config.value_min, self.config.value_max)
+        positions = (target_values - self.config.value_min) / self.delta_z
+        lower, upper = positions.floor().long(), positions.ceil().long()
+        projected = torch.zeros(batch_size, self.config.atom_count, device=self.device)
+        offset = (torch.arange(batch_size, device=self.device) * self.config.atom_count).unsqueeze(1)
+        projected.view(-1).index_add_(0, (lower + offset).view(-1),
+                                      (next_distribution * (upper.float() - positions)).view(-1))
+        projected.view(-1).index_add_(0, (upper + offset).view(-1),
+                                      (next_distribution * (positions - lower.float())).view(-1))
+        # When an atom lands exactly on a support point lower == upper, retain its mass.
+        exact = lower == upper
+        projected.view(-1).index_add_(0, (lower + offset)[exact], next_distribution[exact])
+        return projected
 
     def learn(self) -> float | None:
         if len(self.replay) < max(self.config.learning_starts, self.config.batch_size):
             return None
-        transition_ids, transitions, weights = self.replay.sample(self.config.batch_size)
+        indices, transitions, importance_weights = self.replay.sample(self.config.batch_size, self.per_beta)
         states = torch.as_tensor(np.stack([item.state for item in transitions]), device=self.device)
         actions = torch.as_tensor([item.action for item in transitions], device=self.device, dtype=torch.long)
         rewards = torch.as_tensor([item.reward for item in transitions], device=self.device)
         next_states = torch.as_tensor(np.stack([item.next_state for item in transitions]), device=self.device)
         terminated = torch.as_tensor([item.terminated for item in transitions], device=self.device, dtype=torch.bool)
         discounts = torch.as_tensor([item.discount for item in transitions], device=self.device)
-        importance = torch.as_tensor(weights, device=self.device)
-        current = self.online(states).gather(1, actions[:, None]).squeeze(1)
+        importance = torch.as_tensor(importance_weights, device=self.device)
+        self.online.train()
+        self.online.reset_noise()
+        self.target.reset_noise()
+        log_probabilities = self.online.distribution(states)[torch.arange(len(actions), device=self.device), actions].log()
         with torch.no_grad():
-            next_actions = self.online(next_states).argmax(dim=1)
-            next_values = self.target(next_states).gather(1, next_actions[:, None]).squeeze(1)
-            targets = rewards + (~terminated).float() * discounts * next_values
-        td_error = targets - current
-        loss = (importance * nn.functional.smooth_l1_loss(current, targets, reduction="none")).mean()
+            next_actions = self.online(next_states, self.support).argmax(dim=1)
+            next_distribution = self.target.distribution(next_states)[torch.arange(len(actions), device=self.device), next_actions]
+            target_distribution = self._project_distribution(next_distribution, rewards, discounts, terminated)
+        per_item_loss = -(target_distribution * log_probabilities).sum(dim=1)
+        loss = (importance * per_item_loss).mean()
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(self.online.parameters(), 10.0)
         self.optimizer.step()
-        self.replay.update_priorities(transition_ids, td_error.detach().abs().cpu().numpy() + 1e-4)
+        self.replay.update_priorities(indices, per_item_loss.detach().cpu().numpy() + self.replay.priority_epsilon)
         self.optimizer_steps += 1
         if self.optimizer_steps % self.config.target_sync_steps == 0:
             self.target.load_state_dict(self.online.state_dict())
         return float(loss.detach().cpu())
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, replay_path: str | Path | None = None) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
         try:
-            torch.save({"config": asdict(self.config), "steps": self.steps, "optimizer_steps": self.optimizer_steps,
+            torch.save({"algorithm": "Rainbow DQN (C51 + NoisyNet + Double + Dueling + PER + n-step)",
+                        "config": asdict(self.config), "steps": self.steps, "optimizer_steps": self.optimizer_steps,
                         "online": self.online.state_dict(), "target": self.target.state_dict(),
-                        "optimizer": self.optimizer.state_dict()}, temporary)
+                        "optimizer": self.optimizer.state_dict(), "python_random": random.getstate(),
+                        "numpy_random": np.random.get_state(), "torch_random": torch.get_rng_state()}, temporary)
             os.replace(temporary, path)
+            if replay_path is not None:
+                self.replay.save(replay_path)
         finally:
             if temporary.exists():
                 temporary.unlink()
@@ -196,5 +189,12 @@ class RainbowLiteAgent:
         self.online.load_state_dict(payload["online"])
         self.target.load_state_dict(payload["target"])
         self.optimizer.load_state_dict(payload["optimizer"])
-        self.steps = int(payload.get("steps", 0))
-        self.optimizer_steps = int(payload.get("optimizer_steps", 0))
+        self.steps, self.optimizer_steps = int(payload.get("steps", 0)), int(payload.get("optimizer_steps", 0))
+        if "python_random" in payload:
+            random.setstate(payload["python_random"])
+            np.random.set_state(payload["numpy_random"])
+            torch.set_rng_state(payload["torch_random"])
+
+
+# Old import name remains available for external users; it now implements full Rainbow.
+RainbowLiteAgent = RainbowAgent

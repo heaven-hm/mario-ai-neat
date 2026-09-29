@@ -5,9 +5,10 @@ Lua bridge reads RAM and presses buttons. Python owns the actual ML system:
 
 ```mermaid
 flowchart LR
-    FCEUX1["FCEUX worker 1\nLua RAM bridge"] --> Replay["SQLite prioritized replay"]
-    FCEUXN["FCEUX worker N\nLua RAM bridge"] --> Replay
-    Replay --> Learner["PyTorch double DQN\ndueling network + n-step returns"]
+    FCEUX1["FCEUX worker 1\nLua RAM bridge"] --> Collector["Collector process"]
+    FCEUXN["FCEUX worker N\nLua RAM bridge"] --> Collector
+    Collector --> Replay["Dedicated learner process\nRAM global PER SumTree"]
+    Replay --> Learner["PyTorch Rainbow\nC51 + NoisyNet + Double + dueling"]
     Learner --> Model["model.pt"]
     Model --> FCEUX1
     Model --> FCEUXN
@@ -22,17 +23,22 @@ multiple independent FCEUX workers and train one shared model from every
 transition. A successful jump or death can update the replay learner without
 waiting for a full 100-genome NEAT generation.
 
-The learner implements a focused Rainbow-style DQN combination:
+The learner implements the complete Rainbow DQN combination:
 
 - Double DQN target selection to reduce action-value overestimation.
 - Dueling value/advantage heads so the model can separately learn state value
   and the advantage of each of the six controller actions.
-- Persistent prioritized replay in `replay.sqlite3`, so high-TD-error events
-  such as a pipe collision or successful jump are replayed more often.
+- C51 distributional values: each action predicts a 51-atom return
+  distribution instead of only one expected value.
+- NoisyNet layers for learned exploration, so training does not depend on a
+  hand-written Mario action prior or epsilon-greedy random movement.
+- Exact global proportional prioritized replay through an in-memory SumTree.
+  It has no `ORDER BY RANDOM()` query and no per-transition SQLite commit.
 - Three-step returns, which move outcome feedback backward across short action
   sequences.
 - A `model.pt` checkpoint containing the PyTorch network, target network,
-  optimizer state, and exploration progress.
+  optimizer, configuration, and Python/NumPy/PyTorch RNG state, plus a
+  `replay.npz` snapshot containing the full replay and its sampling RNG state.
 
 This is not a claim that it is already faster than every Mario project. That
 requires the benchmark below. Its architecture removes known serial-training
@@ -97,13 +103,12 @@ values in the model observation so a shared network can distinguish courses.
 
 ### Checkpoints and storage
 
-`model.pt` is written atomically: Python saves a temporary file and replaces
-the old checkpoint only after the new file is complete. The live
-`replay.sqlite3` file is a local training cache and deliberately remains out of
-Git LFS. SQLite changes it on every action; versioning every edit creates a
-full database copy each time and exhausts disk space. GitHub retains the
-published replay snapshot from the experiment history, while active training
-uses the local file in `runs/world-1-1-rainbow/`.
+`model.pt` and `replay.npz` are written atomically after 25,000 collected
+transitions and when training stops. Replay is entirely in memory during
+learning; collectors never write a database. `replay.npz` contains the global
+priority tree, every stored transition, and its random-generator state, so a
+resume retains the same experience distribution. These live checkpoints stay
+out of Git because they are mutable training artifacts.
 
 `Ctrl+C` writes `model.pt` before processes are closed. Do not run the Python
 trainer and `mario_ai_neat.lua` in the same FCEUX worker: they both control
@@ -135,6 +140,29 @@ runs/world-1-1-rainbow/health/learning_report.md
 The table compares Python decisions, optimizer updates, replay size, reward
 progress, and victories with Lua NEAT generation, record fitness, and latest
 distance. It reports a discovery only for a measured new record or victory.
+
+## Evaluation and comparable benchmarks
+
+Training metrics are never treated as evaluation. Use the greedy evaluator,
+which disables NoisyNet exploration and never sends training transitions:
+
+```bash
+PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.evaluate \
+  --rom SuperMarioBros.nes --fceux fceux --run-dir runs/world-1-1-rainbow \
+  --world 1 --episodes 10
+```
+
+It writes a timestamped `results.json` and `episodes.csv`. Produce compatible
+results for Lua NEAT Champion, basic DDQN, PPO, and Rainbow from the same ROM
+hash, FCEUX version, world, action repeat, and episode count. Then create one
+comparison table:
+
+```bash
+PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.benchmark \
+  --result 'Lua NEAT=neat-results.json' --result 'Basic DDQN=ddqn-results.json' \
+  --result 'PPO=ppo-results.json' --result 'Rainbow=runs/world-1-1-rainbow/evaluations/.../results.json' \
+  --output benchmark.md
+```
 
 ## Benchmark it honestly
 

@@ -26,14 +26,16 @@ flowchart LR
         W3["…"]
         W8["8-1 Lua bridge"]
     end
-    W1 & W2 & W3 & W8 --> Replay["Local SQLite replay\nstate · action · reward · next state"]
-    Replay --> Learner["Python / PyTorch\nDouble DQN + dueling network\n3-step returns + prioritized replay"]
-    Learner --> Model["Atomic model.pt checkpoint"]
+    W1 & W2 & W3 & W8 --> Collector["Collector process\nobservations + actions only"]
+    Collector --> Learner["Dedicated Python / PyTorch learner\nC51 + NoisyNet + Double + dueling\nn-step returns + global PER"]
+    Learner --> Replay["RAM replay + SumTree\nreplay.npz snapshot"]
+    Learner --> Model["Reproducible model.pt checkpoint"]
     Model --> W1 & W2 & W3 & W8
 ```
 
 The Lua bridge only reads SMB1 RAM, draws the FCEUX HUD, and presses NES
-buttons. Python owns action scoring, replay, optimization, and checkpointing.
+buttons. The Python collector exchanges observations and actions; a separate
+Python learner owns action scoring, replay, optimization, and checkpointing.
 Every worker has a different course start: **1-1, 2-1, 3-1, 4-1, 5-1, 6-1,
 7-1, and 8-1**. World, level, and area values are part of each observation so
 the shared model can distinguish those courses.
@@ -48,7 +50,7 @@ start, and FCEUX setup instead of assuming one approach is better.
 | Path | Runtime and framework | What is learned | Why it is here |
 | --- | --- | --- | --- |
 | **Lua NEAT + contextual Q-learning** | FCEUX Lua; custom NEAT implementation and a bounded Q-value memory in `mario_ai_neat.db` | NEAT evolves neural-network topology and connection weights. Its small Q-learning memory records action values for similar local situations. | FCEUX-native training, inspectable evolving networks, and a persistent population baseline. |
-| **Python Rainbow DQN** | Python 3, PyTorch, NumPy, SQLite, FCEUX Lua bridge | One fixed neural network estimates a Q-value for each of six actions. It improves those estimates with rewards and replayed transitions. | Eight FCEUX workers can contribute to one learner at the same time, making Q-learning experiments much faster to collect. |
+| **Python Rainbow DQN** | Python 3, PyTorch, NumPy, in-memory SumTree replay, FCEUX Lua bridge | Full Rainbow: C51 distributional values, NoisyNets, Double DQN, dueling heads, global proportional PER, and n-step returns. | Eight FCEUX collectors feed one dedicated learner without SQLite hot-path writes. |
 
 Here, **Q-learning** means learning an action value: “from this game state,
 how useful is each action for future reward?” The Lua system stores a compact

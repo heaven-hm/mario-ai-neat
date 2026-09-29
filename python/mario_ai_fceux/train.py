@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import shutil
 import signal
 import time
@@ -11,10 +12,10 @@ from pathlib import Path
 
 import numpy as np
 
-from .agent import AgentConfig, RainbowLiteAgent
+from .agent import AgentConfig
 from .environment import FileWorker, launch_fceux_workers
+from .learner import learner_main
 from .protocol import atomic_write_json
-from .replay import ReplayDatabase
 
 
 HEALTH_CHECK_INTERVAL_SECONDS = 10 * 60
@@ -175,7 +176,7 @@ def write_health_report(run_directory: Path, repository_root: Path,
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Rainbow-lite SMB1 controller through FCEUX Lua workers.")
+    parser = argparse.ArgumentParser(description="Train a full Rainbow DQN SMB1 controller through FCEUX Lua workers.")
     parser.add_argument("--rom", type=Path, required=True, help="Path to a legally obtained SMB1 NES ROM.")
     parser.add_argument("--fceux", default="fceux", help="FCEUX executable path or command.")
     parser.add_argument("--run-dir", type=Path, default=Path("runs/python-rainbow"))
@@ -184,6 +185,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=1_000_000, help="Total action decisions to collect.")
     parser.add_argument("--resume", action="store_true", help="Load model.pt if it exists in the run directory.")
     parser.add_argument("--device", default=None, help="PyTorch device: mps, cuda, or cpu.")
+    parser.add_argument("--seed", type=int, default=7, help="Seed saved in model and replay checkpoints.")
     return parser.parse_args()
 
 
@@ -200,19 +202,23 @@ def main() -> None:
     repository_root = Path(__file__).resolve().parents[2]
     bridge_template = repository_root / "python" / "fceux_bridge" / "mario_ai_fceux_bridge.lua"
     arguments.run_dir.mkdir(parents=True, exist_ok=True)
-    replay = ReplayDatabase(arguments.run_dir / "replay.sqlite3", observation_size=184)
-    agent = RainbowLiteAgent(replay, AgentConfig(), device=arguments.device)
-    checkpoint = arguments.run_dir / "model.pt"
-    if arguments.resume and checkpoint.exists():
-        agent.load(checkpoint)
-    metadata = {"algorithm": "Rainbow-lite Double DQN", "workers": arguments.workers, "worlds": requested_worlds,
-                "observation_size": 184, "actions": 6, "rom": str(arguments.rom)}
+    configuration = AgentConfig(seed=arguments.seed)
+    metadata = {"algorithm": "Rainbow DQN (C51 + NoisyNet + Double + Dueling + PER + n-step)",
+                "workers": arguments.workers, "worlds": requested_worlds, "observation_size": 184,
+                "actions": 6, "rom": str(arguments.rom), "seed": arguments.seed,
+                "replay": "in-memory global PER; replay.npz checkpoint snapshot"}
     (arguments.run_dir / "run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    context = multiprocessing.get_context("spawn")
+    learner_inbox = context.Queue(maxsize=20_000)
+    learner_outbox = context.Queue(maxsize=1_000)
+    learner = context.Process(target=learner_main,
+                              args=(learner_inbox, learner_outbox, str(arguments.run_dir), vars(configuration),
+                                    arguments.resume, arguments.device), daemon=True)
+    learner.start()
     processes = launch_fceux_workers(arguments.fceux, arguments.rom, bridge_template,
                                      arguments.run_dir, arguments.workers, requested_worlds)
     workers = [FileWorker(f"worker-{index:02d}", arguments.run_dir / f"worker-{index:02d}")
                for index in range(arguments.workers)]
-    latest_loss: float | None = None
     metrics_path = arguments.run_dir / "training_metrics.json"
     try:
         saved_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
@@ -222,6 +228,11 @@ def main() -> None:
     deaths = int(saved_metrics.get("deaths", 0))
     victories = int(saved_metrics.get("victories", 0))
     best_world_x = int(saved_metrics.get("best_x", 0))
+    learner_status: dict[str, int | float | None] = {"steps": 0, "optimizer_updates": 0,
+                                                      "replay_transitions": 0, "epsilon": 0.0,
+                                                      "latest_loss": None}
+    collected_steps = 0
+    request_id = 0
     last_observation_at = {worker.worker_id: time.monotonic() for worker in workers}
     next_health_check_at = time.monotonic()  # Produce one snapshot at launch, then every 10 minutes.
     active = True
@@ -233,7 +244,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     try:
-        while active and agent.steps < arguments.steps:
+        while active and collected_steps < arguments.steps:
             ready: list[tuple[FileWorker, object]] = []
             for worker in workers:
                 observation = worker.next_observation()
@@ -243,16 +254,23 @@ def main() -> None:
                 ready.append((worker, observation))
 
             if time.monotonic() >= next_health_check_at:
+                learner_inbox.put(("status",))
+                try:
+                    kind, learner_status = learner_outbox.get(timeout=5)
+                    if kind != "status":
+                        raise RuntimeError("learner returned an unexpected health response")
+                except Exception as error:
+                    learner_status = {**learner_status, "latest_loss": None, "learner_error": str(error)}
                 write_health_report(arguments.run_dir, repository_root, last_observation_at, arguments.workers, {
-                    "steps": agent.steps,
-                    "optimizer_updates": agent.optimizer_steps,
-                    "replay_transitions": len(replay),
+                    "steps": learner_status["steps"],
+                    "optimizer_updates": learner_status["optimizer_updates"],
+                    "replay_transitions": learner_status["replay_transitions"],
                     "episodes": episodes,
                     "deaths": deaths,
                     "victories": victories,
                     "best_x": best_world_x,
-                    "epsilon": round(agent.epsilon, 4),
-                    "latest_loss": round(latest_loss, 4) if latest_loss is not None else None,
+                    "epsilon": learner_status["epsilon"],
+                    "latest_loss": learner_status["latest_loss"],
                 })
                 next_health_check_at = time.monotonic() + HEALTH_CHECK_INTERVAL_SECONDS
 
@@ -262,11 +280,10 @@ def main() -> None:
             for worker, observation in ready:
                 best_world_x = max(best_world_x, observation.world_x)
                 if worker.previous is not None:
-                    agent.observe(worker.worker_id, worker.previous.state, worker.previous_action,
-                                  shaped_reward(worker.previous, observation), observation.state, observation.terminal)
-                    learned_loss = agent.learn()
-                    if learned_loss is not None:
-                        latest_loss = learned_loss
+                    learner_inbox.put(("transition", worker.worker_id, worker.previous.state, worker.previous_action,
+                                        shaped_reward(worker.previous, observation), observation.state,
+                                        observation.terminal))
+                    collected_steps += 1
                 if observation.terminal:
                     episodes += 1
                     if observation.reason == "victory":
@@ -278,14 +295,17 @@ def main() -> None:
                     continue
                 actionable.append((worker, observation))
 
-            # Every ready worker gets one shared batched inference call.  This
-            # avoids serial per-window neural-network evaluation.
+            # The collector only exchanges observations/actions. A separate
+            # learner process owns replay, model inference, and optimization.
             if actionable:
                 states = np.stack([observation.state for _, observation in actionable])
-                action_matrix, encoder_matrix = agent.inspect(states)
-                actions = agent.choose_actions(action_matrix, states, explore=True)
+                request_id += 1
+                learner_inbox.put(("act", request_id, states, True))
+                kind, response_id, actions, action_matrix, encoder_matrix = learner_outbox.get(timeout=10)
+                if kind != "act" or response_id != request_id:
+                    raise RuntimeError("learner action response did not match collector request")
             else:
-                action_matrix = np.empty((0, agent.config.action_count), dtype=np.float32)
+                action_matrix = np.empty((0, configuration.action_count), dtype=np.float32)
                 encoder_matrix = np.empty((0, 16), dtype=np.float32)
                 actions = np.empty((0,), dtype=np.int64)
             for index, (worker, observation) in enumerate(actionable):
@@ -302,26 +322,26 @@ def main() -> None:
                     atomic_write_json(metrics_path, metrics)
                     atomic_write_json(worker.directory / "hud.json", {
                         "sequence": observation.sequence,
-                        "steps": agent.steps,
-                        "updates": agent.optimizer_steps,
-                        "replay": len(replay),
-                        "epsilon": round(agent.epsilon, 4),
+                        "steps": learner_status["steps"],
+                        "updates": learner_status["optimizer_updates"],
+                        "replay": learner_status["replay_transitions"],
+                        "epsilon": 0.0,
                         **metrics,
                         "action": action,
                         "values": [round(float(value), 3) for value in action_values],
                         "grid": [int(value) for value in observation.state[:169]],
                         "globals": [round(float(value), 3) for value in observation.state[169:]],
                         "hidden": [round(float(value), 3) for value in encoder_summary],
-                        "loss": round(latest_loss, 4) if latest_loss is not None else None,
+                        "loss": learner_status["latest_loss"],
                     })
                 worker.previous = observation
                 worker.previous_action = action
-            if agent.steps and agent.steps % 2_000 == 0:
-                agent.save(checkpoint)
             time.sleep(0.001)
     finally:
-        agent.save(checkpoint)
-        replay.close()
+        learner_inbox.put(("stop",))
+        learner.join(timeout=90)
+        if learner.is_alive():
+            learner.kill()
         for process in processes:
             if process.poll() is None:
                 process.terminate()

@@ -1,6 +1,6 @@
-"""Python reinforcement-learning layer for Mario AI NEAT's FCEUX bridge."""
+"""Full Rainbow DQN layer and FCEUX collector protocol for SMB1."""
 
-from .agent import RainbowLiteAgent
-from .replay import ReplayDatabase, Transition
+from .agent import RainbowAgent
+from .replay import PrioritizedReplayBuffer, Transition
 
-__all__ = ["RainbowLiteAgent", "ReplayDatabase", "Transition"]
+__all__ = ["RainbowAgent", "PrioritizedReplayBuffer", "Transition"]
