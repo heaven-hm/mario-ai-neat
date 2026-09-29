@@ -148,22 +148,33 @@ test("learning HUD explains an enemy jump lesson",lesson.lesson=="jump timing to
 local inspectorState=AI.new(AI.newPopulation(1))
 local inspectorGameState=state(140)
 local inspectorAction=AI.decide(inspectorState,inspectorGameState)
-local hudCalls={texts={},boxes=0,lines=0,maxX=0,maxY=0}
+local hudCalls={texts={},boxes=0,lines=0,maxX=0,maxY=0,graphMaxX=0,
+  controllerBoxes=0,minControllerX=256}
 local fakeHud={
   text=function(_,_,text) hudCalls.texts[#hudCalls.texts+1]=text end,
   drawtext=function(_,_,text) hudCalls.texts[#hudCalls.texts+1]=text end,
-  drawbox=function(_,_,right,bottom)
+  drawbox=function(left,_,right,bottom)
     hudCalls.boxes=hudCalls.boxes+1
     hudCalls.maxX=math.max(hudCalls.maxX,right)
     hudCalls.maxY=math.max(hudCalls.maxY,bottom)
+    if bottom<200 then hudCalls.graphMaxX=math.max(hudCalls.graphMaxX,right)
+    else
+      hudCalls.controllerBoxes=hudCalls.controllerBoxes+1
+      hudCalls.minControllerX=math.min(hudCalls.minControllerX,left)
+    end
   end,
   drawline=function() hudCalls.lines=hudCalls.lines+1 end,
 }
 test("live NEAT inspector draws successfully from a game decision",
   AI.drawNeuralInspector(fakeHud,inspectorState,inspectorGameState,inspectorAction,{right=true,B=true})==true)
 local hudTextOutput=table.concat(hudCalls.texts," ")
-test("live inspector renders one mini controller in a small corner",
+test("live inspector renders one mini controller at the lower right",
   hudCalls.boxes>169 and hudCalls.lines>0 and hudTextOutput:find("PAD",1,true)==nil
-    and hudCalls.maxX<=135 and hudCalls.maxY<=130)
+    and hudCalls.controllerBoxes>0 and hudCalls.minControllerX==189
+    and hudCalls.maxX==255 and hudCalls.maxY==231)
+test("small sensor labels stay inside the existing graph panel",
+  hudCalls.boxes>500 and hudCalls.graphMaxX==180)
+test("network heading says ACTIONS",hudTextOutput:find("ACTIONS",1,true)~=nil
+  and hudTextOutput:find("INPUTS",1,true)==nil)
 
 print(string.format("%d NEAT behavior checks passed",checks))

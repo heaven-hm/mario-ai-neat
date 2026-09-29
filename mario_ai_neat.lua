@@ -997,9 +997,11 @@ local function makeHudNodePositions(genome)
   end
   for featureIndex=1,GLOBAL_INPUT_COUNT do
     local inputIndex=GRID_INPUT_COUNT+featureIndex
-    positions[inputIndex]={x=35,y=50+(featureIndex-1)*3}
+    local column=math.floor((featureIndex-1)/8)
+    local row=(featureIndex-1)%8
+    positions[inputIndex]={x=35+column*41,y=49+row*7}
   end
-  positions[NEURAL_INPUT_COUNT]={x=35,y=99}
+  positions[NEURAL_INPUT_COUNT]={x=76,y=98}
 
   local hiddenNodes={}
   for _,gene in ipairs(genome.genes or {}) do
@@ -1016,10 +1018,10 @@ local function makeHudNodePositions(genome)
   for hiddenIndex,nodeId in ipairs(hiddenNodes) do
     local column=math.floor((hiddenIndex-1)/12)
     local row=(hiddenIndex-1)%12
-    if hiddenIndex<=48 then positions[nodeId]={x=64+column*6,y=50+row*4} end
+    if hiddenIndex<=48 then positions[nodeId]={x=120+column*6,y=50+row*4} end
   end
   for actionIndex=1,ACTION_COUNT do
-    positions[OUTPUT_NODE_OFFSET+actionIndex]={x=96,y=50+(actionIndex-1)*8}
+    positions[OUTPUT_NODE_OFFSET+actionIndex]={x=145,y=50+(actionIndex-1)*8}
   end
   return positions,#hiddenNodes
 end
@@ -1027,34 +1029,97 @@ end
 -- A tiny NES-style controller mirrors the exact buttons sent to joypad.set.
 local function drawMiniController(guiApi,buttons)
   buttons=buttons or {}
-  hudBox(guiApi,4,110,70,130,0xFFD1CEC5,0xFF20262D)
+  -- NTSC's default visible area ends at x=255, y=231 in FCEUX. Anchor the
+  -- controller there so no edge is clipped or left floating from the corner.
+  local controllerX,controllerY=255-66,231-20
+  hudBox(guiApi,controllerX,controllerY,controllerX+66,controllerY+20,
+    0xFFD1CEC5,0xFF20262D)
 
   -- The four ends of the cross light up independently.
   local idleDirection,activeDirection=0xFF252A30,0xFF3ED484
-  hudBox(guiApi,13,114,18,127,idleDirection,idleDirection)
-  hudBox(guiApi,8,118,23,124,idleDirection,idleDirection)
+  hudBox(guiApi,controllerX+9,controllerY+4,controllerX+14,controllerY+17,
+    idleDirection,idleDirection)
+  hudBox(guiApi,controllerX+4,controllerY+8,controllerX+19,controllerY+14,
+    idleDirection,idleDirection)
   local directions={
-    {name="up",left=13,top=114,right=18,bottom=117},
-    {name="down",left=13,top=125,right=18,bottom=127},
-    {name="left",left=8,top=118,right=12,bottom=124},
-    {name="right",left=19,top=118,right=23,bottom=124},
+    {name="up",left=9,top=4,right=14,bottom=7},
+    {name="down",left=9,top=15,right=14,bottom=17},
+    {name="left",left=4,top=8,right=8,bottom=14},
+    {name="right",left=15,top=8,right=19,bottom=14},
   }
   for _,direction in ipairs(directions) do
     if buttons[direction.name] then
-      hudBox(guiApi,direction.left,direction.top,direction.right,direction.bottom,
+      hudBox(guiApi,controllerX+direction.left,controllerY+direction.top,
+        controllerX+direction.right,controllerY+direction.bottom,
         activeDirection,activeDirection)
     end
   end
 
   -- Select and Start are shown for the controller shape; training never
   -- presses Start automatically after Mario dies.
-  hudBox(guiApi,29,120,34,123,buttons.select and activeDirection or idleDirection,idleDirection)
-  hudBox(guiApi,37,120,42,123,buttons.start and activeDirection or idleDirection,idleDirection)
-  for _,button in ipairs({{name="B",left=47},{name="A",left=60}}) do
+  hudBox(guiApi,controllerX+25,controllerY+10,controllerX+30,controllerY+13,
+    buttons.select and activeDirection or idleDirection,idleDirection)
+  hudBox(guiApi,controllerX+33,controllerY+10,controllerX+38,controllerY+13,
+    buttons.start and activeDirection or idleDirection,idleDirection)
+  for _,button in ipairs({{name="B",left=43},{name="A",left=56}}) do
     local pressed=buttons[button.name]
-    hudBox(guiApi,button.left,116,button.left+8,126,
+    hudBox(guiApi,controllerX+button.left,controllerY+6,
+      controllerX+button.left+8,controllerY+16,
       pressed and 0xFFFF5A55 or 0xFF9B4445,pressed and 0xFFFFDF70 or 0xFF5A292E)
-    hudText(guiApi,button.left+1,117,button.name,pressed and "black" or "white","black")
+    hudText(guiApi,controllerX+button.left+1,controllerY+7,
+      button.name,pressed and "black" or "white","black")
+  end
+end
+
+-- FCEUX's gui.drawtext has no font-size argument. A tiny 3x5 pixel font keeps
+-- sensor names inside the existing network panel instead of covering the game.
+local SENSOR_LABELS={
+  "SPEED X","SPEED Y","GROUND","SIZE","POWER","ENEMY DX","ENEMY DY","ENEMY VX",
+  "ENEMY ID","ITEM?","ITEM DX","ITEM DY","ITEM ID","GAP","NEAR","BIAS",
+}
+
+local SMALL_GLYPHS={
+  A={"010","101","111","101","101"}, B={"110","101","110","101","110"},
+  D={"110","101","101","101","110"}, E={"111","100","110","100","111"},
+  G={"011","100","101","101","011"}, I={"111","010","010","010","111"},
+  M={"101","111","111","101","101"}, N={"101","111","111","111","101"},
+  O={"010","101","101","101","010"}, P={"110","101","110","100","100"},
+  R={"110","101","110","101","101"}, S={"011","100","010","001","110"},
+  T={"111","010","010","010","010"}, U={"101","101","101","101","111"},
+  V={"101","101","101","101","010"}, W={"101","101","111","111","101"},
+  X={"101","101","010","101","101"}, Y={"101","101","010","010","010"},
+  Z={"111","001","010","100","111"}, ["?"]={"110","001","010","000","010"},
+}
+
+local function drawSmallText(guiApi,x,y,value,color)
+  for characterIndex=1,#value do
+    local glyph=SMALL_GLYPHS[value:sub(characterIndex,characterIndex)]
+    if glyph then
+      for row=1,5 do
+        for column=1,3 do
+          if glyph[row]:sub(column,column)=="1" then
+            local pixelX=x+(characterIndex-1)*4+column-1
+            hudBox(guiApi,pixelX,y+row-1,pixelX,y+row-1,color,color)
+          end
+        end
+      end
+    end
+  end
+end
+
+local function drawSensorLabels(guiApi)
+  for sensorIndex,sensorLabel in ipairs(SENSOR_LABELS) do
+    local column=math.floor((sensorIndex-1)/8)
+    local row=(sensorIndex-1)%8
+    local labelX=40+column*41
+    local labelY=47+row*7
+    local labelWidth=#sensorLabel*4-1
+    -- A narrow backing hides crossing links behind each label; this is part
+    -- of the existing graph, not another panel over the game picture.
+    hudBox(guiApi,labelX-1,labelY-1,labelX+labelWidth,labelY+5,
+      0xD0102D4A,0xD0102D4A)
+    drawSmallText(guiApi,labelX,labelY,sensorLabel,
+      sensorIndex==16 and 0xFFFFFF00 or 0xFFFFFFFF)
   end
 end
 
@@ -1068,10 +1133,9 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
   local genome=aiState.populationState.genomes[aiState.genomeIndex]
   if not genome then return false end
   local nodePositions=makeHudNodePositions(genome)
-  -- Three small panels occupy the upper-left corner only. The rest of the
-  -- 256x240 game picture stays visible, including Mario near ground level.
+  -- The graph and labeled sensors stay above Mario's ground-level play area.
   hudBox(guiApi,0,10,135,38,0xB0000000,0xB0000000)
-  hudBox(guiApi,0,40,135,106,0x90000000,0x90000000)
+  hudBox(guiApi,0,40,180,106,0x90000000,0x90000000)
   hudText(guiApi,2,12,"MARIO AI  NEAT","cyan","black")
   hudText(guiApi,2,20,string.format("G%d #%d/%d S%d",
     aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,
@@ -1097,7 +1161,7 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
   end
 
   -- Grid is the local tile view: dark empty, green solid, red enemy.
-  hudText(guiApi,2,41,"INPUTS","white","black")
+  hudText(guiApi,2,41,"ACTIONS","white","black")
   for inputIndex=1,GRID_INPUT_COUNT do
     local point=nodePositions[inputIndex]
     local value=(aiState.lastObservationInputs or {})[inputIndex] or 0
@@ -1133,6 +1197,7 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
       selected and "yellow" or "white","black")
   end
 
+  drawSensorLabels(guiApi)
   drawMiniController(guiApi,buttons)
   return true
 end

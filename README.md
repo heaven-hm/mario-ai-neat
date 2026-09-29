@@ -8,7 +8,11 @@ An AI that learns to play **Super Mario Bros. 1 for NES in FCEUX**. It uses NEAT
 
 ![Mario AI NEAT playing Super Mario Bros. 1 in FCEUX, with a live neural network and mini NES controller](docs/images/mario-ai-neat-training.png)
 
-*A World 1-1 training run in FCEUX. The compact overlay shows the active genome, nearby input grid, network connections, selected action, and mini NES controller while Mario remains visible.*
+*A World 1-1 training run in FCEUX. The overlay shows the current genome, live neural network, selected action, and mini NES controller while Mario remains visible.*
+
+![Ten seconds of Mario AI NEAT training live in FCEUX](docs/images/mario-ai-neat-live.gif)
+
+*Ten seconds captured from a live FCEUX training session.*
 
 Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super Mario World; this project targets SMB1 in FCEUX.
 
@@ -67,7 +71,7 @@ Set `PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_neat.lua`, then load t
 
 ## What you'll see and what to expect
 
-Mario AI evolves candidate controllers; it does not understand the game like a person or learn language. Early attempts may die or make little progress. Fitness favors reaching farther, surviving, keeping power-ups, and completing the level. The overlay shows the active genome, input grid, network connections, selected action, pressed buttons, and progress. Click the upper-right corner of the FCEUX screen to hide the overlay, then click **[AI]** there to show it again.
+Mario AI evolves candidate controllers; it does not understand the game like a person or learn language. Early attempts may die or make little progress. Fitness favors reaching farther, surviving, keeping power-ups, and completing the level. The overlay shows the active genome, input grid, labeled sensors such as enemy DX and speed X, network connections, selected action, pressed buttons, and progress. Click the upper-right corner of the FCEUX screen to hide the overlay, then click **[AI]** there to show it again.
 
 Training time and results depend on the ROM, starting point, and number of attempts. A higher generation number means more rounds of evaluation and evolution; it does not guarantee that the AI can finish the level.
 
