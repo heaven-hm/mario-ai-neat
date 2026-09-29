@@ -11,6 +11,9 @@ local TARGET_WORLD_INDEX = __TARGET_WORLD_INDEX__
 local ACTION_REPEAT_FRAMES = 12
 local RESPONSE_TIMEOUT_FRAMES = 600
 local TRAINING_SLOT = 10
+local TEST_TIMER_DIGIT = 0x09
+-- SMB1 stores one less than the displayed lives count: 0x62 displays 99.
+local TEST_LIVES_RAW = 0x62
 
 local RAM = {
   player_state=0x000E, enemy_present=0x000F, enemy_id=0x0016,
@@ -22,6 +25,8 @@ local RAM = {
   world_select_number=0x076B, world_select_enable=0x07FC,
   world_number=0x075F, level_number=0x075C, area_number=0x0760,
   offscreen_world_number=0x0766, offscreen_area_number=0x0767,
+  timer_hundreds=0x07F8, timer_tens=0x07F9, timer_ones=0x07FA,
+  lives=0x075A,
 }
 
 local NON_SOLID = {[0x00]=true,[0x08]=true,[0x24]=true,[0x25]=true,[0x26]=true,
@@ -36,6 +41,15 @@ local function clamp(value,low,high) return math.max(low,math.min(high,value)) e
 local function signed(value) return value>=128 and value-256 or value end
 local function read(address) return memory.readbyte(address) end
 local function path(name) return WORKER_DIRECTORY.."/"..name end
+
+local function applyTestingAids()
+  -- These test aids match the Lua NEAT training behaviour.  They affect
+  -- episode availability only; the AI receives no artificial movement.
+  memory.writebyte(RAM.timer_hundreds,TEST_TIMER_DIGIT)
+  memory.writebyte(RAM.timer_tens,TEST_TIMER_DIGIT)
+  memory.writebyte(RAM.timer_ones,TEST_TIMER_DIGIT)
+  memory.writebyte(RAM.lives,TEST_LIVES_RAW)
+end
 
 local function writeAtomic(name,contents)
   local temporary=path(name..".tmp")
@@ -290,6 +304,7 @@ while true do
   if not initialStateSaved then
     if snapshot.phase=="playing" and snapshot.worldX<=128 and stateHandle then
       savestate.save(stateHandle)
+      applyTestingAids()
       initialStateSaved=true
     else
       waitingFrames=waitingFrames+1
@@ -333,6 +348,7 @@ while true do
     if reset and stateHandle then
       joypad.set(1,{})
       savestate.load(stateHandle)
+      applyTestingAids()
       drawPythonHud()
       emu.frameadvance()
     else

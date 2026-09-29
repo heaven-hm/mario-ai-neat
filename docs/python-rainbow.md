@@ -55,10 +55,10 @@ python3 -m pip install -r python/requirements.txt
 
 ## Run training
 
-Start FCEUX workers from the project root. The first time, each worker opens at
-the SMB1 title screen. Start World 1-1 manually in each window once. The bridge
-captures a fixed state only when Mario is near the start, then all future
-episode resets restore that state. It never presses Start.
+Start FCEUX workers from the project root. On first launch, the bridge uses the
+verified SMB1 title-screen world selector, starts its assigned world once, and
+captures a fixed state near the course start. Every later training reset
+restores that state. It never presses Start after a death or game-over screen.
 
 ```sh
 PYTHONPATH=python python3 -m mario_ai_fceux.train \
@@ -87,13 +87,23 @@ several worlds:
 ```bash
 PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.train \
   --rom SuperMarioBros.nes --fceux fceux --workers 8 \
-  --worlds 1,1,2,2,4,4,8,8 --run-dir runs/world-1-1-rainbow --resume
+  --worlds 1,2,3,4,5,6,7,8 --run-dir runs/world-1-1-rainbow --resume
 ```
 
-This starts workers in **1-1, 2-1, 4-1, and 8-1**. SMB1's selector starts a
-world at level 1; later courses such as 1-2 or 4-3 require verified FCEUX
-course-start states. The bridge records world, level, and area values in the
-model observation so a shared network can distinguish the assigned courses.
+This starts one worker in every first course: **1-1 through 8-1**. SMB1's
+selector starts a world at level 1; later courses such as 1-2 or 4-3 require
+verified FCEUX course-start states. The bridge records world, level, and area
+values in the model observation so a shared network can distinguish courses.
+
+### Checkpoints and storage
+
+`model.pt` is written atomically: Python saves a temporary file and replaces
+the old checkpoint only after the new file is complete. The live
+`replay.sqlite3` file is a local training cache and deliberately remains out of
+Git LFS. SQLite changes it on every action; versioning every edit creates a
+full database copy each time and exhausts disk space. GitHub retains the
+published replay snapshot from the experiment history, while active training
+uses the local file in `runs/world-1-1-rainbow/`.
 
 `Ctrl+C` writes `model.pt` before processes are closed. Do not run the Python
 trainer and `mario_ai_neat.lua` in the same FCEUX worker: they both control

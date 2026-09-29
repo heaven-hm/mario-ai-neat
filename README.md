@@ -10,19 +10,42 @@ An AI that learns to play **Super Mario Bros. 1 for NES in FCEUX**. It uses NEAT
 
 *A World 1-1 training run in FCEUX. The overlay shows the current genome, live neural network, selected action, and mini NES controller while Mario remains visible.*
 
-## Faster Python training
+## Python parallel training
 
-The original Lua system remains the embedded FCEUX controller and NEAT baseline.
-For higher-throughput learning, this branch also includes a **Python + PyTorch
-Rainbow-style DQN trainer**. It launches multiple FCEUX Lua bridge workers,
-collects the same SMB1 RAM/tile observations, writes durable prioritized replay
-to SQLite, and saves a `model.pt` checkpoint. Python is the recommended path
-when the objective is faster iteration rather than an all-Lua script.
+The original Lua NEAT system remains the FCEUX-native player and
+neuroevolution baseline. This branch also has a **Python + PyTorch
+Rainbow-style DQN trainer** for faster data collection. It runs eight isolated
+FCEUX workers at once and trains one shared neural network from their combined
+experience.
+
+```mermaid
+flowchart LR
+    subgraph FCEUX["8 parallel FCEUX instances"]
+        W1["1-1 Lua bridge"]
+        W2["2-1 Lua bridge"]
+        W3["…"]
+        W8["8-1 Lua bridge"]
+    end
+    W1 & W2 & W3 & W8 --> Replay["Local SQLite replay\nstate · action · reward · next state"]
+    Replay --> Learner["Python / PyTorch\nDouble DQN + dueling network\n3-step returns + prioritized replay"]
+    Learner --> Model["Atomic model.pt checkpoint"]
+    Model --> W1 & W2 & W3 & W8
+```
+
+The Lua bridge only reads SMB1 RAM, draws the FCEUX HUD, and presses NES
+buttons. Python owns action scoring, replay, optimization, and checkpointing.
+Every worker has a different course start: **1-1, 2-1, 3-1, 4-1, 5-1, 6-1,
+7-1, and 8-1**. World, level, and area values are part of each observation so
+the shared model can distinguish those courses.
+
+We created the Python path because Lua NEAT evaluates one genome at a time.
+Python can learn from every worker's transition immediately, so an enemy jump
+or death provides training signal without waiting for a full 100-genome
+generation. The Python implementation is running and tested locally, but it
+has not yet demonstrated better gameplay than the mature Lua NEAT database.
 
 Read [Python Rainbow training for FCEUX](docs/python-rainbow.md) for setup,
-run commands, checkpoint recovery, and the fair benchmark protocol. It is
-implemented and tested locally, but has not yet earned a measured claim of
-beating every external Mario project.
+checkpoint recovery, current limitations, and the benchmark protocol.
 
 ![Ten seconds of Mario AI NEAT training live in FCEUX](docs/images/mario-ai-neat-live.gif)
 
@@ -57,7 +80,7 @@ branch's changes have not yet been benchmarked against the other projects.
 | Project | Game and runtime | Learning and evaluation | Strongest fit | Trade-off |
 | --- | --- | --- | --- | --- |
 | **Mario AI NEAT (this branch)** | SMB1 NES, embedded Lua in FCEUX | NEAT with SMB1 RAM/tile features, short history, event rewards, novelty archive, similarity-weighted contextual Q memory, and evolved 1/2/4/6-frame action holds; one genome at a time | Direct SMB1 + FCEUX use, resumable genomes and online action feedback, live HUD | Experimental changes; serial training; no completion-rate comparison yet |
-| **Python Rainbow FCEUX (this branch)** | SMB1 NES, FCEUX Lua bridge + Python/PyTorch | Double DQN, dueling Q-network, n-step returns, SQLite prioritized replay, model checkpoints, and parallel FCEUX workers | Shared learner can use transitions from multiple FCEUX processes | Requires Python/PyTorch and multiple FCEUX windows; benchmark still required |
+| **Python Rainbow FCEUX (this branch)** | SMB1 NES, FCEUX Lua bridge + Python/PyTorch | One fixed Double DQN with dueling heads, n-step returns, prioritized replay, atomic checkpoints, and eight parallel workers | Fast shared data collection across 1-1 through 8-1 | Requires Python/PyTorch; current learned policy remains behind Lua NEAT |
 | [MarI/O FCEUX port](https://github.com/juvester/mari-o-fceux/blob/master/neatevolve.lua) | SMB1, Lua in FCEUX | MarI/O-style NEAT, nearby tile/enemy grid, button outputs, fixed savestate, evolution in the emulator | Existing FCEUX Lua baseline and live network display | Smaller game-state feature set; no parallel evaluator |
 | [SethBling's MarI/O](https://gist.github.com/SethBling/598639f8d5e8afb5453a0b9519be51ff) | Primarily BizHawk; source handles Super Mario World and SMB1 | NEAT with a 13×13 local grid, button outputs, and species-based evolution | Influential reference implementation | Not an SMB1-only FCEUX project; source asks users not to redistribute it |
 | [Vivek's Super Mario NEAT](https://github.com/vivek3141/super-mario-neat) | Python with FCEUX and Python dependencies | NEAT, saved checkpoints, configurable runs, and multiprocessing for parallel genomes | Parallel training workflow; its README reports about 50% completion of 1-1 for the supplied checkpoint | Separate Python setup; reported results are the author's, not a benchmark against this project |

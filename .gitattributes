@@ -1,1 +1,0 @@
-runs/world-1-1-rainbow/replay.sqlite3 filter=lfs diff=lfs merge=lfs -text
