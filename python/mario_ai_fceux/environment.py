@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Sequence
@@ -91,10 +92,26 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
         raise FileNotFoundError(f"SMB1 ROM was not found: {rom}")
     if count < 1:
         raise ValueError("worker count must be positive")
+    # FCEUX 2.6 uses --loadlua; earlier builds document -lua.  Detect the
+    # installed binary rather than assuming the older spelling.
+    try:
+        help_result = subprocess.run([executable, "--help"], capture_output=True, text=True,
+                                     timeout=5, check=False)
+        help_output = help_result.stdout + help_result.stderr
+    except (OSError, subprocess.SubprocessError):
+        help_output = ""
+    lua_option = "--loadlua" if "--loadlua" in help_output else "-lua"
     processes: list[subprocess.Popen[bytes]] = []
     for index in range(count):
         bridge = prepare_worker_directory(bridge_template, run_directory / f"worker-{index:02d}")
-        command = [executable, "-nothrottle", "1", "-lua", str(bridge), *extra_args, str(rom)]
+        # FCEUX is launched from the worker directory, so the bridge must be
+        # absolute; otherwise a relative run directory is resolved twice.
+        fceux_arguments = [lua_option, str(bridge.resolve()), *extra_args, str(rom.resolve())]
+        # macOS normally reuses an existing application instance.  `open -n`
+        # creates one window per Python worker, while other platforms invoke
+        # the configured FCEUX executable directly.
+        command = (["open", "-na", "FCEUX", "--args", *fceux_arguments]
+                   if sys.platform == "darwin" else [executable, *fceux_arguments])
         processes.append(subprocess.Popen(command, cwd=bridge.parent))
     return processes
 

@@ -3,7 +3,9 @@
 -- FCEUX owns only emulation, real controller input, and a fixed training state.
 
 local WORKER_DIRECTORY = "__WORKER_DIRECTORY__"
-local ACTION_REPEAT_FRAMES = 4
+-- SMB1 needs a held A press for a full jump.  Four frames cut jumps short;
+-- twelve keeps the same action long enough to clear the first enemy and pipe.
+local ACTION_REPEAT_FRAMES = 12
 local RESPONSE_TIMEOUT_FRAMES = 600
 local TRAINING_SLOT = 10
 
@@ -109,7 +111,8 @@ local function observe()
     size==1 and -1 or 1,power==2 and 1 or (power==1 and 0 or -1),enemyDX,enemyDY,enemyVelocity,enemyType,
     -1,0,0,0,gap,nearestEnemy and enemyDX>0 and enemyDX<0.25 and 1 or 0}
   for _,value in ipairs(globals) do features[#features+1]=value end
-  return {features=features,worldX=worldX,power=power,phase=phase()}
+  return {features=features,worldX=worldX,power=power,phase=phase(),
+    operationMode=read(RAM.operation_mode),playerState=read(RAM.player_state)}
 end
 
 local function jsonArray(values)
@@ -125,21 +128,176 @@ local function publish(sequence,snapshot,terminal)
     sequence,jsonArray(snapshot.features),snapshot.worldX,snapshot.power,terminal and "true" or "false",reason))
 end
 
+-- Written only while waiting for the initial playable frame.  It makes ROM or
+-- FCEUX RAM-map mismatches diagnosable without affecting Python training.
+local function publishWaitingStatus(snapshot)
+  return writeAtomic("status.json",string.format(
+    '{"phase":"%s","world_x":%d,"operation_mode":%d,"player_state":%d}',
+    snapshot.phase,snapshot.worldX,snapshot.operationMode,snapshot.playerState))
+end
+
+-- Python writes a small telemetry message beside command.json.  The HUD stays
+-- inside FCEUX so training can be inspected without opening a terminal.
+local ACTION_NAMES={"RUN","JUMP","BACK","STOP","HOP","WALK"}
+local hudCache={sequence=0,steps=0,replay=0,epsilon=1,action=3,
+  updates=0,episodes=0,deaths=0,victories=0,bestX=0,loss=0,
+  values={0,0,0,0,0,0},grid={},globals={},hidden={}}
+
+local function parseNumberArray(text,key,target)
+  local encoded=text:match('"'..key..'"%s*:%s*%[([^%]]*)%]')
+  if not encoded then return end
+  local index=1
+  for value in encoded:gmatch('[%-%d%.]+') do
+    target[index]=tonumber(value) or 0
+    index=index+1
+  end
+end
+
+local function readHud()
+  local handle=io.open(path("hud.json"),"r")
+  if not handle then return hudCache end
+  local text=handle:read("*a");handle:close()
+  local sequence=tonumber(text:match('"sequence"%s*:%s*(%d+)'))
+  if not sequence then return hudCache end
+  hudCache.sequence=sequence
+  hudCache.steps=tonumber(text:match('"steps"%s*:%s*(%d+)')) or hudCache.steps
+  hudCache.updates=tonumber(text:match('"updates"%s*:%s*(%d+)')) or hudCache.updates
+  hudCache.replay=tonumber(text:match('"replay"%s*:%s*(%d+)')) or hudCache.replay
+  hudCache.epsilon=tonumber(text:match('"epsilon"%s*:%s*([%d%.%-]+)')) or hudCache.epsilon
+  hudCache.episodes=tonumber(text:match('"episodes"%s*:%s*(%d+)')) or hudCache.episodes
+  hudCache.deaths=tonumber(text:match('"deaths"%s*:%s*(%d+)')) or hudCache.deaths
+  hudCache.victories=tonumber(text:match('"victories"%s*:%s*(%d+)')) or hudCache.victories
+  hudCache.bestX=tonumber(text:match('"best_x"%s*:%s*(%d+)')) or hudCache.bestX
+  hudCache.loss=tonumber(text:match('"loss"%s*:%s*([%d%.%-]+)')) or hudCache.loss
+  hudCache.action=tonumber(text:match('"action"%s*:%s*(%d+)')) or hudCache.action
+  parseNumberArray(text,"values",hudCache.values)
+  parseNumberArray(text,"grid",hudCache.grid)
+  parseNumberArray(text,"globals",hudCache.globals)
+  parseNumberArray(text,"hidden",hudCache.hidden)
+  return hudCache
+end
+
+local function fceuxColor(argb)
+  local alpha=math.floor(argb/0x1000000)%256
+  local red=math.floor(argb/0x10000)%256
+  local green=math.floor(argb/0x100)%256
+  local blue=argb%256
+  return alpha+blue*0x100+green*0x10000+red*0x1000000
+end
+
+local function hudBox(left,top,right,bottom,fill,outline)
+  if gui and gui.drawbox then gui.drawbox(left,top,right,bottom,fceuxColor(fill),fceuxColor(outline or fill)) end
+end
+
+local function hudText(left,top,value,color)
+  if not gui then return end
+  if gui.drawtext then gui.drawtext(left,top,tostring(value),fceuxColor(color or 0xFFFFFFFF),0)
+  elseif gui.text then gui.text(left,top,tostring(value),"white","black") end
+end
+
+local function hudLine(left,top,right,bottom,color)
+  if gui and gui.drawline then gui.drawline(left,top,right,bottom,fceuxColor(color)) end
+end
+
+local function activationColor(value)
+  if value > 0.15 then return 0xFF42FF70 end
+  if value < -0.15 then return 0xFFFF6B5E end
+  return 0xFF48617A
+end
+
+-- The fixed Rainbow network is too dense to draw every 184x512 link.  This
+-- shows the actual 13x13 sensor grid, 15 RAM features, and a 4x4 summary of
+-- its 256 live encoder activations, with paths to the six Q-value outputs.
+local function drawNetworkInspector(hud)
+  local left,top,right,bottom=2,5,123,114
+  hudBox(left,top,right,bottom,0xFF102D4A,0xFF4A90E2)
+  hudText(left+4,top+3,"SENS > ENC",0xFF00FFFF)
+  local gridLeft,gridTop,cellSize=left+5,top+17,3
+  for row=0,12 do
+    for column=0,12 do
+      local index=row*13+column+1
+      local value=hud.grid[index] or 0
+      local fill=value<0 and 0xFFFF6B5E or (value>0 and 0xFF42FF70 or 0xFF263B52)
+      hudBox(gridLeft+column*cellSize,gridTop+row*cellSize,
+        gridLeft+column*cellSize+1,gridTop+row*cellSize+1,fill,fill)
+    end
+  end
+  -- A few fixed links communicate flow without visual noise from 94k weights.
+  for row=0,3 do hudLine(gridLeft+39,gridTop+row*10,68,top+26+row*10,0x8051758C) end
+  hudText(left+46,top+17,"RAM",0xFFB8C7E0)
+  local labels={{"VX",1},{"VY",2},{"GRD",3},{"PWR",5},{"ENX",6},{"GAP",14}}
+  for index,labelSpec in ipairs(labels) do
+    local label,value=labelSpec[1],hud.globals[labelSpec[2]] or 0
+    local rowTop=top+25+(index-1)*9
+    hudText(left+46,rowTop,label,0xFFB8C7E0)
+    local width=math.floor(math.min(1,math.abs(value))*11)
+    hudBox(left+64,rowTop+2,left+64+width,rowTop+4,activationColor(value),activationColor(value))
+  end
+  hudText(left+77,top+17,"ENC 256",0xFFB8C7E0)
+  for row=0,3 do
+    for column=0,3 do
+      local value=hud.hidden[row*4+column+1] or 0
+      local nodeLeft=left+79+column*8
+      local nodeTop=top+28+row*10
+      hudBox(nodeLeft,nodeTop,nodeLeft+5,nodeTop+5,activationColor(value),0xFFFFFFFF)
+      hudLine(nodeLeft+5,nodeTop+2,right-2,nodeTop+2,0x604A90E2)
+    end
+  end
+  hudText(left+4,top+96,"N184>512>256",0xFFB8C7E0)
+  hudText(left+77,top+96,"DQN>6",0xFFFFFF00)
+end
+
+local function drawPythonHud()
+  if not gui or not (gui.drawtext or gui.text) then return end
+  local hud=readHud()
+  drawNetworkInspector(hud)
+  local panelLeft,panelTop,panelRight,panelBottom=126,5,255,114
+  hudBox(panelLeft,panelTop,panelRight,panelBottom,0xFF102D4A,0xFF4A90E2)
+  hudText(panelLeft+4,panelTop+3,"PYTHON RAINBOW",0xFF00FFFF)
+  hudText(panelLeft+4,panelTop+13,string.format("S%d U%d",hud.steps,hud.updates),0xFFFFFFFF)
+  hudText(panelLeft+4,panelTop+23,string.format("M%d E%.2f",hud.replay,hud.epsilon),0xFFB8C7E0)
+  hudText(panelLeft+4,panelTop+33,string.format("EP%d D%d V%d",hud.episodes,hud.deaths,hud.victories),0xFFFFFFFF)
+  hudText(panelLeft+4,panelTop+43,string.format("X%d L%.3f",hud.bestX,hud.loss),0xFFB8C7E0)
+  for index,name in ipairs(ACTION_NAMES) do
+    local rowTop=panelTop+54+(index-1)*9
+    local selected=hud.action==index-1
+    local value=hud.values[index] or 0
+    if selected then hudBox(panelLeft+3,rowTop,panelRight-3,rowTop+6,0xFF174D38,0xFF42FF70) end
+    hudText(panelLeft+6,rowTop,(selected and ">" or " ")..name,selected and 0xFFFFFF00 or 0xFFFFFFFF)
+    hudText(panelLeft+73,rowTop,string.format("%+.2f",value),selected and 0xFFFFFF00 or 0xFFB8C7E0)
+  end
+end
+
 local stateHandle=nil
 if savestate and savestate.object then stateHandle=savestate.object(TRAINING_SLOT) end
+writeAtomic("bridge_started.json", '{"bridge":"started"}')
 local initialStateSaved=false
+local initialStartAttempts=0
 local sequence=0
+local waitingFrames=0
 
 while true do
   local snapshot=observe()
+  drawPythonHud()
   if not initialStateSaved then
     if snapshot.phase=="playing" and snapshot.worldX<=128 and stateHandle then
       savestate.save(stateHandle)
       initialStateSaved=true
     else
-      joypad.set(1,{})
+      waitingFrames=waitingFrames+1
+      if waitingFrames%30==0 then publishWaitingStatus(snapshot) end
+      -- Make at most three title-screen Start attempts before the first saved
+      -- playable frame.  Once that state exists, this branch is never used
+      -- again, including after a death or game-over screen.
+      if snapshot.operationMode==0 and initialStartAttempts<3 and waitingFrames%120==0 then
+        joypad.set(1,{start=true})
+        initialStartAttempts=initialStartAttempts+1
+      else
+        joypad.set(1,{})
+      end
+      drawPythonHud()
       emu.frameadvance()
-      -- Start SMB1 manually once. The bridge never presses Start for you.
+      -- FCEUX now advances until World 1-1 reaches a controllable state.
     end
   else
     sequence=sequence+1
@@ -150,15 +308,20 @@ while true do
       action,reset=readCommand(sequence)
       if action~=nil then break end
       joypad.set(1,{})
+      drawPythonHud()
       emu.frameadvance()
     end
     if reset and stateHandle then
       joypad.set(1,{})
       savestate.load(stateHandle)
+      drawPythonHud()
       emu.frameadvance()
     else
       joypad.set(1,ACTIONS[(action or 3)+1])
-      for _=1,ACTION_REPEAT_FRAMES do emu.frameadvance() end
+      for _=1,ACTION_REPEAT_FRAMES do
+        drawPythonHud()
+        emu.frameadvance()
+      end
     end
   end
 end

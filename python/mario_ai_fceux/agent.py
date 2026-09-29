@@ -29,6 +29,7 @@ class AgentConfig:
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
     epsilon_decay_steps: int = 250_000
+    guided_exploration_share: float = 0.90
 
 
 class RainbowLiteAgent:
@@ -53,15 +54,71 @@ class RainbowLiteAgent:
         return self.config.epsilon_start + fraction * (self.config.epsilon_end - self.config.epsilon_start)
 
     def select_actions(self, states: np.ndarray, explore: bool = True) -> np.ndarray:
+        return self.choose_actions(self.action_values(states), explore=explore)
+
+    def safety_actions(self, states: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return a conservative SMB1 action prior and its immediate-danger mask.
+
+        The prior is demonstration-free curriculum guidance, not a replacement
+        for the Q network: it makes exploration useful by running right and
+        holding jump+run when the RAM observation says an enemy is ahead.
+        """
         states = np.asarray(states, dtype=np.float32).reshape(-1, self.config.observation_size)
-        with torch.no_grad():
-            scores = self.online(torch.from_numpy(states).to(self.device)).cpu().numpy()
+        actions = np.zeros(len(states), dtype=np.int64)  # run right
+        grounded = states[:, 171] > 0.0
+        enemy_dx = states[:, 174]
+        enemy_dy = states[:, 175]
+        enemy_near = states[:, 183] > 0.0
+        enemy_ahead = (enemy_dx > 0.02) & (enemy_dx < 0.42) & (enemy_dy > -0.55) & (enemy_dy < 0.55)
+        danger = enemy_ahead | enemy_near
+        # A held jump has to begin on the ground; while airborne we keep the
+        # action instead of replacing it with a random direction mid-arc.
+        actions[grounded & danger] = 1  # jump + run
+        actions[(~grounded) & danger] = 1
+        return actions, danger
+
+    def choose_actions(self, scores: np.ndarray, states: np.ndarray | None = None,
+                       explore: bool = True) -> np.ndarray:
+        """Choose batched actions with safe, useful exploration for SMB1."""
+        scores = np.asarray(scores, dtype=np.float32).reshape(-1, self.config.action_count)
         actions = scores.argmax(axis=1)
+        safety_actions = danger = None
+        if states is not None:
+            safety_actions, danger = self.safety_actions(states)
         if explore:
             for index in range(len(actions)):
                 if random.random() < self.epsilon:
-                    actions[index] = random.randrange(self.config.action_count)
+                    # Uniform random exploration spent half its trials moving
+                    # away from the goal or standing still.  Prefer an action
+                    # that can produce a meaningful SMB1 trajectory, while a
+                    # small random share still discovers alternatives.
+                    if safety_actions is not None and random.random() < self.config.guided_exploration_share:
+                        actions[index] = safety_actions[index]
+                    else:
+                        actions[index] = random.choice((0, 1, 4))
+        # Never ask a newly trained, untrusted Q network to walk directly into
+        # an immediately visible enemy.  The resulting successful jump
+        # transitions enter replay and teach the network the same behaviour.
+        if safety_actions is not None and danger is not None:
+            actions[danger] = safety_actions[danger]
         return actions.astype(np.int64)
+
+    def action_values(self, states: np.ndarray) -> np.ndarray:
+        """Return the current online network's six action values for the HUD."""
+        return self.inspect(states)[0]
+
+    def inspect(self, states: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return Q-values and a 4x4 summary of the live 256-unit encoder."""
+        states = np.asarray(states, dtype=np.float32).reshape(-1, self.config.observation_size)
+        with torch.no_grad():
+            tensor = torch.from_numpy(states).to(self.device)
+            first_layer = self.online.encoder[1](self.online.encoder[0](tensor))
+            encoded = self.online.encoder[3](self.online.encoder[2](first_layer))
+            advantage = self.online.advantage(encoded)
+            q_values = self.online.value(encoded) + advantage - advantage.mean(dim=1, keepdim=True)
+            # Each square represents the mean activation of 16 encoder units.
+            summary = encoded.reshape(-1, 16, 16).mean(dim=2)
+        return q_values.cpu().numpy(), summary.cpu().numpy()
 
     def observe(self, worker_id: str, state: np.ndarray, action: int, reward: float,
                 next_state: np.ndarray, terminated: bool) -> None:
