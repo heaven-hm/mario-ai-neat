@@ -21,7 +21,7 @@ Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super 
 - Scores each attempt for progress and survival, then evolves the population.
 - Saves learning in `mario_ai_neat.db` so later sessions can continue from the saved population.
 
-See [five complete network diagrams from the included database](docs/best-networks.md), drawn from the actual saved connections.
+See [seven complete network diagrams from the included database](docs/best-networks.md), drawn from the actual saved connections.
 
 ## Start playing and training
 
@@ -51,7 +51,7 @@ flowchart LR
 
 ### Resume training
 
-The included `mario_ai_neat.db` is a generation 35 population checkpoint. Keep it beside `mario_ai_neat.lua`, load the SMB1 ROM, then start the Lua script in FCEUX. It automatically loads the population and continues training. The script uses this exact filename; it does not automatically find `mario_ai_heaven_neat.db` or other database names.
+The included `mario_ai_neat.db` is a generation 37 population checkpoint. Keep it beside `mario_ai_neat.lua`, load the SMB1 ROM, then start the Lua script in FCEUX. It automatically loads the population and continues training. The script uses this exact filename; it does not automatically find `mario_ai_heaven_neat.db` or other database names.
 
 If the log says `discarded unsafe training start`, the saved FCEUX slot was too close to a death. The AI leaves that slot, waits for Mario's normal respawn, and records a new start. It does not press Start or score that short failed attempt. If the game remains on a title or game-over screen, start the game manually; the AI never presses Start for you.
 

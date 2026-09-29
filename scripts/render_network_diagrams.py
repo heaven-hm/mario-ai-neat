@@ -1,4 +1,4 @@
-"""Render the five best saved NEAT genomes as dependency-free SVG diagrams."""
+"""Render five top-scored and two highly connected genomes as SVG diagrams."""
 
 import csv
 import hashlib
@@ -54,7 +54,7 @@ def positions(hidden_nodes):
     for input_id in range(170, 186):
         points[input_id] = (335, 73 + (input_id - 170) * 23)
     for hidden_index, node_id in enumerate(hidden_nodes):
-        points[node_id] = (695, 190 + hidden_index * 110)
+        points[node_id] = (695, 235 + (hidden_index - (len(hidden_nodes)-1)/2) * 70)
     for action_index in range(1, 7):
         points[1000000 + action_index] = (955, 106 + (action_index - 1) * 55)
     return points
@@ -84,7 +84,7 @@ def draw_genome(genome_index, generation, fitness, all_genes, database_hash):
           size=15, weight="bold")
     label(root, 29, 72, "13 × 13 nearby cells", size=13, color="#B8DAE8")
     label(root, 320, 48, "Player and world inputs", size=13, color="#B8DAE8")
-    label(root, 663, 85, "Hidden", size=13, color="#B8DAE8")
+    label(root, 663, 65, "Hidden", size=13, color="#B8DAE8")
     label(root, 930, 74, "Actions", size=13, color="#B8DAE8")
 
     # Draw every enabled gene before nodes and labels so crossings stay behind text.
@@ -141,7 +141,14 @@ def draw_genome(genome_index, generation, fitness, all_genes, database_hash):
 def main():
     generation, fitness, genes = parse_database()
     database_hash = hashlib.sha256(DATABASE.read_bytes()).hexdigest()
-    selected = sorted(fitness, key=lambda genome_index: (-fitness[genome_index], genome_index))[:5]
+    best_five = sorted(fitness, key=lambda genome_index: (-fitness[genome_index], genome_index))[:5]
+    enabled_counts = {genome_index: sum(gene[3] for gene in genome_genes)
+                      for genome_index, genome_genes in genes.items()}
+    most_connected = sorted((genome_index for genome_index in fitness
+                             if genome_index not in best_five),
+                            key=lambda genome_index: (-enabled_counts.get(genome_index, 0),
+                                                      -fitness[genome_index], genome_index))[:2]
+    selected = best_five + most_connected
     OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
     for genome_index in selected:
         draw_genome(genome_index, generation, fitness[genome_index],

@@ -1,51 +1,65 @@
-# Five networks from the saved population
+# Seven networks from the saved population
 
-These are the five highest scored genomes in the committed [training database](../mario_ai_neat.db), generation **35**. All five scored **2602.94**; ties are listed by genome number. They are similar because NEAT produced variants of a successful parent. This is a snapshot of training results, not proof that any genome can finish a level.
+These diagrams come from the committed [generation 37 training database](../mario_ai_neat.db). The first five have the highest saved fitness. The final two are the **most connected remaining genomes**, included to show more complex networks. This is a fixed snapshot of training results; a high score alone does not prove that a network can finish a level.
 
-| Genome | Fitness | Enabled links | Gap → running jump | Hidden 187 → retreat |
-| --- | ---: | ---: | ---: | ---: |
-| **3** | 2602.94 | 21 | +1.25 | −0.50 |
-| **4** | 2602.94 | 23 | +3.04 | +1.89 |
-| **5** | 2602.94 | 22 | +3.09 | +1.93 |
-| **6** | 2602.94 | 21 | +3.04 | +1.89 |
-| **7** | 2602.94 | 21 | +3.02 | +1.85 |
+| Group | Genome | Saved fitness | Enabled links | Hidden nodes |
+| --- | ---: | ---: | ---: | --- |
+| Best 1 | **1** | 10666.58 | 33 | 186, 187, 189, 190, 192 |
+| Best 2 | **86** | 4950.54 | 21 | 186, 187 |
+| Best 3 | **69** | 4950.16 | 24 | 186, 187 |
+| Best 4 | **67** | 4949.26 | 23 | 186, 187 |
+| Best 5 | **91** | 4941.88 | 22 | 186, 187 |
+| More links | **73** | 4914.76 | 38 | 186, 187, 189, 190, 191 |
+| More links | **71** | 4876.56 | 38 | 186, 187, 189, 190, 191 |
 
-The numbers in the last two columns are actual connection weights, rounded to two decimals. All five networks also contain hidden nodes 186 and 187. A positive weight raises a node's input when its source is positive; a negative weight lowers it. The final action also depends on the other links, node activation, and the AI's close-threat action filter.
+Each image shows **every enabled connection** in its saved genome, in the style of the FCEUX network display. The 13 × 13 squares on the left represent nearby game cells; the next column contains player and world inputs. Yellow circles are hidden nodes, and the right column lists actions. Teal lines have positive weights and coral lines have negative weights. Bright input squares are connected inputs, **not live sensor activations**.
 
-## The five complete diagrams
+## Five highest scored networks
 
-Each image shows **every enabled connection** in that saved genome, like the compact network display in FCEUX. The 13 × 13 squares on the left represent nearby game cells; the next column contains player and world inputs. Yellow circles are hidden nodes, and the right column lists possible actions. Teal lines have positive weights and coral lines have negative weights. Bright input squares are connected inputs, **not live sensor activations**.
+### 1. Genome 1
 
-### Genome 3
+![Generation 37 genome 1 neural network with 33 enabled links and five hidden nodes](images/network-genome-1.svg)
 
-![Genome 3 neural network with 21 enabled links](images/network-genome-3.svg)
+This is the highest scoring genome in the snapshot. Its 33 links include a gap-to-running-jump connection (+2.81) and a grounded-to-walk connection (+1.80). It has five hidden nodes.
 
-Its gap-to-jump link is weaker than the other four, and hidden node 187 has a negative connection to retreat.
+### 2. Genome 86
 
-### Genome 4
+![Generation 37 genome 86 neural network with 21 enabled links](images/network-genome-86.svg)
 
-![Genome 4 neural network with 23 enabled links](images/network-genome-4.svg)
+A detected gap feeds running jump (+3.02). Enemy position feeds running jump (+1.49) and retreat (−1.53) with opposite signs.
 
-This one has the most enabled links of the five. A detected gap strongly feeds the running-jump action; enemy position also feeds jump and retreat with opposite signs.
+### 3. Genome 69
 
-### Genome 5
+![Generation 37 genome 69 neural network with 24 enabled links](images/network-genome-69.svg)
 
-![Genome 5 neural network with 22 enabled links](images/network-genome-5.svg)
+Its gap-to-running-jump link is +3.18, the strongest of the five highest scored networks. Enemy position connects to retreat at −2.02.
 
-Its gap-to-jump link is +3.09, the strongest of these five, and hidden node 187 feeds retreat at +1.93.
+### 4. Genome 67
 
-### Genome 6
+![Generation 37 genome 67 neural network with 23 enabled links](images/network-genome-67.svg)
 
-![Genome 6 neural network with 21 enabled links](images/network-genome-6.svg)
+This network has a negative bias-to-retreat link (−2.11), while hidden node 187 feeds retreat positively (+1.89).
 
-It closely resembles genome 4, with two fewer enabled links. Its bias-to-running-jump link is enabled; genome 4 has that link disabled.
+### 5. Genome 91
 
-### Genome 7
+![Generation 37 genome 91 neural network with 22 enabled links](images/network-genome-91.svg)
 
-![Genome 7 neural network with 21 enabled links](images/network-genome-7.svg)
+Hidden node 187 has a strong positive connection to retreat (+2.02). A gap still feeds running jump, but with a smaller weight (+1.50) than in genomes 86 and 69.
 
-It keeps the same main gap, enemy, and hidden-node paths with slightly different weights. It earned the same saved fitness as the others.
+## Two more complex networks from the same generation
 
-The database header's `4336.78` is the population's **historical best fitness**, not the current fitness of these five genomes. Fitness values are comparable for attempts from the same training start; changing the starting point changes the task being scored.
+### Genome 73 · 38 enabled links
 
-**Source:** `mario_ai_neat.db` at SHA-256 `af20c809267307e56eb4c785b303c4f34c3aec26d0779800ae13007b66703335`. The images use every enabled `N` record for each genome; scores come from `G` records. Input and output names follow [`mario_ai_neat.lua`](../mario_ai_neat.lua). Regenerate the images with [`scripts/render_network_diagrams.py`](../scripts/render_network_diagrams.py) after changing the database.
+![Generation 37 genome 73 neural network with 38 enabled links and five hidden nodes](images/network-genome-73.svg)
+
+One of the two most connected additional genomes. It has five hidden nodes; a grid cell connects to hidden node 186 at +1.86, and a gap feeds running jump at +2.96.
+
+### Genome 71 · 38 enabled links
+
+![Generation 37 genome 71 neural network with 38 enabled links and five hidden nodes](images/network-genome-71.svg)
+
+It has the same link count and five hidden nodes, but a different structure. Hidden node 186 feeds hidden node 191 (+1.70), and hidden node 190 feeds brake negatively (−1.91).
+
+The lines show learned weights, not an action taken in a particular frame. The AI evaluates the network and then applies its close-threat action filter before pressing controller buttons. Starting from a different point also changes the task behind the fitness score.
+
+**Source:** `mario_ai_neat.db` at SHA-256 `998873748075d23bc78c1db84ed58ea779f6c887c07537306a3a54724325ede5`. The images use every enabled `N` record for each genome; scores come from `G` records. Input and output names follow [`mario_ai_neat.lua`](../mario_ai_neat.lua). Regenerate the images with [`scripts/render_network_diagrams.py`](../scripts/render_network_diagrams.py) after changing the database.

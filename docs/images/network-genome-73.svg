@@ -1,47 +1,64 @@
 <?xml version='1.0' encoding='utf-8'?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1150 470" width="1150" height="470" role="img" aria-label="Saved neural network for genome 7">
-  <title>Genome 7 from Mario AI NEAT generation 35</title>
-  <desc>All 21 enabled connections, drawn from the saved database. Teal means a positive weight and coral means negative.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1150 470" width="1150" height="470" role="img" aria-label="Saved neural network for genome 73">
+  <title>Genome 73 from Mario AI NEAT generation 37</title>
+  <desc>All 38 enabled connections, drawn from the saved database. Teal means a positive weight and coral means negative.</desc>
   <rect x="0" y="0" width="1150" height="470" fill="#102D4A" />
   <rect x="24" y="86" width="199" height="199" rx="8" fill="#193B57" stroke="#547B91" stroke-width="1" />
   <rect x="317" y="56" width="165" height="376" rx="8" fill="#193B57" stroke="#547B91" stroke-width="1" />
-  <text x="28" y="31" fill="#55E7E2" font-size="23" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">GENOME 7</text>
-  <text x="260" y="31" fill="#EAF4FF" font-size="15" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">FITNESS 2602.94   |   21 ENABLED LINKS</text>
+  <text x="28" y="31" fill="#55E7E2" font-size="23" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">GENOME 73</text>
+  <text x="260" y="31" fill="#EAF4FF" font-size="15" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">FITNESS 4914.76   |   38 ENABLED LINKS</text>
   <text x="29" y="72" fill="#B8DAE8" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">13 × 13 nearby cells</text>
   <text x="320" y="48" fill="#B8DAE8" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">Player and world inputs</text>
-  <text x="663" y="85" fill="#B8DAE8" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">Hidden</text>
+  <text x="663" y="65" fill="#B8DAE8" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">Hidden</text>
   <text x="930" y="74" fill="#B8DAE8" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">Actions</text>
-  <line x1="335" y1="418" x2="955" y2="106" stroke="#51D4C9" stroke-width="1.45" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="418" x2="955" y2="161" stroke="#51D4C9" stroke-width="1.36" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="188" x2="955" y2="161" stroke="#51D4C9" stroke-width="2.16" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="372" x2="955" y2="161" stroke="#51D4C9" stroke-width="3.35" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="303" x2="955" y2="216" stroke="#51D4C9" stroke-width="1.58" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="188" x2="955" y2="216" stroke="#FF766B" stroke-width="2.11" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="418" x2="955" y2="326" stroke="#FF766B" stroke-width="1.96" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="395" x2="955" y2="326" stroke="#51D4C9" stroke-width="1.51" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="57" y1="194" x2="955" y2="216" stroke="#FF766B" stroke-width="2.61" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="418" x2="955" y2="216" stroke="#FF766B" stroke-width="2.76" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="122" y1="155" x2="955" y2="271" stroke="#51D4C9" stroke-width="1.78" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="148" y1="233" x2="955" y2="271" stroke="#FF766B" stroke-width="1.66" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="148" y1="142" x2="955" y2="271" stroke="#FF766B" stroke-width="2.6" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="335" y1="418" x2="695" y2="190" stroke="#51D4C9" stroke-width="1.79" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="695" y1="190" x2="955" y2="216" stroke="#51D4C9" stroke-width="2.05" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="83" y1="207" x2="955" y2="106" stroke="#FF766B" stroke-width="1.91" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="161" y1="181" x2="695" y2="300" stroke="#FF766B" stroke-width="2.27" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="695" y1="300" x2="955" y2="216" stroke="#51D4C9" stroke-width="2.49" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="135" y1="142" x2="695" y2="300" stroke="#51D4C9" stroke-width="2.04" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="109" y1="207" x2="955" y2="161" stroke="#FF766B" stroke-width="1.58" stroke-opacity="0.68" stroke-linecap="round" />
-  <line x1="96" y1="142" x2="955" y2="161" stroke="#FF766B" stroke-width="2.19" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="418" x2="955" y2="106" stroke="#FF766B" stroke-width="1.37" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="418" x2="955" y2="161" stroke="#51D4C9" stroke-width="1.31" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="188" x2="955" y2="161" stroke="#51D4C9" stroke-width="1.56" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="372" x2="955" y2="161" stroke="#51D4C9" stroke-width="3.32" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="303" x2="955" y2="216" stroke="#51D4C9" stroke-width="1.86" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="188" x2="955" y2="216" stroke="#51D4C9" stroke-width="1.82" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="418" x2="955" y2="326" stroke="#FF766B" stroke-width="1.2" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="395" x2="955" y2="326" stroke="#51D4C9" stroke-width="1.39" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="57" y1="194" x2="955" y2="216" stroke="#FF766B" stroke-width="2.46" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="418" x2="955" y2="216" stroke="#51D4C9" stroke-width="2.3" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="161" y1="181" x2="955" y2="216" stroke="#FF766B" stroke-width="2.39" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="148" y1="233" x2="955" y2="271" stroke="#51D4C9" stroke-width="1.98" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="83" y1="207" x2="955" y2="106" stroke="#FF766B" stroke-width="2.2" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="161" y1="181" x2="695" y2="165.0" stroke="#FF766B" stroke-width="2.27" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="135" y1="142" x2="695" y2="165.0" stroke="#51D4C9" stroke-width="2.19" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="109" y1="207" x2="955" y2="161" stroke="#FF766B" stroke-width="1.46" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="96" y1="142" x2="955" y2="161" stroke="#FF766B" stroke-width="2.33" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="326" x2="955" y2="216" stroke="#51D4C9" stroke-width="1.29" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="200" y1="233" x2="955" y2="161" stroke="#51D4C9" stroke-width="1.8" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="135" y1="181" x2="695" y2="95.0" stroke="#FF766B" stroke-width="1.89" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="174" y1="246" x2="955" y2="271" stroke="#51D4C9" stroke-width="1.99" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="200" y1="220" x2="695" y2="95.0" stroke="#FF766B" stroke-width="2.17" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="70" y1="155" x2="695" y2="95.0" stroke="#51D4C9" stroke-width="2.11" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="161" y1="103" x2="955" y2="161" stroke="#FF766B" stroke-width="1.22" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="695" y1="95.0" x2="955" y2="381" stroke="#51D4C9" stroke-width="1.91" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="395" x2="695" y2="235.0" stroke="#FF766B" stroke-width="1.26" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="695" y1="235.0" x2="955" y2="326" stroke="#51D4C9" stroke-width="1.4" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="44" y1="129" x2="955" y2="326" stroke="#51D4C9" stroke-width="1.93" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="418" x2="955" y2="381" stroke="#51D4C9" stroke-width="1.28" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="148" y1="142" x2="695" y2="305.0" stroke="#51D4C9" stroke-width="1.77" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="695" y1="305.0" x2="955" y2="271" stroke="#51D4C9" stroke-width="1.56" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="57" y1="259" x2="695" y2="95.0" stroke="#51D4C9" stroke-width="2.5" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="122" y1="103" x2="955" y2="271" stroke="#FF766B" stroke-width="1.23" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="83" y1="168" x2="695" y2="95.0" stroke="#51D4C9" stroke-width="1.92" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="335" y1="96" x2="955" y2="381" stroke="#FF766B" stroke-width="1.51" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="44" y1="220" x2="695" y2="165.0" stroke="#FF766B" stroke-width="1.52" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="695" y1="165.0" x2="695" y2="375.0" stroke="#51D4C9" stroke-width="1.85" stroke-opacity="0.68" stroke-linecap="round" />
+  <line x1="695" y1="375.0" x2="955" y2="216" stroke="#51D4C9" stroke-width="1.24" stroke-opacity="0.68" stroke-linecap="round" />
   <rect x="41" y="100" width="6" height="6" fill="#335672" />
   <rect x="54" y="100" width="6" height="6" fill="#335672" />
   <rect x="67" y="100" width="6" height="6" fill="#335672" />
   <rect x="80" y="100" width="6" height="6" fill="#335672" />
   <rect x="93" y="100" width="6" height="6" fill="#335672" />
   <rect x="106" y="100" width="6" height="6" fill="#335672" />
-  <rect x="119" y="100" width="6" height="6" fill="#335672" />
+  <rect x="119" y="100" width="6" height="6" fill="#78E5B5" />
   <rect x="132" y="100" width="6" height="6" fill="#335672" />
   <rect x="145" y="100" width="6" height="6" fill="#335672" />
-  <rect x="158" y="100" width="6" height="6" fill="#335672" />
+  <rect x="158" y="100" width="6" height="6" fill="#78E5B5" />
   <rect x="171" y="100" width="6" height="6" fill="#335672" />
   <rect x="184" y="100" width="6" height="6" fill="#335672" />
   <rect x="197" y="100" width="6" height="6" fill="#335672" />
@@ -58,7 +75,7 @@
   <rect x="171" y="113" width="6" height="6" fill="#335672" />
   <rect x="184" y="113" width="6" height="6" fill="#335672" />
   <rect x="197" y="113" width="6" height="6" fill="#335672" />
-  <rect x="41" y="126" width="6" height="6" fill="#335672" />
+  <rect x="41" y="126" width="6" height="6" fill="#78E5B5" />
   <rect x="54" y="126" width="6" height="6" fill="#335672" />
   <rect x="67" y="126" width="6" height="6" fill="#335672" />
   <rect x="80" y="126" width="6" height="6" fill="#335672" />
@@ -86,11 +103,11 @@
   <rect x="197" y="139" width="6" height="6" fill="#335672" />
   <rect x="41" y="152" width="6" height="6" fill="#335672" />
   <rect x="54" y="152" width="6" height="6" fill="#335672" />
-  <rect x="67" y="152" width="6" height="6" fill="#335672" />
+  <rect x="67" y="152" width="6" height="6" fill="#78E5B5" />
   <rect x="80" y="152" width="6" height="6" fill="#335672" />
   <rect x="93" y="152" width="6" height="6" fill="#335672" />
   <rect x="106" y="152" width="6" height="6" fill="#335672" />
-  <rect x="119" y="152" width="6" height="6" fill="#78E5B5" />
+  <rect x="119" y="152" width="6" height="6" fill="#335672" />
   <rect x="132" y="152" width="6" height="6" fill="#335672" />
   <rect x="145" y="152" width="6" height="6" fill="#335672" />
   <rect x="158" y="152" width="6" height="6" fill="#335672" />
@@ -100,7 +117,7 @@
   <rect x="41" y="165" width="6" height="6" fill="#335672" />
   <rect x="54" y="165" width="6" height="6" fill="#335672" />
   <rect x="67" y="165" width="6" height="6" fill="#335672" />
-  <rect x="80" y="165" width="6" height="6" fill="#335672" />
+  <rect x="80" y="165" width="6" height="6" fill="#78E5B5" />
   <rect x="93" y="165" width="6" height="6" fill="#335672" />
   <rect x="106" y="165" width="6" height="6" fill="#335672" />
   <rect x="119" y="165" width="6" height="6" fill="#335672" />
@@ -117,7 +134,7 @@
   <rect x="93" y="178" width="6" height="6" fill="#335672" />
   <rect x="106" y="178" width="6" height="6" fill="#335672" />
   <rect x="119" y="178" width="6" height="6" fill="#335672" />
-  <rect x="132" y="178" width="6" height="6" fill="#335672" />
+  <rect x="132" y="178" width="6" height="6" fill="#78E5B5" />
   <rect x="145" y="178" width="6" height="6" fill="#335672" />
   <rect x="158" y="178" width="6" height="6" fill="#78E5B5" />
   <rect x="171" y="178" width="6" height="6" fill="#335672" />
@@ -149,7 +166,7 @@
   <rect x="171" y="204" width="6" height="6" fill="#335672" />
   <rect x="184" y="204" width="6" height="6" fill="#335672" />
   <rect x="197" y="204" width="6" height="6" fill="#335672" />
-  <rect x="41" y="217" width="6" height="6" fill="#335672" />
+  <rect x="41" y="217" width="6" height="6" fill="#78E5B5" />
   <rect x="54" y="217" width="6" height="6" fill="#335672" />
   <rect x="67" y="217" width="6" height="6" fill="#335672" />
   <rect x="80" y="217" width="6" height="6" fill="#335672" />
@@ -161,7 +178,7 @@
   <rect x="158" y="217" width="6" height="6" fill="#335672" />
   <rect x="171" y="217" width="6" height="6" fill="#335672" />
   <rect x="184" y="217" width="6" height="6" fill="#335672" />
-  <rect x="197" y="217" width="6" height="6" fill="#335672" />
+  <rect x="197" y="217" width="6" height="6" fill="#78E5B5" />
   <rect x="41" y="230" width="6" height="6" fill="#335672" />
   <rect x="54" y="230" width="6" height="6" fill="#335672" />
   <rect x="67" y="230" width="6" height="6" fill="#335672" />
@@ -174,7 +191,7 @@
   <rect x="158" y="230" width="6" height="6" fill="#335672" />
   <rect x="171" y="230" width="6" height="6" fill="#335672" />
   <rect x="184" y="230" width="6" height="6" fill="#335672" />
-  <rect x="197" y="230" width="6" height="6" fill="#335672" />
+  <rect x="197" y="230" width="6" height="6" fill="#78E5B5" />
   <rect x="41" y="243" width="6" height="6" fill="#335672" />
   <rect x="54" y="243" width="6" height="6" fill="#335672" />
   <rect x="67" y="243" width="6" height="6" fill="#335672" />
@@ -185,11 +202,11 @@
   <rect x="132" y="243" width="6" height="6" fill="#335672" />
   <rect x="145" y="243" width="6" height="6" fill="#335672" />
   <rect x="158" y="243" width="6" height="6" fill="#335672" />
-  <rect x="171" y="243" width="6" height="6" fill="#335672" />
+  <rect x="171" y="243" width="6" height="6" fill="#78E5B5" />
   <rect x="184" y="243" width="6" height="6" fill="#335672" />
   <rect x="197" y="243" width="6" height="6" fill="#335672" />
   <rect x="41" y="256" width="6" height="6" fill="#335672" />
-  <rect x="54" y="256" width="6" height="6" fill="#335672" />
+  <rect x="54" y="256" width="6" height="6" fill="#78E5B5" />
   <rect x="67" y="256" width="6" height="6" fill="#335672" />
   <rect x="80" y="256" width="6" height="6" fill="#335672" />
   <rect x="93" y="256" width="6" height="6" fill="#335672" />
@@ -204,8 +221,8 @@
   <rect x="115" y="174" width="14" height="14" fill="none" stroke="#F9CF50" stroke-width="2" />
   <rect x="330" y="68" width="10" height="10" fill="#5A7890" />
   <text x="351" y="73" fill="#91ACBE" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">speed X</text>
-  <rect x="330" y="91" width="10" height="10" fill="#5A7890" />
-  <text x="351" y="96" fill="#91ACBE" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">speed Y</text>
+  <rect x="330" y="91" width="10" height="10" fill="#78E5B5" />
+  <text x="351" y="96" fill="#EAF4FF" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">speed Y</text>
   <rect x="330" y="114" width="10" height="10" fill="#5A7890" />
   <text x="351" y="119" fill="#91ACBE" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">grounded</text>
   <rect x="330" y="137" width="10" height="10" fill="#5A7890" />
@@ -224,8 +241,8 @@
   <text x="351" y="280" fill="#91ACBE" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">item visible</text>
   <rect x="330" y="298" width="10" height="10" fill="#78E5B5" />
   <text x="351" y="303" fill="#EAF4FF" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">item dx</text>
-  <rect x="330" y="321" width="10" height="10" fill="#5A7890" />
-  <text x="351" y="326" fill="#91ACBE" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">item dy</text>
+  <rect x="330" y="321" width="10" height="10" fill="#78E5B5" />
+  <text x="351" y="326" fill="#EAF4FF" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">item dy</text>
   <rect x="330" y="344" width="10" height="10" fill="#5A7890" />
   <text x="351" y="349" fill="#91ACBE" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">item type</text>
   <rect x="330" y="367" width="10" height="10" fill="#78E5B5" />
@@ -234,10 +251,16 @@
   <text x="351" y="395" fill="#EAF4FF" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">enemy near</text>
   <rect x="330" y="413" width="10" height="10" fill="#F9CF50" />
   <text x="351" y="418" fill="#EAF4FF" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">bias</text>
-  <circle cx="695" cy="190" r="11" fill="#F9CF50" stroke="#102D4A" stroke-width="2" />
-  <text x="714" y="190" fill="#EAF4FF" font-size="14" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">186</text>
-  <circle cx="695" cy="300" r="11" fill="#F9CF50" stroke="#102D4A" stroke-width="2" />
-  <text x="714" y="300" fill="#EAF4FF" font-size="14" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">187</text>
+  <circle cx="695" cy="95.0" r="11" fill="#F9CF50" stroke="#102D4A" stroke-width="2" />
+  <text x="714" y="95.0" fill="#EAF4FF" font-size="14" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">186</text>
+  <circle cx="695" cy="165.0" r="11" fill="#F9CF50" stroke="#102D4A" stroke-width="2" />
+  <text x="714" y="165.0" fill="#EAF4FF" font-size="14" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">187</text>
+  <circle cx="695" cy="235.0" r="11" fill="#F9CF50" stroke="#102D4A" stroke-width="2" />
+  <text x="714" y="235.0" fill="#EAF4FF" font-size="14" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">189</text>
+  <circle cx="695" cy="305.0" r="11" fill="#F9CF50" stroke="#102D4A" stroke-width="2" />
+  <text x="714" y="305.0" fill="#EAF4FF" font-size="14" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">190</text>
+  <circle cx="695" cy="375.0" r="11" fill="#F9CF50" stroke="#102D4A" stroke-width="2" />
+  <text x="714" y="375.0" fill="#EAF4FF" font-size="14" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">191</text>
   <rect x="947" y="98" width="16" height="16" rx="2" fill="#79D7D3" stroke="#102D4A" stroke-width="2" />
   <text x="975" y="106" fill="#EAF4FF" font-size="17" font-family="Arial, Helvetica, sans-serif" font-weight="bold" dominant-baseline="middle">run</text>
   <rect x="947" y="153" width="16" height="16" rx="2" fill="#79D7D3" stroke="#102D4A" stroke-width="2" />
@@ -253,5 +276,5 @@
   <text x="28" y="450" fill="#51D4C9" font-size="12" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">TEAL  + positive weight</text>
   <text x="222" y="450" fill="#FF766B" font-size="12" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">CORAL  − negative weight</text>
   <text x="468" y="450" fill="#ACC7D6" font-size="12" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">Bright input = connected; colors do not show live activation</text>
-  <text x="1020" y="450" fill="#ACC7D6" font-size="11" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">DB af20c809</text>
+  <text x="1020" y="450" fill="#ACC7D6" font-size="11" font-family="Arial, Helvetica, sans-serif" font-weight="normal" dominant-baseline="middle">DB 99887374</text>
 </svg>
