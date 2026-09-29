@@ -21,13 +21,36 @@ Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super 
 ## What it does
 
 - Reads Mario, nearby tiles, enemies, and items from SMB1 memory.
-- Chooses among six actions, including run, jump, retreat, brake, and walk.
+- Chooses among six SMB1 actions and evolves how long to hold each choice.
+- Uses short observation history and event feedback for landings, passing
+  enemies, power-ups, and new progress landmarks.
+- Keeps a bounded novelty archive so selection preserves some different
+  behavior patterns instead of rewarding one repeated route alone.
 - Scores each attempt for progress and survival, then evolves the population.
 - Saves learning in `mario_ai_neat.db` so later sessions can continue from the saved population.
 
 See [seven complete network diagrams from the included database](docs/best-networks.md), drawn from the actual saved connections.
 
 The isolated acceleration experiment has a [technical plan](tasks/plan.md) and a [local FCEUX comparison guide](docs/acceleration-trial.md).
+
+## How this compares with other SMB1 NEAT projects
+
+There is no single winner for every use case. The Python project supports
+parallel genome evaluation and reports a 1-1 completion rate; the Lua projects
+run inside FCEUX. Mario AI NEAT is specialized for SMB1 in FCEUX, but this
+branch's changes have not yet been benchmarked against the other projects.
+
+| Project | Game and runtime | Learning and evaluation | Strongest fit | Trade-off |
+| --- | --- | --- | --- | --- |
+| **Mario AI NEAT (this branch)** | SMB1 NES, embedded Lua in FCEUX | NEAT with SMB1 RAM/tile features, short history, event rewards, novelty archive, and evolved 1/2/4/6-frame action holds; one genome at a time | Direct SMB1 + FCEUX use, resumable database, live HUD | Experimental changes; serial training; no completion-rate comparison yet |
+| [MarI/O FCEUX port](https://github.com/juvester/mari-o-fceux/blob/master/neatevolve.lua) | SMB1, Lua in FCEUX | MarI/O-style NEAT, nearby tile/enemy grid, button outputs, fixed savestate, evolution in the emulator | Existing FCEUX Lua baseline and live network display | Smaller game-state feature set; no parallel evaluator |
+| [SethBling's MarI/O](https://gist.github.com/SethBling/598639f8d5e8afb5453a0b9519be51ff) | Primarily BizHawk; source handles Super Mario World and SMB1 | NEAT with a 13×13 local grid, button outputs, and species-based evolution | Influential reference implementation | Not an SMB1-only FCEUX project; source asks users not to redistribute it |
+| [Vivek's Super Mario NEAT](https://github.com/vivek3141/super-mario-neat) | Python with FCEUX and Python dependencies | NEAT, saved checkpoints, configurable runs, and multiprocessing for parallel genomes | Parallel training workflow; its README reports about 50% completion of 1-1 for the supplied checkpoint | Separate Python setup; reported results are the author's, not a benchmark against this project |
+
+Use this project for a Lua AI running in FCEUX on SMB1. Vivek's project is a
+better fit when parallel training and Python tooling matter more. MarI/O is the
+historical reference. There is not enough controlled data to say which learns
+faster or completes more often.
 
 ## Start playing and training
 
@@ -85,13 +108,17 @@ The sections below describe the learning method and implementation. You can use 
 
 ### Neural network at a glance
 
-The network receives a fixed SMB1 observation and scores six actions. NEAT evolves its connection weights and can add hidden nodes as it learns.
+The network receives a fixed SMB1 observation plus delayed changes in its 15
+global features. Six outputs score actions; four more choose a hold of 1, 2, 4,
+or 6 frames. A close enemy or immediate gap forces an early fresh decision.
+Legacy databases keep their original input and action IDs; temporal inputs use
+a reserved node range.
 
 ```mermaid
 flowchart LR
-    Observe["Observe SMB1<br/>tiles · Mario · enemies · items"] --> Inputs["185 input values"]
+    Observe["Observe SMB1<br/>tiles · Mario · enemies · items"] --> Inputs["215 input values<br/>185 legacy + 30 temporal"]
     Inputs --> Policy["Evolving neural network<br/>nodes + weighted connections"]
-    Policy --> Scores["6 action scores"]
+    Policy --> Scores["6 action scores<br/>4 action-hold scores"]
     Scores --> Safety["Small safety filter"]
     Safety --> Controls["NES controls<br/>A · B · Left · Right"]
     Controls --> Game["SMB1 in FCEUX"]
@@ -105,11 +132,13 @@ flowchart LR
 | --- | ---: | --- |
 | Local tile grid | 169 | 13×13 area around Mario: solid tiles, enemies, and empty space |
 | Mario and nearby-object features | 15 | Velocity, grounded state, power, enemy/item distances, gaps, and contact danger |
+| Temporal feature changes | 30 | Differences in the 15 global features over 1-frame and 4-frame lags |
 | Bias | 1 | Constant input |
-| **Total inputs** | **185** | Values passed to each genome |
-| **Outputs** | **6** | Run, running jump, retreat, brake, jump in place, controlled walk |
+| **Total inputs** | **215** | 184 current features, 30 history values, and bias |
+| Action outputs | 6 | Run, running jump, retreat, brake, jump in place, controlled walk |
+| Action-hold outputs | 4 | Evolved choice of 1, 2, 4, or 6 frames |
 
-The safety filter can block an immediately unsafe choice, such as running into a nearby enemy as small Mario. It leaves the neural network to choose among the remaining actions.
+The safety filter can block an immediately unsafe choice, such as running into a nearby enemy as small Mario. It leaves the neural network to choose among the remaining actions. Small event rewards provide feedback for safe landings, collected power-ups, passing an enemy, and crossing new 128-pixel landmarks. Progress, survival, power state, death, and level completion remain the main fitness terms. A bounded novelty archive stores six-number behavior summaries in the database and gives modest credit to less common episode outcomes.
 
 ### What changes as the AI evolves
 
@@ -159,12 +188,31 @@ flowchart TD
 - **Crossover:** inherit matching genes from either parent; unmatched genes follow the fitter parent.
 - **Elitism and staleness control:** preserve the champion and remove stagnant species after 15 generations unless they contain the champion.
 - **Seeded starting behavior:** the first population starts with a small SMB1 movement prior that evolution can change.
+- **Temporal context and action timing:** delayed feature differences feed the same feed-forward network, and four evolved outputs select an action hold length. Immediate hazards bypass the hold.
+- **Event fitness and novelty:** small event rewards provide earlier feedback, while a persisted bounded archive retains some behavior diversity.
 
-This is a specialized NEAT-style implementation, not a byte-for-byte implementation of the NEAT paper. It uses six complete action choices, SMB1-specific fitness, a seeded starting policy, and a safety filter.
+This is a specialized NEAT-style implementation, not a byte-for-byte implementation of the NEAT paper. It uses six complete action choices, four action-hold choices, SMB1-specific fitness, a seeded starting policy, and a safety filter.
+
+### Training speed and limitations
+
+The Lua script evaluates one genome at a time because one embedded FCEUX
+process owns one live game state and controller. Parallel evaluation needs a
+separate coordinator and isolated savestates; concurrent writes to the same
+plain-text database would be unsafe. Vivek's Python project is a useful
+parallel-worker reference, but its multiprocessing system is not included in
+this single-process Lua trainer. This branch also retains fixed-start training;
+curriculum checkpoints need a separate workflow for user-prepared FCEUX states.
+
+Temporal inputs, event rewards, novelty, and longer action holds are
+experimental. They change the fitness landscape and have not yet demonstrated
+a lower generation count or higher level completion rate. Existing databases
+remain loadable, but evolution can behave differently when resumed with these
+new features.
 
 ### FCEUX and testing notes
 
 - The Lua script uses FCEUX's embedded Lua runtime and FCEUX APIs. This project currently targets **FCEUX only**.
+- Training evaluates one genome at a time; parallel evaluation is not enabled.
 - Training uses savestate slot 9 as a shared starting point. Reserve that slot for Mario AI.
 - The script supports `savestate.object()` and the older `savestate.create()` API. It does not call `savestate.persist()`.
 - Each attempt starts with the in-game timer set to `999`, then the timer counts down normally. The testing aid refreshes lives to `9`; set `TESTING_INFINITE_LIVES = false` for normal lives.
@@ -186,6 +234,9 @@ No Python process, ML framework, compiler, GPU, cloud service, or network connec
 ## Sources and attribution
 
 - [MarI/O source by SethBling](https://gist.github.com/d12frosted/7471e2123f10485d96bb) and [the MarI/O video](https://www.youtube.com/watch?v=qv6UVOQ0F44). MarI/O demonstrates NEAT playing Super Mario World; this project adapts the approach to SMB1 on NES in FCEUX. This repository does not redistribute MarI/O source code.
+- [MarI/O FCEUX port by juvester](https://github.com/juvester/mari-o-fceux/blob/master/neatevolve.lua), referenced for the FCEUX SMB1 observe/network/controller cycle. The evolved action duration is a separate extension.
+- [Vivek's Super Mario NEAT](https://github.com/vivek3141/super-mario-neat), referenced for its documented multiprocessing workflow and SMB1 training results; no Python worker code is included here.
+- [Lehman and Stanley, “Abandoning Objectives: Evolution through the Search for Novelty Alone”](https://arxiv.org/abs/1504.04909), referenced for the bounded novelty-archive concept.
 - Kenneth O. Stanley and Risto Miikkulainen, [“Evolving Neural Networks through Augmenting Topologies”](https://direct.mit.edu/evco/article/10/2/99/1123/Evolving-Neural-Networks-through-Augmenting), *Evolutionary Computation*, 10(2), 99–127 (2002).
 - SMB1 RAM map reference: [Super Mario Bros. disassembly](https://gist.github.com/1wErt3r/4048722). The target RAM layout is not validated for other ROM revisions or hacks.
 

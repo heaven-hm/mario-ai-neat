@@ -24,6 +24,11 @@ probe.genes={{sourceNode=1,targetNode=AI.outputNode(1),weight=2,enabled=true,inn
   {sourceNode=AI.inputCount(),targetNode=AI.outputNode(1),weight=0.5,enabled=true,innovation=9002}}
 local outputs=AI.evaluateGenome(probe,{[1]=1})
 test("genome maps sensor values to controller action scores",outputs[1]>0.5)
+local temporalProbe={genes={{sourceNode=AI.memoryInputNode(6),targetNode=AI.outputNode(1),
+  weight=2,enabled=true,innovation=9003}}}
+local temporalScores=AI.evaluateGenome(temporalProbe,{}, {[6]=1})
+test("reserved temporal observations can drive evolved network connections",
+  temporalScores[1]>0.5)
 local splitPath=AI.newGenome(populationState)
 splitPath.genes={
   {sourceNode=1,targetNode=187,weight=1,enabled=true,innovation=9101},
@@ -83,7 +88,7 @@ local smallState=state();AI.beginEpisode(fitnessState,smallState)
 fitnessState.furthestWorldX=smallState.worldX+10
 local death=state();death.phase="death";death.power=0;death.size=1
 local fitness=AI.finishEpisode(fitnessState,death)
-test("death is penalized and no unearned powerup is added",fitness==-20)
+test("death remains negative after small behavior-exploration bonuses",fitness<0)
 local unsafeEpisode=AI.new(AI.newPopulation(2))
 AI.beginEpisode(unsafeEpisode,state(1123))
 unsafeEpisode.episodeFrames=6
@@ -109,7 +114,39 @@ test("finishing an attempt checkpoints the next unevaluated genome",
 local victor=AI.new(AI.newPopulation(2))
 AI.beginEpisode(victor,smallState)
 local win=state();win.phase="victory"
-test("reaching the flag earns a completion bonus",AI.finishEpisode(victor,win)==10000)
+test("reaching the flag earns the dominant completion bonus",AI.finishEpisode(victor,win)>=10000)
+
+local timedGenome=AI.newGenome(AI.newPopulation(1))
+timedGenome.genes={{sourceNode=AI.inputCount(),targetNode=AI.outputNode(8),
+  weight=3,enabled=true,innovation=9901}}
+local timedState=AI.new({generation=1,population=1,genomes={timedGenome},
+  nextGenomeIndex=1,behaviorArchive={}})
+local timedAction=AI.decide(timedState,state(80))
+test("duration output selects a two-frame action hold",timedState.lastHoldFrames==2)
+local heldAction=AI.decide(timedState,state(80))
+test("held action is reused between neural evaluations",
+  heldAction.name==timedAction.name and heldAction.reason:find("held learned",1,true)~=nil)
+local landmarkState=AI.new(AI.newPopulation(1))
+AI.decide(landmarkState,state(100))
+AI.decide(landmarkState,state(260))
+test("crossing new world landmarks adds event-based training feedback",
+  landmarkState.episodeReward>=6)
+local temporalState=AI.new(AI.newPopulation(1))
+local firstTemporalObservation=state(100)
+AI.decide(temporalState,firstTemporalObservation)
+test("temporal inputs start neutral without a prior observation",
+  temporalState.lastTemporalInputs[1]==0)
+local nextTemporalObservation=state(100)
+nextTemporalObservation.horizontalVelocity=1.25
+AI.decide(temporalState,nextTemporalObservation)
+test("temporal inputs track changes in Mario's recent movement",
+  temporalState.lastTemporalInputs[1]<0)
+local noveltyState=AI.new(AI.newPopulation(1))
+AI.beginEpisode(noveltyState,state(80))
+noveltyState.episodeFrames=120
+local noveltyFitness=AI.finishEpisode(noveltyState,state(80))
+test("episode behavior is scored and added to the novelty archive",
+  noveltyFitness>0 and #noveltyState.populationState.behaviorArchive==1)
 
 local save_path=os.tmpname()
 populationState.genomes[1].fitness=100
@@ -120,6 +157,12 @@ test("generation and genome structure reload from the database",
   restored~=nil and #restored.genomes==12 and #restored.genomes[1].genes>0)
 test("training resumes at the next genome after a restart",
   restored.nextGenomeIndex==5 and AI.new(restored).genomeIndex==5)
+populationState.behaviorArchive={{2,1,0,1,0,3}}
+test("novelty archive is saved as compact optional database data",AI.save(populationState,save_path))
+local restoredArchive=AI.load(save_path)
+test("novelty archive resumes with the saved population",
+  restoredArchive~=nil and #restoredArchive.behaviorArchive==1
+    and restoredArchive.behaviorArchive[1][1]==2)
 local nextPopulation=AI.nextGeneration(restored)
 test("fitness selection creates a full mutated next generation",
   #nextPopulation.genomes==12 and nextPopulation.generation==restored.generation+1)

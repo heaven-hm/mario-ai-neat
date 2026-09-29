@@ -125,7 +125,17 @@ local GLOBAL_INPUT_COUNT = 15
 local OBSERVATION_INPUT_COUNT = GRID_INPUT_COUNT + GLOBAL_INPUT_COUNT
 local NEURAL_INPUT_COUNT = OBSERVATION_INPUT_COUNT + 1 -- final input is the bias node
 local ACTION_COUNT = 6
+local DURATION_OUTPUT_COUNT = 4
+local NETWORK_OUTPUT_COUNT = ACTION_COUNT + DURATION_OUTPUT_COUNT
 local OUTPUT_NODE_OFFSET = 1000000
+-- Reserve a high, non-overlapping range for transient temporal inputs. They
+-- are synthesized from recent SMB1 observations and are never stored as genes.
+local MEMORY_INPUT_OFFSET = 900000
+local MEMORY_FEATURE_COUNT = GLOBAL_INPUT_COUNT
+local MEMORY_LAGS = {1, 4}
+local MEMORY_INPUT_COUNT = MEMORY_FEATURE_COUNT * #MEMORY_LAGS
+local ACTION_HOLD_FRAMES = {1, 2, 4, 6}
+local NOVELTY_ARCHIVE_LIMIT = 48
 local DEFAULT_POPULATION_SIZE = 300
 local SPECIES_DISTANCE_THRESHOLD = 1.0
 local MAX_STALE_GENERATIONS = 15
@@ -145,8 +155,17 @@ local NON_STOMPABLE_ENEMIES = {[0x07]=true,[0x0C]=true,[0x0D]=true,[0x11]=true,[
 
 local function safeWriteLine(file, value) file:write(value, "\n") end
 
+local function memoryNode(index) return MEMORY_INPUT_OFFSET + index end
+local function isMemoryInput(nodeId)
+  return nodeId >= MEMORY_INPUT_OFFSET and nodeId < MEMORY_INPUT_OFFSET + MEMORY_INPUT_COUNT
+end
+local function isHiddenNode(nodeId)
+  return nodeId > NEURAL_INPUT_COUNT and nodeId < MEMORY_INPUT_OFFSET
+end
+
 function AI.inputCount() return NEURAL_INPUT_COUNT end
 function AI.outputNode(index) return OUTPUT_NODE_OFFSET + index end
+function AI.memoryInputNode(index) return memoryNode(index) end
 function AI.sensorIndex(horizontalOffset, verticalOffset)
   local columnIndex = math.floor((horizontalOffset + SENSOR_RADIUS_TILES * 16) / 16)
   local rowIndex = math.floor((verticalOffset + SENSOR_RADIUS_TILES * 16) / 16)
@@ -265,12 +284,15 @@ end
 
 -- Follow enabled connections when evaluating each output. A split can add a
 -- newer hidden node before an older hidden target, so numeric order is unsafe.
-function AI.evaluateGenome(genome, inputValues)
+function AI.evaluateGenome(genome, inputValues, memoryValues)
   local nodeValues, incomingConnections = {}, {}
   for inputIndex = 1, OBSERVATION_INPUT_COUNT do
     nodeValues[inputIndex] = inputValues[inputIndex] or 0
   end
   nodeValues[NEURAL_INPUT_COUNT] = 1
+  for memoryIndex = 1, MEMORY_INPUT_COUNT do
+    nodeValues[memoryNode(memoryIndex)] = memoryValues and memoryValues[memoryIndex] or 0
+  end
   for _, gene in ipairs(genome.genes) do
     if gene.enabled then
       incomingConnections[gene.targetNode] = incomingConnections[gene.targetNode] or {}
@@ -295,11 +317,14 @@ function AI.evaluateGenome(genome, inputValues)
     evaluating[nodeId]=nil
     return nodeValues[nodeId]
   end
-  local actionScores = {}
+  local actionScores, durationScores = {}, {}
   for actionIndex = 1, ACTION_COUNT do
     actionScores[actionIndex] = evaluateNode(OUTPUT_NODE_OFFSET+actionIndex)
   end
-  return actionScores,nodeValues
+  for durationIndex = 1, DURATION_OUTPUT_COUNT do
+    durationScores[durationIndex] = evaluateNode(OUTPUT_NODE_OFFSET+ACTION_COUNT+durationIndex)
+  end
+  return actionScores,nodeValues,durationScores
 end
 
 local function createEmptyGenome()
@@ -344,10 +369,13 @@ local function chooseRandomNode(genome, populationState, inputOnly)
   for inputIndex = 1, NEURAL_INPUT_COUNT do
     candidates[#candidates+1] = inputIndex
   end
+  for memoryIndex = 1, MEMORY_INPUT_COUNT do
+    candidates[#candidates+1] = memoryNode(memoryIndex)
+  end
   if not inputOnly then
     for _, gene in ipairs(genome.genes) do
-      if gene.sourceNode > NEURAL_INPUT_COUNT and gene.sourceNode < OUTPUT_NODE_OFFSET then candidates[#candidates+1]=gene.sourceNode end
-      if gene.targetNode > NEURAL_INPUT_COUNT and gene.targetNode < OUTPUT_NODE_OFFSET then candidates[#candidates+1]=gene.targetNode end
+      if isHiddenNode(gene.sourceNode) then candidates[#candidates+1]=gene.sourceNode end
+      if isHiddenNode(gene.targetNode) then candidates[#candidates+1]=gene.targetNode end
     end
   end
   return candidates[math.random(#candidates)]
@@ -355,14 +383,14 @@ end
 
 local function mutateAddConnection(genome, populationState, biasOnly)
   local sourceNode = biasOnly and NEURAL_INPUT_COUNT or chooseRandomNode(genome,populationState,false)
-  local targetNode = OUTPUT_NODE_OFFSET + math.random(ACTION_COUNT)
+  local targetNode = OUTPUT_NODE_OFFSET + math.random(NETWORK_OUTPUT_COUNT)
   if not biasOnly then
     local hiddenNodes = {}
     for _, gene in ipairs(genome.genes) do
-      if gene.sourceNode > NEURAL_INPUT_COUNT and gene.sourceNode < OUTPUT_NODE_OFFSET then
+      if isHiddenNode(gene.sourceNode) then
         hiddenNodes[#hiddenNodes+1] = gene.sourceNode
       end
-      if gene.targetNode > NEURAL_INPUT_COUNT and gene.targetNode < OUTPUT_NODE_OFFSET then
+      if isHiddenNode(gene.targetNode) then
         hiddenNodes[#hiddenNodes+1] = gene.targetNode
       end
     end
@@ -370,7 +398,8 @@ local function mutateAddConnection(genome, populationState, biasOnly)
       targetNode = hiddenNodes[math.random(#hiddenNodes)]
     end
   end
-  if sourceNode >= targetNode or hasConnection(genome,sourceNode,targetNode) then return end
+  if (sourceNode >= targetNode and not isMemoryInput(sourceNode))
+    or hasConnection(genome,sourceNode,targetNode) then return end
   table.insert(genome.genes,createGene(sourceNode,targetNode,math.random()*4-2,
     getInnovationNumber(populationState,sourceNode,targetNode)))
 end
@@ -552,7 +581,7 @@ end
 function AI.newPopulation(populationSize)
   local populationState = {generation=1,nextInnovation=ACTION_COUNT,innovations={},genomes={},species={},
     bestFitness=0,population=populationSize or DEFAULT_POPULATION_SIZE,nextGenomeIndex=1,
-    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={}}
+    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={},behaviorArchive={}}
   for genomeIndex = 1, populationState.population do
     local genome
     if genomeIndex == 1 then
@@ -683,7 +712,7 @@ function AI.nextGeneration(populationState)
     nextHiddenNode=populationState.nextHiddenNode,splitHistory=populationState.splitHistory,
     species=survivingSpecies,genomes={cloneGenome(champion)},
     bestFitness=populationState.bestFitness,population=populationState.population,
-    nextGenomeIndex=1}
+    nextGenomeIndex=1,behaviorArchive=populationState.behaviorArchive or {}}
   local targetPopulationSize = populationState.population or DEFAULT_POPULATION_SIZE
   while #nextPopulation.genomes < targetPopulationSize do
     local speciesGroup = chooseSpeciesForBreeding(survivingSpecies)
@@ -783,6 +812,11 @@ function AI.save(populationState,path)
   for splitInnovation,hiddenNode in pairs(populationState.splitHistory or {}) do
     safeWriteLine(databaseFile,table.concat({"S",splitInnovation,hiddenNode},","))
   end
+  -- Novelty-search archive concept: https://arxiv.org/abs/1504.04909
+  -- Store compact behavior summaries, not replay states or external source code.
+  for _,descriptor in ipairs(populationState.behaviorArchive or {}) do
+    safeWriteLine(databaseFile,table.concat({"B",unpack(descriptor)},","))
+  end
   for genomeIndex, genome in ipairs(populationState.genomes) do
     safeWriteLine(databaseFile,table.concat({"G",genomeIndex,genome.fitness or 0,
       genome.highestHiddenNode or NEURAL_INPUT_COUNT,genome.species or 0},","))
@@ -825,7 +859,7 @@ function AI.load(path)
   if not generation then databaseFile:close();return nil end
   local populationState={generation=tonumber(generation),nextInnovation=tonumber(innovationId),
     bestFitness=tonumber(bestFitness),population=tonumber(populationSize),genomes={},species={},innovations={},
-    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={}}
+    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={},behaviorArchive={}}
   for genomeIndex = 1, tonumber(genomeCount) do
     populationState.genomes[genomeIndex] = createEmptyGenome()
     populationState.genomes[genomeIndex].fitness = 0
@@ -840,8 +874,17 @@ function AI.load(path)
       end
     elseif fields[1]=="H" then
       local savedNode=tonumber(fields[2])
-      if savedNode and savedNode>=NEURAL_INPUT_COUNT and savedNode<OUTPUT_NODE_OFFSET then
+      if savedNode and isHiddenNode(savedNode) then
         populationState.nextHiddenNode=math.floor(savedNode)
+      end
+    elseif fields[1]=="B" then
+      local descriptor={}
+      for fieldIndex=2,#fields do
+        local value=tonumber(fields[fieldIndex])
+        if value then descriptor[#descriptor+1]=value end
+      end
+      if #descriptor==6 and #populationState.behaviorArchive<NOVELTY_ARCHIVE_LIMIT then
+        populationState.behaviorArchive[#populationState.behaviorArchive+1]=descriptor
       end
     elseif fields[1]=="S" then
       local splitInnovation,hiddenNode=tonumber(fields[2]),tonumber(fields[3])
@@ -868,10 +911,10 @@ function AI.load(path)
           enabled=tonumber(fields[6])==1,innovation=tonumber(fields[7])}
         populationState.genomes[genomeIndex].genes[#populationState.genomes[genomeIndex].genes+1]=gene
         populationState.innovations[connectionKey(gene.sourceNode,gene.targetNode)]=gene.innovation
-        if gene.sourceNode>NEURAL_INPUT_COUNT and gene.sourceNode<OUTPUT_NODE_OFFSET then
+        if isHiddenNode(gene.sourceNode) then
           populationState.nextHiddenNode=math.max(populationState.nextHiddenNode,gene.sourceNode)
         end
-        if gene.targetNode>NEURAL_INPUT_COUNT and gene.targetNode<OUTPUT_NODE_OFFSET then
+        if isHiddenNode(gene.targetNode) then
           populationState.nextHiddenNode=math.max(populationState.nextHiddenNode,gene.targetNode)
         end
       end
@@ -925,11 +968,11 @@ local function calculateAllowedActions(state,enemy)
   return allowed
 end
 
-local function chooseAction(genome,state)
+local function chooseAction(genome,state,memoryInputs)
   local enemy=findClosestThreat(state)
   local allowed=calculateAllowedActions(state,enemy)
   local observationInputs=AI.buildObservationInputs(state)
-  local actionScores,nodeValues=AI.evaluateGenome(genome,observationInputs)
+  local actionScores,nodeValues,durationScores=AI.evaluateGenome(genome,observationInputs,memoryInputs)
   if state.power==2 and enemy and enemy.worldX-state.worldX>36 then actionScores[1]=actionScores[1]+0.3 end
   local selectedActionIndex,highestActionScore
   for actionIndex=1,ACTION_COUNT do
@@ -937,7 +980,16 @@ local function chooseAction(genome,state)
       selectedActionIndex,highestActionScore=actionIndex,actionScores[actionIndex]
     end
   end
-  return ACTION_OPTIONS[selectedActionIndex or 4],selectedActionIndex or 4,enemy,actionScores,nodeValues,observationInputs
+  local durationIndex,highestDurationScore=1,-math.huge
+  for candidateIndex=1,DURATION_OUTPUT_COUNT do
+    local score=durationScores[candidateIndex]
+    if score>highestDurationScore then
+      durationIndex,highestDurationScore=candidateIndex,score
+    end
+  end
+  if highestDurationScore==0 then durationIndex=2 end
+  return ACTION_OPTIONS[selectedActionIndex or 4],selectedActionIndex or 4,enemy,
+    actionScores,nodeValues,observationInputs,ACTION_HOLD_FRAMES[durationIndex]
 end
 
 local ACTION_LABEL = {
@@ -979,7 +1031,9 @@ function AI.new(populationState)
   return {populationState=populationState,
     genomeIndex=populationState.nextGenomeIndex or 1,episodeFrames=0,
     startWorldX=nil,furthestWorldX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
-    lastAction=nil,frames=0,finished=false,episodeActive=false,championMode=false}
+    lastAction=nil,frames=0,finished=false,episodeActive=false,championMode=false,
+    recentGlobalInputs={},previousEpisodeState=nil,behavior={jumps=0,retreats=0,
+      passedEnemies=0,landings=0,powerUps=0},behaviorArchive=populationState.behaviorArchive or {}}
 end
 
 function AI.bestGenomeIndex(populationState)
@@ -997,6 +1051,102 @@ function AI.beginEpisode(aiState,state)
   aiState.lastProgressFrame=0;aiState.finished=false
   aiState.episodeActive=true
   aiState.bestForm=state.power==2 and 2 or (state.size==1 and 0 or 1)
+  aiState.previousEpisodeState=nil
+  aiState.recentGlobalInputs={}
+  aiState.cachedAction=nil
+  aiState.actionFramesRemaining=0
+  aiState.behavior={jumps=0,retreats=0,passedEnemies=0,landings=0,powerUps=0}
+  aiState.nextLandmark=math.floor(state.worldX/128)+1
+end
+
+local function buildTemporalInputs(observationInputs,recentGlobalInputs)
+  local temporalInputs={}
+  local currentGlobals={}
+  for featureIndex=1,GLOBAL_INPUT_COUNT do
+    currentGlobals[featureIndex]=observationInputs[GRID_INPUT_COUNT+featureIndex] or 0
+  end
+  local temporalIndex=0
+  -- Two short history taps give the feed-forward NEAT network motion context
+  -- without breaking legacy 185-input genomes. This is an SMB1-specific
+  -- alternative to changing the project's topology into a recurrent network.
+  for _,lag in ipairs(MEMORY_LAGS) do
+    local pastGlobals=recentGlobalInputs[#recentGlobalInputs-lag+1]
+    for featureIndex=1,GLOBAL_INPUT_COUNT do
+      temporalIndex=temporalIndex+1
+      local pastValue=pastGlobals and pastGlobals[featureIndex]
+      temporalInputs[temporalIndex]=pastValue
+        and clamp(currentGlobals[featureIndex]-pastValue,-1,1) or 0
+    end
+  end
+  recentGlobalInputs[#recentGlobalInputs+1]=currentGlobals
+  while #recentGlobalInputs>math.max(unpack(MEMORY_LAGS)) do table.remove(recentGlobalInputs,1) end
+  return temporalInputs
+end
+
+local function recordBehaviorEvents(aiState,state)
+  local previousState=aiState.previousEpisodeState
+  if previousState then
+    if previousState.grounded and not state.grounded then aiState.behavior.jumps=aiState.behavior.jumps+1 end
+    if not previousState.grounded and state.grounded then
+      aiState.behavior.landings=aiState.behavior.landings+1
+      if state.worldX>=previousState.worldX then aiState.episodeReward=aiState.episodeReward+1 end
+    end
+    if state.power>(previousState.power or 0) then
+      aiState.behavior.powerUps=aiState.behavior.powerUps+1
+      aiState.episodeReward=aiState.episodeReward+8
+    end
+    local enemiesBySlot={}
+    for _,enemy in ipairs(state.enemies or {}) do enemiesBySlot[enemy.slot]=enemy end
+    for _,oldEnemy in ipairs(previousState.enemies or {}) do
+      local priorDx=oldEnemy.worldX-previousState.worldX
+      local currentEnemy=enemiesBySlot[oldEnemy.slot]
+      local currentDx=currentEnemy and currentEnemy.worldX-state.worldX or nil
+      if currentEnemy and oldEnemy.id==currentEnemy.id and state.worldX>previousState.worldX
+        and priorDx>0 and currentDx and currentDx<=0 and priorDx-currentDx<128 then
+        aiState.behavior.passedEnemies=aiState.behavior.passedEnemies+1
+        aiState.episodeReward=aiState.episodeReward+12
+      end
+    end
+  end
+  while state.worldX>=aiState.nextLandmark*128 do
+    aiState.episodeReward=aiState.episodeReward+3
+    aiState.nextLandmark=aiState.nextLandmark+1
+  end
+  aiState.previousEpisodeState=state
+end
+
+local function behaviorDescriptor(aiState,progress)
+  local behavior=aiState.behavior or {}
+  return {math.floor(progress/128),math.min(10,behavior.jumps or 0),
+    math.min(10,behavior.retreats or 0),math.min(10,behavior.passedEnemies or 0),
+    math.min(5,behavior.powerUps or 0),math.min(10,(aiState.episodeFrames or 0)/600)}
+end
+
+local function addNoveltyAndArchive(populationState,descriptor)
+  local archive=populationState.behaviorArchive or {}
+  local distances={}
+  for _,archived in ipairs(archive) do
+    local distance=0
+    for index,value in ipairs(descriptor) do
+      distance=distance+math.abs(value-(archived[index] or 0))/(index==1 and 8 or 10)
+    end
+    distances[#distances+1]=distance/#descriptor
+  end
+  table.sort(distances)
+  local neighborCount=math.min(5,#distances)
+  local novelty=1
+  if neighborCount>0 then
+    novelty=0
+    for index=1,neighborCount do novelty=novelty+distances[index] end
+    novelty=novelty/neighborCount
+  end
+  local nearestDistance=distances[1] or 1
+  if nearestDistance>=0.12 then
+    archive[#archive+1]=descriptor
+    while #archive>NOVELTY_ARCHIVE_LIMIT do table.remove(archive,1) end
+  end
+  populationState.behaviorArchive=archive
+  return novelty
 end
 
 function AI.decide(aiState,state)
@@ -1008,8 +1158,32 @@ function AI.decide(aiState,state)
   aiState.episodeFrames=aiState.episodeFrames+1
   if state.worldX>aiState.furthestWorldX then aiState.furthestWorldX=state.worldX;aiState.lastProgressFrame=aiState.episodeFrames end
   aiState.bestForm=math.max(aiState.bestForm or 0,state.power==2 and 2 or (state.size==1 and 0 or 1))
+  recordBehaviorEvents(aiState,state)
+  local observationInputs=AI.buildObservationInputs(state)
+  local temporalInputs=buildTemporalInputs(observationInputs,aiState.recentGlobalInputs)
+  local memoryInputs={}
+  for memoryIndex=1,MEMORY_INPUT_COUNT do memoryInputs[memoryIndex]=temporalInputs[memoryIndex] end
+  aiState.lastObservationInputs=observationInputs
+  aiState.lastTemporalInputs=memoryInputs
   local genome=aiState.populationState.genomes[aiState.genomeIndex]
-  local action,actionIndex,enemy,actionScores,nodeValues,observationInputs=chooseAction(genome,state)
+  local urgentEnemy=findClosestThreat(state)
+  local immediateHazard=(urgentEnemy and urgentEnemy.worldX-state.worldX<56)
+    or hasGapAhead(state)>0
+  local cachedAction=aiState.cachedAction
+  if cachedAction and aiState.actionFramesRemaining>0 and not immediateHazard then
+    aiState.actionFramesRemaining=aiState.actionFramesRemaining-1
+    aiState.lastState=state
+    aiState.lastObservationInputs=observationInputs
+    local heldAction={}
+    for key,value in pairs(cachedAction) do heldAction[key]=value end
+    heldAction.reason="held learned "..heldAction.name
+    return heldAction
+  end
+  -- This extends MarI/O's FCEUX observe/evaluate/joypad cycle with an evolved
+  -- action horizon. The horizon is an SMB1-specific extension, not copied code:
+  -- https://github.com/juvester/mari-o-fceux/blob/master/neatevolve.lua
+  local action,actionIndex,enemy,actionScores,nodeValues,_,holdFrames=
+    chooseAction(genome,state,memoryInputs)
   action.name=ACTION_OPTIONS[actionIndex].name
   action.reason=enemy and ("learned "..action.name.." | threat "..enemy.name)
     or ("learned "..action.name)
@@ -1017,6 +1191,13 @@ function AI.decide(aiState,state)
   aiState.lastActionScores=actionScores
   aiState.lastNodeValues=nodeValues
   aiState.lastObservationInputs=observationInputs
+  aiState.lastTemporalInputs=memoryInputs
+  aiState.actionFramesRemaining=holdFrames-1
+  aiState.cachedAction=action
+  aiState.lastHoldFrames=holdFrames
+  if action.name=="retreat" then
+    aiState.behavior.retreats=aiState.behavior.retreats+1
+  end
   aiState.lastState=state
   return action
 end
@@ -1068,12 +1249,18 @@ local function makeHudNodePositions(genome)
     positions[inputIndex]={x=35+column*41,y=49+row*7}
   end
   positions[NEURAL_INPUT_COUNT]={x=76,y=98}
+  -- Two compact rows expose the delayed global-feature inputs in the same graph.
+  for memoryIndex=1,MEMORY_INPUT_COUNT do
+    local featureIndex=(memoryIndex-1)%MEMORY_FEATURE_COUNT
+    local lagColumn=math.floor((memoryIndex-1)/MEMORY_FEATURE_COUNT)
+    positions[memoryNode(memoryIndex)]={x=103+lagColumn*10,y=48+featureIndex*3}
+  end
 
   local hiddenNodes={}
   for _,gene in ipairs(genome.genes or {}) do
     if gene.enabled then
       for _,nodeId in ipairs({gene.sourceNode,gene.targetNode}) do
-        if nodeId>NEURAL_INPUT_COUNT and nodeId<OUTPUT_NODE_OFFSET and not positions[nodeId] then
+        if isHiddenNode(nodeId) and not positions[nodeId] then
           positions[nodeId]={pending=true}
           hiddenNodes[#hiddenNodes+1]=nodeId
         end
@@ -1248,7 +1435,7 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
 
   -- Hidden activations and output nodes are colored by their current value.
   for nodeId,point in pairs(nodePositions) do
-    if nodeId>NEURAL_INPUT_COUNT and not point.pending then
+    if (isHiddenNode(nodeId) or isMemoryInput(nodeId)) and not point.pending then
       local activation=(aiState.lastNodeValues or {})[nodeId] or 0
       local color=activation>=0 and 0xFF62D6A5 or 0xFFFF6873
       hudBox(guiApi,point.x-1,point.y-1,point.x+1,point.y+1,color,color)
@@ -1285,7 +1472,9 @@ function AI.finishEpisode(aiState,state,forced_reason)
   local progress=math.max(0,(aiState.furthestWorldX or state.worldX)-(aiState.startWorldX or state.worldX))
   local survival=math.min(aiState.episodeFrames,12000)*0.02
   local power=(aiState.bestForm or 0)*150
-  local fitness=progress*10+survival+power+math.max(0,aiState.episodeReward)
+  local descriptor=behaviorDescriptor(aiState,progress)
+  local novelty=addNoveltyAndArchive(aiState.populationState,descriptor)
+  local fitness=progress*10+survival+power+aiState.episodeReward+novelty*6
   if state and state.phase=="death" then fitness=fitness-120
   elseif state and state.phase=="victory" then fitness=fitness+10000 end
   if forced_reason=="stuck" then fitness=fitness-20 end
@@ -1294,6 +1483,7 @@ function AI.finishEpisode(aiState,state,forced_reason)
   aiState.startWorldX=nil
   aiState.episodeActive=false
   aiState.lastFitness=fitness
+  aiState.lastNovelty=novelty
   if not aiState.championMode then
     genome.fitness=fitness
     aiState.genomeIndex=aiState.genomeIndex+1
@@ -1330,6 +1520,10 @@ function AI.abandonEpisode(aiState)
   aiState.episodeReward=0
   aiState.episodeActive=false
   aiState.finished=false
+  aiState.cachedAction=nil
+  aiState.actionFramesRemaining=0
+  aiState.recentGlobalInputs={}
+  aiState.previousEpisodeState=nil
 end
 
 function AI.run()
