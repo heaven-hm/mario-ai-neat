@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
+import os
 import random
 from pathlib import Path
 from typing import Deque
@@ -178,10 +179,17 @@ class RainbowLiteAgent:
         return float(loss.detach().cpu())
 
     def save(self, path: str | Path) -> None:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"config": asdict(self.config), "steps": self.steps, "optimizer_steps": self.optimizer_steps,
-                    "online": self.online.state_dict(), "target": self.target.state_dict(),
-                    "optimizer": self.optimizer.state_dict()}, path)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        try:
+            torch.save({"config": asdict(self.config), "steps": self.steps, "optimizer_steps": self.optimizer_steps,
+                        "online": self.online.state_dict(), "target": self.target.state_dict(),
+                        "optimizer": self.optimizer.state_dict()}, temporary)
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def load(self, path: str | Path) -> None:
         payload = torch.load(path, map_location=self.device, weights_only=False)

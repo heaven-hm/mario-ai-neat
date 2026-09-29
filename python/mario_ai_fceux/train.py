@@ -31,6 +31,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--fceux", default="fceux", help="FCEUX executable path or command.")
     parser.add_argument("--run-dir", type=Path, default=Path("runs/python-rainbow"))
     parser.add_argument("--workers", type=int, default=4, help="Parallel FCEUX processes.")
+    parser.add_argument("--worlds", default="1", help="Comma-separated SMB1 worlds, one per worker; each starts at level 1.")
     parser.add_argument("--steps", type=int, default=1_000_000, help="Total action decisions to collect.")
     parser.add_argument("--resume", action="store_true", help="Load model.pt if it exists in the run directory.")
     parser.add_argument("--device", default=None, help="PyTorch device: mps, cuda, or cpu.")
@@ -39,6 +40,14 @@ def parse_arguments() -> argparse.Namespace:
 
 def main() -> None:
     arguments = parse_arguments()
+    try:
+        requested_worlds = tuple(int(value.strip()) for value in arguments.worlds.split(",") if value.strip())
+    except ValueError as error:
+        raise ValueError("--worlds must contain integers in the range 1..8") from error
+    if len(requested_worlds) == 1:
+        requested_worlds *= arguments.workers
+    if len(requested_worlds) != arguments.workers or any(world < 1 or world > 8 for world in requested_worlds):
+        raise ValueError("--worlds must provide one value from 1..8 per worker")
     repository_root = Path(__file__).resolve().parents[2]
     bridge_template = repository_root / "python" / "fceux_bridge" / "mario_ai_fceux_bridge.lua"
     arguments.run_dir.mkdir(parents=True, exist_ok=True)
@@ -47,11 +56,11 @@ def main() -> None:
     checkpoint = arguments.run_dir / "model.pt"
     if arguments.resume and checkpoint.exists():
         agent.load(checkpoint)
-    metadata = {"algorithm": "Rainbow-lite Double DQN", "workers": arguments.workers,
+    metadata = {"algorithm": "Rainbow-lite Double DQN", "workers": arguments.workers, "worlds": requested_worlds,
                 "observation_size": 184, "actions": 6, "rom": str(arguments.rom)}
     (arguments.run_dir / "run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     processes = launch_fceux_workers(arguments.fceux, arguments.rom, bridge_template,
-                                     arguments.run_dir, arguments.workers)
+                                     arguments.run_dir, arguments.workers, requested_worlds)
     workers = [FileWorker(f"worker-{index:02d}", arguments.run_dir / f"worker-{index:02d}")
                for index in range(arguments.workers)]
     latest_loss: float | None = None

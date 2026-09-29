@@ -3,6 +3,9 @@
 -- FCEUX owns only emulation, real controller input, and a fixed training state.
 
 local WORKER_DIRECTORY = "__WORKER_DIRECTORY__"
+-- Zero-based SMB1 world.  Python injects one verified title-screen target for
+-- every worker before FCEUX starts it.
+local TARGET_WORLD_INDEX = __TARGET_WORLD_INDEX__
 -- SMB1 needs a held A press for a full jump.  Four frames cut jumps short;
 -- twelve keeps the same action long enough to clear the first enemy and pipe.
 local ACTION_REPEAT_FRAMES = 12
@@ -16,6 +19,9 @@ local RAM = {
   enemy_y=0x00CF, player_y=0x03B8, death_music=0x0712, flag_event=0x010E,
   flag_y=0x070F, tiles=0x0500, player_size=0x0754, power=0x0756,
   operation_mode=0x0770,
+  world_select_number=0x076B, world_select_enable=0x07FC,
+  world_number=0x075F, level_number=0x075C, area_number=0x0760,
+  offscreen_world_number=0x0766, offscreen_area_number=0x0767,
 }
 
 local NON_SOLID = {[0x00]=true,[0x08]=true,[0x24]=true,[0x25]=true,[0x26]=true,
@@ -107,9 +113,11 @@ local function observe()
   local gap=0
   for offset=16,96,16 do if not solidAt(worldX+offset,worldY+16) then gap=1;break end end
   local size,power=read(RAM.player_size),read(RAM.power)
+  local worldNumber,levelNumber,areaNumber=read(RAM.world_number),read(RAM.level_number),read(RAM.area_number)
   local globals={clamp(horizontalVelocity/4,-1,1),clamp(verticalVelocity/8,-1,1),grounded and 1 or -1,
     size==1 and -1 or 1,power==2 and 1 or (power==1 and 0 or -1),enemyDX,enemyDY,enemyVelocity,enemyType,
-    -1,0,0,0,gap,nearestEnemy and enemyDX>0 and enemyDX<0.25 and 1 or 0}
+    clamp(worldNumber/7*2-1,-1,1),clamp(levelNumber/3*2-1,-1,1),clamp(areaNumber/31*2-1,-1,1),0,
+    gap,nearestEnemy and enemyDX>0 and enemyDX<0.25 and 1 or 0}
   for _,value in ipairs(globals) do features[#features+1]=value end
   return {features=features,worldX=worldX,power=power,phase=phase(),
     operationMode=read(RAM.operation_mode),playerState=read(RAM.player_state)}
@@ -290,6 +298,17 @@ while true do
       -- playable frame.  Once that state exists, this branch is never used
       -- again, including after a death or game-over screen.
       if snapshot.operationMode==0 and initialStartAttempts<3 and waitingFrames%120==0 then
+        -- From the supplied SMB1 disassembly: WorldSelectNumber=$076b,
+        -- WorldSelectEnableFlag=$07fc, WorldNumber=$075f, LevelNumber=$075c,
+        -- and AreaNumber=$0760.  SMB1's selector starts the selected world at
+        -- level 1, so this never pretends to select a later level directly.
+        memory.writebyte(RAM.world_select_enable,1)
+        memory.writebyte(RAM.world_select_number,TARGET_WORLD_INDEX)
+        memory.writebyte(RAM.world_number,TARGET_WORLD_INDEX)
+        memory.writebyte(RAM.level_number,0)
+        memory.writebyte(RAM.area_number,0)
+        memory.writebyte(RAM.offscreen_world_number,TARGET_WORLD_INDEX)
+        memory.writebyte(RAM.offscreen_area_number,0)
         joypad.set(1,{start=true})
         initialStartAttempts=initialStartAttempts+1
       else

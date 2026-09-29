@@ -78,6 +78,23 @@ PYTHONPATH=python python3 -m mario_ai_fceux.train \
   --run-dir runs/world-1-1-rainbow --resume
 ```
 
+### World curriculum
+
+The supplied SMB1 disassembly exposes the title-screen world selector. Pass one
+world number per worker to train a shared model across the first level of
+several worlds:
+
+```bash
+PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.train \
+  --rom SuperMarioBros.nes --fceux fceux --workers 8 \
+  --worlds 1,1,2,2,4,4,8,8 --run-dir runs/world-1-1-rainbow --resume
+```
+
+This starts workers in **1-1, 2-1, 4-1, and 8-1**. SMB1's selector starts a
+world at level 1; later courses such as 1-2 or 4-3 require verified FCEUX
+course-start states. The bridge records world, level, and area values in the
+model observation so a shared network can distinguish the assigned courses.
+
 `Ctrl+C` writes `model.pt` before processes are closed. Do not run the Python
 trainer and `mario_ai_neat.lua` in the same FCEUX worker: they both control
 port 1.

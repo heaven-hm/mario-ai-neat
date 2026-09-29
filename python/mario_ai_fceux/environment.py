@@ -70,8 +70,10 @@ class FileWorker:
         atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3, "reset": True})
 
 
-def prepare_worker_directory(template: Path, worker_directory: Path) -> Path:
+def prepare_worker_directory(template: Path, worker_directory: Path, target_world: int) -> Path:
     """Create an isolated bridge file and protocol directory for one emulator."""
+    if not 1 <= target_world <= 8:
+        raise ValueError("SMB1 target worlds must be in the range 1..8")
     worker_directory.mkdir(parents=True, exist_ok=True)
     for name in ("observation.json", "command.json"):
         try:
@@ -80,18 +82,25 @@ def prepare_worker_directory(template: Path, worker_directory: Path) -> Path:
             pass
     bridge_path = worker_directory / "mario_ai_fceux_bridge.lua"
     worker_literal = str(worker_directory.resolve()).replace("\\", "\\\\").replace('"', '\\"')
-    bridge_path.write_text(template.read_text(encoding="utf-8").replace("__WORKER_DIRECTORY__", worker_literal), encoding="utf-8")
+    bridge_source = (template.read_text(encoding="utf-8")
+                     .replace("__WORKER_DIRECTORY__", worker_literal)
+                     .replace("__TARGET_WORLD_INDEX__", str(target_world - 1)))
+    bridge_path.write_text(bridge_source, encoding="utf-8")
     return bridge_path
 
 
 def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_directory: Path,
-                         count: int, extra_args: Sequence[str] = ()) -> list[subprocess.Popen[bytes]]:
+                         count: int, target_worlds: Sequence[int] | None = None,
+                         extra_args: Sequence[str] = ()) -> list[subprocess.Popen[bytes]]:
     """Launch isolated FCEUX processes. FCEUX officially supports `-lua` and `-nothrottle`."""
     executable = shutil.which(fceux) or fceux
     if not Path(rom).is_file():
         raise FileNotFoundError(f"SMB1 ROM was not found: {rom}")
     if count < 1:
         raise ValueError("worker count must be positive")
+    assigned_worlds = tuple(target_worlds or (1,) * count)
+    if len(assigned_worlds) != count:
+        raise ValueError("target_worlds must contain one world for each worker")
     # FCEUX 2.6 uses --loadlua; earlier builds document -lua.  Detect the
     # installed binary rather than assuming the older spelling.
     try:
@@ -103,7 +112,8 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
     lua_option = "--loadlua" if "--loadlua" in help_output else "-lua"
     processes: list[subprocess.Popen[bytes]] = []
     for index in range(count):
-        bridge = prepare_worker_directory(bridge_template, run_directory / f"worker-{index:02d}")
+        bridge = prepare_worker_directory(bridge_template, run_directory / f"worker-{index:02d}",
+                                          assigned_worlds[index])
         # FCEUX is launched from the worker directory, so the bridge must be
         # absolute; otherwise a relative run directory is resolved twice.
         fceux_arguments = [lua_option, str(bridge.resolve()), *extra_args, str(rom.resolve())]
