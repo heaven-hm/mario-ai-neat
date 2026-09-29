@@ -33,6 +33,7 @@ from mario_ai_fceux.apex_actor import (
     NStepBuffer,
     ActorConfig,
     _apex_epsilon,
+    _action_details,
     _select_action,
     _load_weights_from_bytes,
     _enqueue_batch,
@@ -248,6 +249,17 @@ class TestActionSelection(unittest.TestCase):
         actions = {_select_action(self.network, self.support, state, 1.0, 2, self.device)
                    for _ in range(50)}
         self.assertEqual(actions, {0, 1})
+
+    def test_action_details_match_the_fceux_network_overlay(self) -> None:
+        state = np.zeros(4, dtype=np.float32)
+        action, q_values, hidden = _action_details(
+            self.network, self.support, state, 0.0, 2, self.device,
+        )
+        self.assertIn(action, (0, 1))
+        self.assertEqual(q_values.shape, (2,))
+        self.assertEqual(hidden.shape, (16,))
+        self.assertTrue(np.isfinite(q_values).all())
+        self.assertTrue(np.isfinite(hidden).all())
 
 
 # ---------------------------------------------------------------------------

@@ -263,6 +263,10 @@ def main() -> None:
     except OSError:
         metadata["fceux_sha256"] = None
     (args.run_dir / "run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    atomic_write_json(args.run_dir / "learner_status.json", {
+        "steps": 0, "transitions_received": 0, "optimizer_updates": 0,
+        "replay_transitions": 0, "epsilon": 0.0, "latest_loss": None,
+    })
     logger.info("Run config written: %s", args.run_dir / "run.json")
 
     context = multiprocessing.get_context("spawn")
@@ -421,6 +425,7 @@ def main() -> None:
                 try:
                     status_inbox.put_nowait(("status",))
                     _, learner_status = status_outbox.get(timeout=3)
+                    atomic_write_json(args.run_dir / "learner_status.json", learner_status)
                 except Exception as exc:
                     logger.warning("Learner status query failed: %s", exc)
                 if learner_status.get("transitions_received", 0) >= args.steps:

@@ -113,13 +113,32 @@ def _select_action(
     device: torch.device,
 ) -> int:
     """Epsilon-greedy action selection using the actor's local network copy."""
-    if np.random.random() < epsilon:
-        return int(np.random.randint(action_count))
+    action, _, _ = _action_details(network, support, state, epsilon,
+                                  action_count, device)
+    return action
+
+
+def _action_details(
+    network: RainbowNetwork,
+    support: torch.Tensor,
+    state: np.ndarray,
+    epsilon: float,
+    action_count: int,
+    device: torch.device,
+) -> tuple[int, np.ndarray, np.ndarray]:
+    """Return action, Q values, and encoder summary for the live FCEUX HUD."""
     network.reset_noise()
     obs = torch.from_numpy(state.astype(np.float32)).unsqueeze(0).to(device)
     with torch.no_grad():
+        encoded = network.encoder(obs)
         q_values = network(obs, support)
-    return int(q_values.argmax(dim=1).item())
+    greedy_action = int(q_values.argmax(dim=1).item())
+    if np.random.random() < epsilon:
+        action = int(np.random.randint(action_count))
+    else:
+        action = greedy_action
+    hidden_summary = encoded.reshape(-1, 16, 16).mean(dim=2)
+    return action, q_values[0].cpu().numpy(), hidden_summary[0].cpu().numpy()
 
 
 def _load_weights_from_bytes(network: RainbowNetwork, weight_bytes: bytes,
@@ -143,6 +162,31 @@ def _terminal_transition(previous: Observation, current: Observation,
     """Create the final state-action-reward record for death or level completion."""
     return Transition(previous.state, action, _shaped_reward(previous, current),
                       current.state, True, 0.0)
+
+
+def _publish_hud(worker: FileWorker, run_directory: str, observation: Observation,
+                 action: int, q_values: np.ndarray, hidden: np.ndarray,
+                 steps: int, episodes: int, deaths: int, victories: int,
+                 best_x: int, epsilon: float) -> None:
+    """Publish the actor's real state/action values for the FCEUX overlay."""
+    learner = read_json(Path(run_directory) / "learner_status.json") or {}
+    atomic_write_json(worker.directory / "hud.json", {
+        "sequence": observation.sequence,
+        "steps": steps,
+        "updates": int(learner.get("optimizer_updates", 0)),
+        "replay": int(learner.get("replay_transitions", 0)),
+        "epsilon": epsilon,
+        "episodes": episodes,
+        "deaths": deaths,
+        "victories": victories,
+        "best_x": best_x,
+        "loss": float(learner.get("latest_loss") or 0.0),
+        "action": action,
+        "values": [float(value) for value in q_values],
+        "grid": [float(value) for value in observation.state[:169]],
+        "globals": [float(value) for value in observation.state[169:184]],
+        "hidden": [float(value) for value in hidden],
+    })
 
 
 def actor_main(
@@ -275,8 +319,12 @@ def actor_main(
             continue
 
         # Select action.
-        action = _select_action(network, support, observation.state,
-                                epsilon, config.action_count, device)
+        action, q_values, hidden = _action_details(
+            network, support, observation.state, epsilon, config.action_count, device,
+        )
+        _publish_hud(worker, run_directory, observation, action, q_values, hidden,
+                     steps, episodes, episodes - victories, victories,
+                     best_episode_x, epsilon)
 
         worker.send_action(observation, action)
 
