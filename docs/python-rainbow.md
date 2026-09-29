@@ -126,6 +126,16 @@ trainer. This runs inside the trainer process; it is not a cron job or a
 separate macOS background service. The check does not kill or alter any active
 game session.
 
+At the same time it writes a concise comparison table to:
+
+```text
+runs/world-1-1-rainbow/health/learning_report.md
+```
+
+The table compares Python decisions, optimizer updates, replay size, reward
+progress, and victories with Lua NEAT generation, record fitness, and latest
+distance. It reports a discovery only for a measured new record or victory.
+
 ## Benchmark it honestly
 
 Compare this path with the Lua NEAT trainer using the same ROM, same World 1-1

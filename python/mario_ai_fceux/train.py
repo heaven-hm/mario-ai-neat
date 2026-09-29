@@ -31,9 +31,72 @@ def shaped_reward(previous, current) -> float:
     return reward
 
 
+def read_lua_neat_summary(database_path: Path, log_path: Path) -> dict[str, int | float | None]:
+    """Read stable, public progress fields without modifying Lua's checkpoint."""
+    summary: dict[str, int | float | None] = {
+        "generation": None, "innovation": None, "best_fitness": None,
+        "population": None, "latest_max_x": None, "latest_fitness": None,
+    }
+    try:
+        header = database_path.open(encoding="utf-8").readline().strip().split(",")
+        if len(header) == 6 and header[0] == "MARIO_AI_NEAT_V1":
+            summary.update({
+                "generation": int(header[1]), "innovation": int(header[2]),
+                "best_fitness": float(header[3]), "population": int(header[4]),
+            })
+    except (OSError, ValueError):
+        pass
+    try:
+        # Logs are append-only. The last episode line is a factual recent run,
+        # not a claim that the AI has permanently mastered that situation.
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in reversed(lines):
+            if "episode end |" not in line:
+                continue
+            fields = line.split("|")
+            for field in fields:
+                key, _, value = field.strip().partition("=")
+                if key == "max_x":
+                    summary["latest_max_x"] = int(value)
+                elif key == "fitness":
+                    summary["latest_fitness"] = float(value)
+            break
+    except (OSError, ValueError):
+        pass
+    return summary
+
+
+def write_learning_table(health_directory: Path, report: dict[str, object]) -> None:
+    """Write a human-readable report alongside the machine-readable health JSON."""
+    learning = report["learning"]
+    python = learning["python_dqn"]
+    lua = learning["lua_neat"]
+    rows = [
+        "# Ten-minute learning report",
+        "",
+        f"Generated: {report['checked_at']}",
+        "",
+        "| AI path | Measured state now | Change since previous report | Evidence-based discovery |",
+        "| --- | --- | --- | --- |",
+        ("| Python Rainbow DQN | "
+         f"{python['steps']} decisions; {python['optimizer_updates']} updates; "
+         f"replay {python['replay_transitions']}; best X {python['best_x']} | "
+         f"{python['change']} | {python['discovery']} |"),
+        ("| Lua NEAT + contextual Q | "
+         f"generation {lua['generation']}; best fitness {lua['best_fitness']}; "
+         f"latest X {lua['latest_max_x']} | "
+         f"{lua['change']} | {lua['discovery']} |"),
+        "",
+        "A discovery reports only saved progress, a new best distance, or a victory. "
+        "It does not label a maneuver as mastered until repeatable evaluation supports that claim.",
+        "",
+    ]
+    (health_directory / "learning_report.md").write_text("\n".join(rows), encoding="utf-8")
+
+
 def write_health_report(run_directory: Path, repository_root: Path,
-                        last_observation_at: dict[str, float],
-                        expected_workers: int) -> dict[str, object]:
+                        last_observation_at: dict[str, float], expected_workers: int,
+                        python_training: dict[str, int | float | None]) -> dict[str, object]:
     """Record a trainer-owned health snapshot without a separate OS service.
 
     The trainer already receives each worker's observation, so this is more
@@ -60,6 +123,32 @@ def write_health_report(run_directory: Path, repository_root: Path,
     lua_log_age = (round(max(0.0, unix_now - lua_log.stat().st_mtime), 1)
                    if lua_log.exists() else None)
     lua_state = "running" if lua_log_age is not None and lua_log_age <= HEALTH_CHECK_INTERVAL_SECONDS else "not_detected_or_stale"
+    health_directory = run_directory / "health"
+    previous_report: dict[str, object] = {}
+    try:
+        previous_report = json.loads((health_directory / "latest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
+    lua_summary = read_lua_neat_summary(repository_root / "mario_ai_neat.db", lua_log)
+    previous_learning = previous_report.get("learning", {}) if isinstance(previous_report, dict) else {}
+    previous_python = previous_learning.get("python_dqn", {}) if isinstance(previous_learning, dict) else {}
+    previous_lua = previous_learning.get("lua_neat", {}) if isinstance(previous_learning, dict) else {}
+    previous_best_x = int(previous_python.get("best_x", python_training["best_x"]))
+    previous_victories = int(previous_python.get("victories", python_training["victories"]))
+    previous_lua_fitness = float(previous_lua.get("best_fitness", lua_summary["best_fitness"] or 0))
+    previous_lua_generation = int(previous_lua.get("generation", lua_summary["generation"] or 0))
+    python_best_x = int(python_training["best_x"] or 0)
+    python_victories = int(python_training["victories"] or 0)
+    lua_best_fitness = float(lua_summary["best_fitness"] or 0)
+    lua_generation = int(lua_summary["generation"] or 0)
+    python_change = f"+{python_best_x - previous_best_x} best X; +{python_victories - previous_victories} victories"
+    lua_change = f"+{lua_generation - previous_lua_generation} generations; +{lua_best_fitness - previous_lua_fitness:.2f} best fitness"
+    python_discovery = (f"new victory recorded ({python_victories} total)" if python_victories > previous_victories
+                        else f"new best progress to X={python_best_x}" if python_best_x > previous_best_x
+                        else "no new best progress in this interval")
+    lua_discovery = (f"new record fitness {lua_best_fitness:.2f}" if lua_best_fitness > previous_lua_fitness
+                     else f"advanced to generation {lua_generation}" if lua_generation > previous_lua_generation
+                     else "no new saved record in this interval")
     report: dict[str, object] = {
         "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "healthy": not repairs,
@@ -72,12 +161,16 @@ def write_health_report(run_directory: Path, repository_root: Path,
         },
         "lua_neat": {"log_age_seconds": lua_log_age, "state": lua_state},
         "disk": {"free_bytes": disk.free, "total_bytes": disk.total},
+        "learning": {
+            "python_dqn": {**python_training, "change": python_change, "discovery": python_discovery},
+            "lua_neat": {**lua_summary, "change": lua_change, "discovery": lua_discovery},
+        },
     }
-    health_directory = run_directory / "health"
     health_directory.mkdir(parents=True, exist_ok=True)
     atomic_write_json(health_directory / "latest.json", report)
     with (health_directory / "history.jsonl").open("a", encoding="utf-8") as history_file:
         history_file.write(json.dumps(report, separators=(",", ":")) + "\n")
+    write_learning_table(health_directory, report)
     return report
 
 
@@ -150,7 +243,17 @@ def main() -> None:
                 ready.append((worker, observation))
 
             if time.monotonic() >= next_health_check_at:
-                write_health_report(arguments.run_dir, repository_root, last_observation_at, arguments.workers)
+                write_health_report(arguments.run_dir, repository_root, last_observation_at, arguments.workers, {
+                    "steps": agent.steps,
+                    "optimizer_updates": agent.optimizer_steps,
+                    "replay_transitions": len(replay),
+                    "episodes": episodes,
+                    "deaths": deaths,
+                    "victories": victories,
+                    "best_x": best_world_x,
+                    "epsilon": round(agent.epsilon, 4),
+                    "latest_loss": round(latest_loss, 4) if latest_loss is not None else None,
+                })
                 next_health_check_at = time.monotonic() + HEALTH_CHECK_INTERVAL_SECONDS
 
             # Replay updates mutate one shared model, so they must stay
