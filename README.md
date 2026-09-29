@@ -12,7 +12,7 @@ An AI that learns to play **Super Mario Bros. 1 for NES in FCEUX**. It uses NEAT
 
 ![Ten seconds of Mario AI NEAT training live in FCEUX](docs/images/mario-ai-neat-live.gif)
 
-*Ten seconds captured from a live FCEUX training session.*
+*Ten seconds captured from a live FCEUX training session at Generation 111.*
 
 Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super Mario World; this project targets SMB1 in FCEUX.
 
@@ -55,7 +55,7 @@ flowchart LR
 
 ### Resume training
 
-The included `mario_ai_neat.db` is a generation 37 population checkpoint. Keep it beside `mario_ai_neat.lua`, load the SMB1 ROM, then start the Lua script in FCEUX. It automatically loads the population and continues training. The script uses this exact filename; it does not automatically find `mario_ai_heaven_neat.db` or other database names.
+The included `mario_ai_neat.db` is a generation 111 population checkpoint. Keep it beside `mario_ai_neat.lua`, load the SMB1 ROM, then start the Lua script in FCEUX. It automatically loads the population and continues training. The script uses this exact filename; it does not automatically find `mario_ai_heaven_neat.db` or other database names.
 
 If the log says `discarded unsafe training start`, the saved FCEUX slot was too close to a death. The AI leaves that slot, waits for Mario's normal respawn, and records a new start. It does not press Start or score that short failed attempt. If the game remains on a title or game-over screen, start the game manually; the AI never presses Start for you.
 
