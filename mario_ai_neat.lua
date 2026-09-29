@@ -1109,7 +1109,6 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
     if pressed then hudBox(guiApi,x-2,111,x+8,123,0xFF196A4C,0xFF65DAA5) end
     hudText(guiApi,x,113,buttonName,pressed and "white" or "gray","black")
   end
-  hudText(guiApi,224,12,"[HIDE]","yellow","black")
   return true
 end
 
