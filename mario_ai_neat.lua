@@ -17,6 +17,10 @@ local USE_FIXED_TRAINING_STATE = true
 local TRAINING_SAVESTATE_SLOT = 9
 -- Set true after training to replay the strongest saved genome only.
 local PLAY_CHAMPION_ONLY = false
+-- Click the small HUD tab in the upper-right corner to show/hide the live
+-- network inspector. Drawing can be disabled here to maximize training speed.
+local SHOW_NEURAL_INSPECTOR = true
+local HUD_CLICK_COOLDOWN = 0
 
 local RAM = {
   player_state=0x000E, enemy_present=0x000F, enemy_id=0x0016,
@@ -288,7 +292,7 @@ function AI.evaluateGenome(genome, inputValues)
   for actionIndex = 1, ACTION_COUNT do
     actionScores[actionIndex] = nodeValues[OUTPUT_NODE_OFFSET+actionIndex] or 0
   end
-  return actionScores
+  return actionScores,nodeValues
 end
 
 local function createEmptyGenome()
@@ -860,7 +864,8 @@ end
 local function chooseAction(genome,state)
   local enemy=findClosestThreat(state)
   local allowed=calculateAllowedActions(state,enemy)
-  local actionScores=AI.evaluateGenome(genome,AI.buildObservationInputs(state))
+  local observationInputs=AI.buildObservationInputs(state)
+  local actionScores,nodeValues=AI.evaluateGenome(genome,observationInputs)
   if state.power==2 and enemy and enemy.worldX-state.worldX>36 then actionScores[1]=actionScores[1]+0.3 end
   local selectedActionIndex,highestActionScore
   for actionIndex=1,ACTION_COUNT do
@@ -868,7 +873,7 @@ local function chooseAction(genome,state)
       selectedActionIndex,highestActionScore=actionIndex,actionScores[actionIndex]
     end
   end
-  return ACTION_OPTIONS[selectedActionIndex or 4],selectedActionIndex or 4,enemy,actionScores
+  return ACTION_OPTIONS[selectedActionIndex or 4],selectedActionIndex or 4,enemy,actionScores,nodeValues,observationInputs
 end
 
 local ACTION_LABEL = {
@@ -938,12 +943,185 @@ function AI.decide(aiState,state)
   if state.worldX>aiState.furthestWorldX then aiState.furthestWorldX=state.worldX;aiState.lastProgressFrame=aiState.episodeFrames end
   aiState.bestForm=math.max(aiState.bestForm or 0,state.power==2 and 2 or (state.size==1 and 0 or 1))
   local genome=aiState.populationState.genomes[aiState.genomeIndex]
-  local action,actionIndex,enemy=chooseAction(genome,state)
+  local action,actionIndex,enemy,actionScores,nodeValues,observationInputs=chooseAction(genome,state)
   action.name=ACTION_OPTIONS[actionIndex].name
   action.reason=enemy and ("learned "..action.name.." | threat "..enemy.name)
     or ("learned "..action.name)
   aiState.lastAction=actionIndex
+  aiState.lastActionScores=actionScores
+  aiState.lastNodeValues=nodeValues
+  aiState.lastObservationInputs=observationInputs
+  aiState.lastState=state
   return action
+end
+
+-- FCEUX uses ARGB colors for gui.drawbox/drawline. MarI/O's port converts to
+-- the byte order expected by FCEUX; keep that conversion local to the HUD.
+local function hudColor(argb)
+  local alpha=math.floor(argb/0x1000000)%256
+  local red=math.floor(argb/0x10000)%256
+  local green=math.floor(argb/0x100)%256
+  local blue=argb%256
+  return alpha+blue*0x100+green*0x10000+red*0x1000000
+end
+
+local function hudText(guiApi,x,y,value,foreground,background)
+  local text=tostring(value)
+  local palette={white=0xFFFFFFFF,cyan=0xFF00FFFF,yellow=0xFFFFFF00,green=0xFF42FF70,
+    red=0xFFFF5050,gray=0xFF9AA7B2,black=0xFF101010}
+  if guiApi.drawtext then
+    guiApi.drawtext(x,y,text,hudColor(palette[foreground] or 0xFFFFFFFF),0)
+  elseif guiApi.text then
+    guiApi.text(x,y,text,foreground or "white",background or "black")
+  end
+end
+
+local function hudBox(guiApi,x1,y1,x2,y2,fill,outline)
+  local draw=guiApi.drawbox or guiApi.box
+  if draw then draw(x1,y1,x2,y2,hudColor(fill),hudColor(outline or fill)) end
+end
+
+local function hudLine(guiApi,x1,y1,x2,y2,color)
+  local draw=guiApi.drawline or guiApi.line
+  if draw then draw(x1,y1,x2,y2,hudColor(color)) end
+end
+
+local function makeHudNodePositions(genome)
+  local positions={}
+  local gridStartX,gridStartY,gridStep=4,50,2
+  for inputIndex=1,GRID_INPUT_COUNT do
+    local cellIndex=inputIndex-1
+    local row=math.floor(cellIndex/GRID_WIDTH)
+    local column=cellIndex%GRID_WIDTH
+    positions[inputIndex]={x=gridStartX+column*gridStep,y=gridStartY+row*gridStep}
+  end
+  for featureIndex=1,GLOBAL_INPUT_COUNT do
+    local inputIndex=GRID_INPUT_COUNT+featureIndex
+    positions[inputIndex]={x=35,y=50+(featureIndex-1)*3}
+  end
+  positions[NEURAL_INPUT_COUNT]={x=35,y=99}
+
+  local hiddenNodes={}
+  for _,gene in ipairs(genome.genes or {}) do
+    if gene.enabled then
+      for _,nodeId in ipairs({gene.sourceNode,gene.targetNode}) do
+        if nodeId>NEURAL_INPUT_COUNT and nodeId<OUTPUT_NODE_OFFSET and not positions[nodeId] then
+          positions[nodeId]={pending=true}
+          hiddenNodes[#hiddenNodes+1]=nodeId
+        end
+      end
+    end
+  end
+  table.sort(hiddenNodes)
+  for hiddenIndex,nodeId in ipairs(hiddenNodes) do
+    local column=math.floor((hiddenIndex-1)/12)
+    local row=(hiddenIndex-1)%12
+    if hiddenIndex<=48 then positions[nodeId]={x=64+column*6,y=50+row*4} end
+  end
+  for actionIndex=1,ACTION_COUNT do
+    positions[OUTPUT_NODE_OFFSET+actionIndex]={x=96,y=50+(actionIndex-1)*8}
+  end
+  return positions,#hiddenNodes
+end
+
+-- Draw a compact live inspector in the upper-left, leaving the game view clear.
+function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
+  if not guiApi or not (guiApi.text or guiApi.drawtext) then return false end
+  if not SHOW_NEURAL_INSPECTOR then
+    hudText(guiApi,224,12,"[AI]","cyan","black")
+    return false
+  end
+  local genome=aiState.populationState.genomes[aiState.genomeIndex]
+  if not genome then return false end
+  local nodePositions=makeHudNodePositions(genome)
+  -- Three small panels occupy the upper-left corner only. The rest of the
+  -- 256x240 game picture stays visible, including Mario near ground level.
+  hudBox(guiApi,0,10,135,38,0xB0000000,0xB0000000)
+  hudBox(guiApi,0,40,135,106,0x90000000,0x90000000)
+  hudBox(guiApi,0,108,135,125,0xB0000000,0xB0000000)
+  hudText(guiApi,2,12,"MARIO AI  NEAT","cyan","black")
+  hudText(guiApi,2,20,string.format("G%d #%d/%d S%d",
+    aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,
+    genome.species or 0),"white","black")
+  local progress=math.max(0,(aiState.furthestWorldX or state.worldX)-(aiState.startWorldX or state.worldX))
+  local actionName=action and action.name or "idle"
+  local shortAction=({run="RUN",jump_run="JUMP",retreat="BACK",brake="STOP",
+    jump_place="HOP",walk="WALK"})[actionName] or "IDLE"
+  hudText(guiApi,2,28,string.format("X%d +%d %s",state.worldX,progress,
+    shortAction),"white","black")
+
+  -- Keep the network rendering lightweight so the game remains responsive.
+  local drawnConnections=0
+  for _,gene in ipairs(genome.genes or {}) do
+    if gene.enabled then
+      local source,target=nodePositions[gene.sourceNode],nodePositions[gene.targetNode]
+      if source and target and not source.pending and not target.pending and drawnConnections<50 then
+        local color=gene.weight>=0 and 0x6000DD55 or 0x60FF453A
+        hudLine(guiApi,source.x,source.y,target.x,target.y,color)
+        drawnConnections=drawnConnections+1
+      end
+    end
+  end
+
+  -- Grid is the local tile view: dark empty, green solid, red enemy.
+  hudText(guiApi,2,41,"INPUTS","white","black")
+  for inputIndex=1,GRID_INPUT_COUNT do
+    local point=nodePositions[inputIndex]
+    local value=(aiState.lastObservationInputs or {})[inputIndex] or 0
+    local color=value<0 and 0xFFFF5C64 or (value>0 and 0xFF56D69A or 0xFF344454)
+    hudBox(guiApi,point.x,point.y,point.x+1,point.y+1,color,color)
+  end
+
+  -- Global features are a small activation column beside the 13x13 grid.
+  for featureIndex=1,GLOBAL_INPUT_COUNT do
+    local inputIndex=GRID_INPUT_COUNT+featureIndex
+    local point=nodePositions[inputIndex]
+    local value=(aiState.lastObservationInputs or {})[inputIndex] or 0
+    local color=value<0 and 0xFFFF6873 or (value>0 and 0xFF62D6A5 or 0xFF617180)
+    hudBox(guiApi,point.x,point.y,point.x+1,point.y+1,color,color)
+  end
+  local biasPoint=nodePositions[NEURAL_INPUT_COUNT]
+  hudBox(guiApi,biasPoint.x,biasPoint.y,biasPoint.x+2,biasPoint.y+2,0xFFFFFF00,0xFFFFFF00)
+
+  -- Hidden activations and output nodes are colored by their current value.
+  for nodeId,point in pairs(nodePositions) do
+    if nodeId>NEURAL_INPUT_COUNT and not point.pending then
+      local activation=(aiState.lastNodeValues or {})[nodeId] or 0
+      local color=activation>=0 and 0xFF62D6A5 or 0xFFFF6873
+      hudBox(guiApi,point.x-1,point.y-1,point.x+1,point.y+1,color,color)
+    end
+  end
+  local outputLabels={"run","jrun","back","stop","hop","walk"}
+  for actionIndex,option in ipairs(ACTION_OPTIONS) do
+    local nodeId=OUTPUT_NODE_OFFSET+actionIndex
+    local point=nodePositions[nodeId]
+    local selected=action and action.name==option.name
+    hudText(guiApi,point.x+4,point.y-3,outputLabels[actionIndex],
+      selected and "yellow" or "white","black")
+  end
+
+  local buttonNames={"R","L","A","B","U","D"}
+  local buttonKeys={"right","left","A","B","up","down"}
+  hudText(guiApi,2,113,"PAD","white","black")
+  for buttonIndex,buttonName in ipairs(buttonNames) do
+    local x=25+(buttonIndex-1)*17
+    local pressed=buttons and buttons[buttonKeys[buttonIndex]]
+    if pressed then hudBox(guiApi,x-2,111,x+8,123,0xFF196A4C,0xFF65DAA5) end
+    hudText(guiApi,x,113,buttonName,pressed and "white" or "gray","black")
+  end
+  hudText(guiApi,224,12,"[HIDE]","yellow","black")
+  return true
+end
+
+local function processHudClick()
+  if HUD_CLICK_COOLDOWN>0 then HUD_CLICK_COOLDOWN=HUD_CLICK_COOLDOWN-1;return end
+  if not input or not input.get then return end
+  local mouse=input.get()
+  if mouse and mouse.click==1 and mouse.xmouse>=190 and mouse.xmouse<=255
+    and mouse.ymouse>=8 and mouse.ymouse<=26 then
+    SHOW_NEURAL_INSPECTOR=not SHOW_NEURAL_INSPECTOR
+    HUD_CLICK_COOLDOWN=10
+  end
 end
 
 function AI.finishEpisode(aiState,state,forced_reason)
@@ -1043,20 +1221,8 @@ function AI.run()
         if action[name] then buttons[name]=true end
       end
       joypad.set(1,buttons)
-      if gui and gui.text then
-        local generationNumber=aiState.populationState.generation
-        local genome=aiState.populationState.genomes[aiState.genomeIndex]
-        local learning=AI.learningStatus(aiState,state,action)
-        gui.text(8,8,aiState.championMode and "MARIO AI  |  CHAMPION PLAY" or "MARIO AI  |  LIVE LEARNING","cyan","black")
-        gui.text(8,18,string.format("NEAT  Gen %d  |  Genome %d/%d  |  Species %d",generationNumber,
-          aiState.genomeIndex,#aiState.populationState.genomes,genome.species or 0),"white","black")
-        gui.text(8,28,"LEARNING  "..learning.lesson,"yellow","black")
-        gui.text(8,38,"ACTION    "..learning.action,"green","black")
-        gui.text(8,48,"SENSING   "..learning.sensing,"white","black")
-        gui.text(8,58,string.format("PROGRESS  +%d px  |  Best world X %d  |  Episode %d",learning.progress,
-          aiState.furthestWorldX or state.worldX,aiState.totalEpisodes+1),"white","black")
-        gui.text(8,68,"MEMORY    "..(aiState.databaseOK==false and "save failed" or "population saved"),"white","black")
-      end
+      processHudClick()
+      if gui then AI.drawNeuralInspector(gui,aiState,state,action,buttons) end
       if aiState.episodeFrames>=12000 or aiState.episodeFrames-aiState.lastProgressFrame>600 then
         local reason=aiState.episodeFrames>=12000 and "timeout" or "stuck"
         local fitness=AI.finishEpisode(aiState,state,reason)

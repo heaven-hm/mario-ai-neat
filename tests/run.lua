@@ -129,4 +129,25 @@ lesson_state.enemies={{slot=0,id=6,name="goomba",status=0,worldX=140,worldY=192,
 local lesson=AI.learningStatus(AI.new(AI.newPopulation(1)),lesson_state,{name="jump_run"})
 test("learning HUD explains an enemy jump lesson",lesson.lesson=="jump timing to clear an enemy")
 
+local inspectorState=AI.new(AI.newPopulation(1))
+local inspectorGameState=state(140)
+local inspectorAction=AI.decide(inspectorState,inspectorGameState)
+local hudCalls={texts={},boxes=0,lines=0,maxX=0,maxY=0}
+local fakeHud={
+  text=function(_,_,text) hudCalls.texts[#hudCalls.texts+1]=text end,
+  drawtext=function(_,_,text) hudCalls.texts[#hudCalls.texts+1]=text end,
+  drawbox=function(_,_,right,bottom)
+    hudCalls.boxes=hudCalls.boxes+1
+    hudCalls.maxX=math.max(hudCalls.maxX,right)
+    hudCalls.maxY=math.max(hudCalls.maxY,bottom)
+  end,
+  drawline=function() hudCalls.lines=hudCalls.lines+1 end,
+}
+test("live NEAT inspector draws successfully from a game decision",
+  AI.drawNeuralInspector(fakeHud,inspectorState,inspectorGameState,inspectorAction,{right=true,B=true})==true)
+local hudTextOutput=table.concat(hudCalls.texts," ")
+test("live inspector renders the sensor grid and controller in a small corner",
+  hudCalls.boxes>=169 and hudCalls.lines>0 and hudTextOutput:find("PAD",1,true)~=nil
+    and hudCalls.maxX<=135 and hudCalls.maxY<=125)
+
 print(string.format("%d NEAT behavior checks passed",checks))
