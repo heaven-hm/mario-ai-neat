@@ -39,6 +39,7 @@ import logging
 import multiprocessing
 import shutil
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -233,6 +234,14 @@ def main() -> None:
     bridge_template = repository_root / "python" / "fceux_bridge" / "mario_ai_fceux_bridge.lua"
     args.run_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        source_revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repository_root,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        source_revision = "unknown"
+
     # Metadata snapshot (statistics use — not training hot path).
     metadata = {
         "algorithm": "Ape-X Rainbow (C51 + NoisyNet + Double DQN + Dueling + PER + N-step)",
@@ -248,6 +257,7 @@ def main() -> None:
         "n_step": args.n_step,
         "batch_size": args.batch_size,
         "seed": args.seed,
+        "evaluation_seed": args.seed,
         "eval_world": args.eval_world,
         "eval_episodes": args.eval_episodes,
         "action_repeat_frames": 12,
@@ -256,9 +266,11 @@ def main() -> None:
         "torch_version": torch.__version__,
         "numpy_version": np.__version__,
         "python_version": sys.version.split()[0],
+        "source_revision": source_revision,
         "rom_sha256": hashlib.sha256(args.rom.read_bytes()).hexdigest(),
     }
     fceux_executable = shutil.which(args.fceux) or args.fceux
+    metadata["fceux_executable"] = str(Path(fceux_executable).resolve())
     try:
         metadata["fceux_sha256"] = hashlib.sha256(Path(fceux_executable).resolve().read_bytes()).hexdigest()
     except OSError:

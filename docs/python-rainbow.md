@@ -193,6 +193,11 @@ Lua NEAT, basic DDQN, or PPO policies for you. Those policy-specific evaluators
 and trained checkpoints are still needed before a real four-way comparison can
 be claimed.
 
+The periodic Ape-X evaluator also writes benchmark-ready JSON and episode CSV
+files under `runs/full-rainbow/evaluations/eval-XXXXXX/`. Its JSON records the
+frozen evaluation policy, episode outcomes, and run metadata. Use a report only
+when the other policies were evaluated with the same conditions above.
+
 ## Benchmark it honestly
 
 Compare this path with the Lua NEAT trainer using the same ROM, same World 1-1
