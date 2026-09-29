@@ -54,28 +54,27 @@ start, and FCEUX setup instead of assuming one approach is better.
 
 Here, **Q-learning** means learning an action value: “from this game state,
 how useful is each action for future reward?” The Lua system stores a compact
-lookup-style Q memory for similar contexts. The Python system uses **deep
-Q-learning (DQN)**: a PyTorch neural network estimates those Q-values for the
-full 184-feature observation. It is called *Double DQN* because one network
-selects the next action while a target network evaluates it, reducing overly
-optimistic Q-values.
+lookup-style Q memory for similar contexts. The Python system uses **Ape-X
+Rainbow DQN**: C51 value distributions, NoisyNet exploration, Double DQN,
+dueling heads, multi-step returns, and prioritized replay estimate action
+values for the 184-feature observation.
 
 ```mermaid
 flowchart TB
     State["Same SMB1 RAM + tile state"] --> Neat["Lua: NEAT policy\n+evolve population"]
     State --> LuaQ["Lua: contextual Q memory\n+reuse local action evidence"]
-    State --> DQN["Python: Double DQN\n+predict six action Q-values"]
+    State --> DQN["Python: Ape-X Rainbow\n+C51 values + learned actions"]
     Neat --> LuaResult["Lua fitness and champion runs"]
     LuaQ --> LuaResult
-    DQN --> PythonResult["Parallel Python benchmark runs"]
+    DQN --> PythonResult["Greedy Python evaluation reports"]
     LuaResult --> Compare["Compare: best X, completion rate,\ndecisions, wall-clock time"]
     PythonResult --> Compare
 ```
 
-NEAT and DQN are **not merged into one controller**. Lua NEAT remains a
-separate FCEUX player; Python DQN is a separate FCEUX player with its own
-checkpoint and replay database. This avoids mixing their scores and makes the
-comparison meaningful.
+NEAT and Rainbow are **not merged into one controller**. Lua NEAT remains a
+separate FCEUX player; Python Rainbow is a separate FCEUX player with its own
+model checkpoint and in-memory replay snapshots. Keeping separate reports
+allows controlled comparisons without mixing their scores.
 
 We created the Python path because Lua NEAT evaluates one genome at a time.
 Python can learn from every worker's transition immediately, so an enemy jump

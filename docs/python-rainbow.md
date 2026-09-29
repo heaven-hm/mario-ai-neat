@@ -154,9 +154,10 @@ The table compares Python decisions, optimizer updates, replay size, reward
 progress, and victories with Lua NEAT generation, record fitness, and latest
 distance. It reports a discovery only for a measured new record or victory.
 
-The ten-minute scheduled health command writes `cron_latest.json` and
-`cron_report.md` under the same health folder. Run `scripts/health_check.py`
-manually to create the same snapshot immediately.
+Run `scripts/health_check.py` manually to write `cron_latest.json` and
+`cron_report.md` immediately. On macOS, cron may lack privacy permission to read
+a checkout under `Documents`; the trainer's own ten-minute report loop remains
+the authoritative monitor in that case.
 
 ## Evaluation and comparable benchmarks
 

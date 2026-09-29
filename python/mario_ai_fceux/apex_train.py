@@ -243,6 +243,7 @@ def main() -> None:
         "replay_capacity": args.replay_capacity,
         "exploration": "Ape-X actor epsilon-greedy plus NoisyNet; no Mario action prior",
         "actor_epsilons": [round(_apex_epsilon(i, args.workers), 5) for i in range(args.workers)],
+        "actor_seeds": [args.seed + i * 1000 for i in range(args.workers)],
         "weight_sync_every_optimizer_steps": args.weight_sync_every,
         "n_step": args.n_step,
         "batch_size": args.batch_size,
