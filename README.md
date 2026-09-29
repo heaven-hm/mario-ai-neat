@@ -27,6 +27,8 @@ Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super 
 
 See [seven complete network diagrams from the included database](docs/best-networks.md), drawn from the actual saved connections.
 
+The isolated acceleration experiment has a [technical plan](tasks/plan.md) and a [local FCEUX comparison guide](docs/acceleration-trial.md).
+
 ## Start playing and training
 
 1. Open a compatible **Super Mario Bros. 1 NES ROM** in FCEUX. The ROM is not included.
@@ -165,7 +167,7 @@ This is a specialized NEAT-style implementation, not a byte-for-byte implementat
 - The Lua script uses FCEUX's embedded Lua runtime and FCEUX APIs. This project currently targets **FCEUX only**.
 - Training uses savestate slot 9 as a shared starting point. Reserve that slot for Mario AI.
 - The script supports `savestate.object()` and the older `savestate.create()` API. It does not call `savestate.persist()`.
-- The in-game timer counts down normally. The optional `TESTING_FREEZE_TIMER` aid is off by default. The remaining testing aid refreshes lives to `9`; set `TESTING_INFINITE_LIVES = false` for normal lives.
+- Each attempt starts with the in-game timer set to `999`, then the timer counts down normally. The testing aid refreshes lives to `9`; set `TESTING_INFINITE_LIVES = false` for normal lives.
 - The AI never starts a game after death. Start the game manually in FCEUX.
 
 ### Technology stack

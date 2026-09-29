@@ -4,8 +4,8 @@
 
 local AI = {}
 
--- Let SMB1's clock count down normally. The optional 999 timer aid is off.
-local TESTING_FREEZE_TIMER = false
+-- Give every attempt a full 999 seconds; SMB1 counts it down normally.
+local SET_TIMER_TO_999_PER_EPISODE = true
 -- Testing-only aid. This keeps the SMB1 life counter replenished. It does not
 -- revive Mario or skip the normal death and respawn sequence.
 local TESTING_INFINITE_LIVES = true
@@ -130,6 +130,8 @@ local DEFAULT_POPULATION_SIZE = 300
 local SPECIES_DISTANCE_THRESHOLD = 1.0
 local MAX_STALE_GENERATIONS = 15
 local SAVE_INTERVAL_FRAMES = 600
+local INITIAL_PROGRESS_DEADLINE_FRAMES = 180
+local MIN_INITIAL_PROGRESS_PIXELS = 16
 
 local ACTION_OPTIONS = {
   {name="run", right=true, B=true},
@@ -261,45 +263,41 @@ local function sigmoid(value)
   return 2/(1+math.exp(-4.9*value))-1
 end
 
--- Evaluate nodes in numeric order. Hidden node IDs grow upward and output IDs
--- begin at one million, so every feed-forward source is evaluated first.
+-- Follow enabled connections when evaluating each output. A split can add a
+-- newer hidden node before an older hidden target, so numeric order is unsafe.
 function AI.evaluateGenome(genome, inputValues)
-  local nodeValues, incomingConnections, activeNodes = {}, {}, {}
+  local nodeValues, incomingConnections = {}, {}
   for inputIndex = 1, OBSERVATION_INPUT_COUNT do
     nodeValues[inputIndex] = inputValues[inputIndex] or 0
   end
   nodeValues[NEURAL_INPUT_COUNT] = 1
-  activeNodes[NEURAL_INPUT_COUNT] = true
-  for actionIndex = 1, ACTION_COUNT do
-    activeNodes[OUTPUT_NODE_OFFSET+actionIndex] = true
-  end
   for _, gene in ipairs(genome.genes) do
     if gene.enabled then
       incomingConnections[gene.targetNode] = incomingConnections[gene.targetNode] or {}
       incomingConnections[gene.targetNode][#incomingConnections[gene.targetNode]+1] = gene
-      activeNodes[gene.sourceNode], activeNodes[gene.targetNode] = true, true
     end
   end
-  local evaluationOrder = {}
-  for nodeId in pairs(activeNodes) do
-    if nodeId > NEURAL_INPUT_COUNT then
-      evaluationOrder[#evaluationOrder+1] = nodeId
-    end
-  end
-  table.sort(evaluationOrder)
-  for _, nodeId in ipairs(evaluationOrder) do
+  local evaluating={}
+  local function evaluateNode(nodeId)
+    if nodeValues[nodeId]~=nil then return nodeValues[nodeId] end
+    if nodeId<=NEURAL_INPUT_COUNT or evaluating[nodeId] then return 0 end
+    evaluating[nodeId]=true
     local nodeConnections = incomingConnections[nodeId]
     if nodeConnections then
       local weightedSum = 0
       for _, gene in ipairs(nodeConnections) do
-        weightedSum = weightedSum + (nodeValues[gene.sourceNode] or 0)*gene.weight
+        weightedSum = weightedSum + evaluateNode(gene.sourceNode)*gene.weight
       end
       nodeValues[nodeId] = sigmoid(weightedSum)
+    else
+      nodeValues[nodeId]=0
     end
+    evaluating[nodeId]=nil
+    return nodeValues[nodeId]
   end
   local actionScores = {}
   for actionIndex = 1, ACTION_COUNT do
-    actionScores[actionIndex] = nodeValues[OUTPUT_NODE_OFFSET+actionIndex] or 0
+    actionScores[actionIndex] = evaluateNode(OUTPUT_NODE_OFFSET+actionIndex)
   end
   return actionScores,nodeValues
 end
@@ -337,6 +335,11 @@ local function hasConnection(genome, sourceNode, targetNode)
 end
 
 local function chooseRandomNode(genome, populationState, inputOnly)
+  -- Most grid cells are empty in a given frame. Give compact movement, enemy,
+  -- item, and gap features a better chance of receiving a new connection.
+  if not inputOnly and math.random()<0.4 then
+    return math.random(GRID_INPUT_COUNT+1,NEURAL_INPUT_COUNT)
+  end
   local candidates = {}
   for inputIndex = 1, NEURAL_INPUT_COUNT do
     candidates[#candidates+1] = inputIndex
@@ -375,14 +378,23 @@ end
 local function mutateAddNode(genome, populationState)
   local enabledGenes = {}
   for _, gene in ipairs(genome.genes) do
-    if gene.enabled then enabledGenes[#enabledGenes+1] = gene end
+    local existingNode=populationState.splitHistory[gene.innovation]
+    if gene.enabled and (not existingNode
+      or not hasConnection(genome,gene.sourceNode,existingNode)) then
+      enabledGenes[#enabledGenes+1] = gene
+    end
   end
   if #enabledGenes == 0 then return end
   local splitGene = enabledGenes[math.random(#enabledGenes)]
+  local newHiddenNode=populationState.splitHistory[splitGene.innovation]
+  if not newHiddenNode then
+    newHiddenNode=(populationState.nextHiddenNode or NEURAL_INPUT_COUNT)+1
+    if newHiddenNode>=OUTPUT_NODE_OFFSET then return end
+    populationState.nextHiddenNode=newHiddenNode
+    populationState.splitHistory[splitGene.innovation]=newHiddenNode
+  end
   splitGene.enabled=false
-  genome.highestHiddenNode=math.max(genome.highestHiddenNode,NEURAL_INPUT_COUNT)+1
-  if genome.highestHiddenNode>=OUTPUT_NODE_OFFSET then return end
-  local newHiddenNode = genome.highestHiddenNode
+  genome.highestHiddenNode=math.max(genome.highestHiddenNode,newHiddenNode)
   table.insert(genome.genes,createGene(splitGene.sourceNode,newHiddenNode,1,
     getInnovationNumber(populationState,splitGene.sourceNode,newHiddenNode)))
   table.insert(genome.genes,createGene(newHiddenNode,splitGene.targetNode,splitGene.weight,
@@ -539,7 +551,8 @@ end
 -- is free to replace that prior during later generations.
 function AI.newPopulation(populationSize)
   local populationState = {generation=1,nextInnovation=ACTION_COUNT,innovations={},genomes={},species={},
-    bestFitness=0,population=populationSize or DEFAULT_POPULATION_SIZE}
+    bestFitness=0,population=populationSize or DEFAULT_POPULATION_SIZE,nextGenomeIndex=1,
+    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={}}
   for genomeIndex = 1, populationState.population do
     local genome
     if genomeIndex == 1 then
@@ -604,7 +617,10 @@ local function rankSpecies(populationState)
       genome.adjustedFitness = genome.globalRank/math.max(1,#speciesGroup.genomes)
       adjustedFitnessTotal = adjustedFitnessTotal+genome.adjustedFitness
     end
-    speciesGroup.averageFitness = adjustedFitnessTotal/math.max(1,#speciesGroup.genomes)
+    -- Adjusted fitness already divides each rank by species size. Summing it
+    -- gives the species one fair breeding weight; averaging would divide by
+    -- species size twice and overproduce one-member species.
+    speciesGroup.averageFitness = adjustedFitnessTotal
   end
 end
 
@@ -627,10 +643,17 @@ local function breedChild(group,populationState)
   if #speciesMembers == 1 then
     local child = cloneGenome(speciesMembers[1])
     child.fitness, child.adjustedFitness = 0, 0
+    -- A newly formed species must keep exploring rather than make exact copies.
+    AI.mutate(child,populationState)
     return child
   end
-  local firstParent = speciesMembers[math.random(#speciesMembers)]
-  local secondParent = speciesMembers[math.random(#speciesMembers)]
+  local function selectParent()
+    local first = speciesMembers[math.random(#speciesMembers)]
+    local second = speciesMembers[math.random(#speciesMembers)]
+    return first.fitness >= second.fitness and first or second
+  end
+  local firstParent = selectParent()
+  local secondParent = selectParent()
   local child = math.random() < 0.75
     and crossover(firstParent,secondParent) or cloneGenome(firstParent)
   child.fitness, child.adjustedFitness = 0, 0
@@ -657,8 +680,10 @@ function AI.nextGeneration(populationState)
   end
   local nextPopulation = {generation=populationState.generation+1,
     nextInnovation=populationState.nextInnovation,innovations=populationState.innovations,
+    nextHiddenNode=populationState.nextHiddenNode,splitHistory=populationState.splitHistory,
     species=survivingSpecies,genomes={cloneGenome(champion)},
-    bestFitness=populationState.bestFitness,population=populationState.population}
+    bestFitness=populationState.bestFitness,population=populationState.population,
+    nextGenomeIndex=1}
   local targetPopulationSize = populationState.population or DEFAULT_POPULATION_SIZE
   while #nextPopulation.genomes < targetPopulationSize do
     local speciesGroup = chooseSpeciesForBreeding(survivingSpecies)
@@ -726,8 +751,8 @@ function AI.createStateAdapter(api,slot)
   return adapter
 end
 
-function AI.freezeTimerForTesting()
-  if not TESTING_FREEZE_TIMER or not memory or not memory.writebyte then return false end
+function AI.setTimerTo999()
+  if not SET_TIMER_TO_999_PER_EPISODE or not memory or not memory.writebyte then return false end
   memory.writebyte(RAM.timer_hundreds,0x09)
   memory.writebyte(RAM.timer_tens,0x09)
   memory.writebyte(RAM.timer_ones,0x09)
@@ -751,6 +776,13 @@ function AI.save(populationState,path)
   if not databaseFile then return false end
   safeWriteLine(databaseFile,table.concat({"MARIO_AI_NEAT_V1",populationState.generation,populationState.nextInnovation,
     populationState.bestFitness or 0,populationState.population or #populationState.genomes,#populationState.genomes},","))
+  -- Older V1 readers ignore this optional line; new readers resume the next
+  -- unevaluated genome after a stopped or crashed FCEUX session.
+  safeWriteLine(databaseFile,"P,"..tostring(populationState.nextGenomeIndex or 1))
+  safeWriteLine(databaseFile,"H,"..tostring(populationState.nextHiddenNode or NEURAL_INPUT_COUNT))
+  for splitInnovation,hiddenNode in pairs(populationState.splitHistory or {}) do
+    safeWriteLine(databaseFile,table.concat({"S",splitInnovation,hiddenNode},","))
+  end
   for genomeIndex, genome in ipairs(populationState.genomes) do
     safeWriteLine(databaseFile,table.concat({"G",genomeIndex,genome.fitness or 0,
       genome.highestHiddenNode or NEURAL_INPUT_COUNT,genome.species or 0},","))
@@ -792,7 +824,8 @@ function AI.load(path)
     "^MARIO_AI_NEAT_V1,(%d+),([%d%.]+),([%d%.%-]+),(%d+),(%d+)$")
   if not generation then databaseFile:close();return nil end
   local populationState={generation=tonumber(generation),nextInnovation=tonumber(innovationId),
-    bestFitness=tonumber(bestFitness),population=tonumber(populationSize),genomes={},species={},innovations={}}
+    bestFitness=tonumber(bestFitness),population=tonumber(populationSize),genomes={},species={},innovations={},
+    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={}}
   for genomeIndex = 1, tonumber(genomeCount) do
     populationState.genomes[genomeIndex] = createEmptyGenome()
     populationState.genomes[genomeIndex].fitness = 0
@@ -800,7 +833,23 @@ function AI.load(path)
   for line in databaseFile:lines() do
     local fields={}
     for field in (line..","):gmatch("(.-),") do fields[#fields+1]=field end
-    if fields[1]=="G" then
+    if fields[1]=="P" then
+      local savedIndex=tonumber(fields[2])
+      if savedIndex and savedIndex>=1 and savedIndex<=#populationState.genomes then
+        populationState.nextGenomeIndex=math.floor(savedIndex)
+      end
+    elseif fields[1]=="H" then
+      local savedNode=tonumber(fields[2])
+      if savedNode and savedNode>=NEURAL_INPUT_COUNT and savedNode<OUTPUT_NODE_OFFSET then
+        populationState.nextHiddenNode=math.floor(savedNode)
+      end
+    elseif fields[1]=="S" then
+      local splitInnovation,hiddenNode=tonumber(fields[2]),tonumber(fields[3])
+      if splitInnovation and hiddenNode and hiddenNode>NEURAL_INPUT_COUNT
+        and hiddenNode<OUTPUT_NODE_OFFSET then
+        populationState.splitHistory[splitInnovation]=math.floor(hiddenNode)
+      end
+    elseif fields[1]=="G" then
       local genomeIndex = tonumber(fields[2])
       if populationState.genomes[genomeIndex] then
         populationState.genomes[genomeIndex].fitness=tonumber(fields[3]) or 0
@@ -819,6 +868,12 @@ function AI.load(path)
           enabled=tonumber(fields[6])==1,innovation=tonumber(fields[7])}
         populationState.genomes[genomeIndex].genes[#populationState.genomes[genomeIndex].genes+1]=gene
         populationState.innovations[connectionKey(gene.sourceNode,gene.targetNode)]=gene.innovation
+        if gene.sourceNode>NEURAL_INPUT_COUNT and gene.sourceNode<OUTPUT_NODE_OFFSET then
+          populationState.nextHiddenNode=math.max(populationState.nextHiddenNode,gene.sourceNode)
+        end
+        if gene.targetNode>NEURAL_INPUT_COUNT and gene.targetNode<OUTPUT_NODE_OFFSET then
+          populationState.nextHiddenNode=math.max(populationState.nextHiddenNode,gene.targetNode)
+        end
       end
     end
   end
@@ -920,7 +975,9 @@ function AI.learningStatus(aiState,state,action)
 end
 
 function AI.new(populationState)
-  return {populationState=populationState or AI.newPopulation(),genomeIndex=1,episodeFrames=0,
+  populationState=populationState or AI.newPopulation()
+  return {populationState=populationState,
+    genomeIndex=populationState.nextGenomeIndex or 1,episodeFrames=0,
     startWorldX=nil,furthestWorldX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
     lastAction=nil,frames=0,finished=false,episodeActive=false,championMode=false}
 end
@@ -1244,9 +1301,19 @@ function AI.finishEpisode(aiState,state,forced_reason)
       aiState.populationState=AI.nextGeneration(aiState.populationState)
       aiState.genomeIndex=1
     end
+    aiState.populationState.nextGenomeIndex=aiState.genomeIndex
   end
   aiState.finished=true
   return fitness
+end
+
+function AI.episodeStopReason(aiState,state)
+  if aiState.episodeFrames>=12000 then return "timeout" end
+  local progress=(aiState.furthestWorldX or state.worldX)-(aiState.startWorldX or state.worldX)
+  if aiState.episodeFrames>=INITIAL_PROGRESS_DEADLINE_FRAMES
+    and progress<MIN_INITIAL_PROGRESS_PIXELS then return "stuck" end
+  if aiState.episodeFrames-aiState.lastProgressFrame>600 then return "stuck" end
+  return nil
 end
 
 -- A checkpoint taken during the death animation can still look playable in
@@ -1294,11 +1361,11 @@ function AI.run()
     if not aiState.databaseOK then AI.appendLog("database save failed: "..context,logPath) end
     return aiState.databaseOK
   end
-  AI.appendLog(string.format("started | database=%s | generation=%d | population=%d | mode=%s | state=%s | test_timer=%s | test_lives=%s",
+  AI.appendLog(string.format("started | database=%s | generation=%d | population=%d | mode=%s | state=%s | timer=999 per episode (countdown enabled) | test_lives=%s",
     loaded and "loaded" or "new",aiState.populationState.generation,#aiState.populationState.genomes,
     aiState.championMode and "champion" or "training",
     fixedTraining and ("slot "..TRAINING_SAVESTATE_SLOT.." via "..stateAdapter.kind) or (stateProblem or "continuous"),
-    TESTING_FREEZE_TIMER and "999" or "off",TESTING_INFINITE_LIVES and "refreshed" or "off"),logPath)
+    TESTING_INFINITE_LIVES and "refreshed" or "off"),logPath)
   if not loaded then savePopulation("initial population") end
   emu.registerexit(function()
     savePopulation("FCEUX exit")
@@ -1346,13 +1413,13 @@ function AI.run()
         end
       end
       AI.beginEpisode(aiState,state)
+      AI.setTimerTo999()
       AI.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
         aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,state.worldX,state.power),logPath)
     end
     if awaitingNextLevel or restoredAfterVictory then
       joypad.set(1,{})
     elseif state.phase=="playing" then
-      AI.freezeTimerForTesting()
       local action=AI.decide(aiState,state)
       local buttons={}
       for _,name in ipairs({"left","right","up","down","A","B","select"}) do
@@ -1361,8 +1428,8 @@ function AI.run()
       joypad.set(1,buttons)
       processHudClick()
       if gui then AI.drawNeuralInspector(gui,aiState,state,action,buttons) end
-      if aiState.episodeFrames>=12000 or aiState.episodeFrames-aiState.lastProgressFrame>600 then
-        local reason=aiState.episodeFrames>=12000 and "timeout" or "stuck"
+      local reason=AI.episodeStopReason(aiState,state)
+      if reason then
         local fitness=AI.finishEpisode(aiState,state,reason)
         AI.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",
           reason,fitness or 0,aiState.furthestWorldX or state.worldX,aiState.episodeFrames),logPath)

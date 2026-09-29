@@ -39,7 +39,7 @@ end,registerexit=function(callback) exit_callback=callback end}
 local ok,err=pcall(dofile,"mario_ai_neat.lua")
 assert(not ok and tostring(err):find("normal test stop",1,true),tostring(err))
 assert(frames==20 and inputs==20,"one input and one advance per AI decision")
-assert(writes==frames,"timer runs normally while the lives byte remains refreshed")
+assert(writes==frames+3,"the timer is initialized once while lives remain refreshed")
 assert(persist_calls==0,"AI must not call FCEUX savestate.persist")
 assert(slot_saves==1 and slot_loads==0,"an immediate death discards the unsafe training slot")
 assert(starts==0,"AI never presses Start during training recovery")

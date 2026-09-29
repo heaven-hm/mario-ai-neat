@@ -48,7 +48,7 @@ assert(not ok and tostring(errorMessage):find("level flow stop",1,true),tostring
 assert(buttonsByFrame[0],"mid-level launch must begin playing immediately")
 assert(slotSaves==1,"the current training position is captured immediately")
 assert(slotLoads==1,"training restores only after the level transition")
-assert(timerWrites==0,"normal SMB1 timer must not be overwritten")
+assert(timerWrites==6,"each of two episodes initializes the timer once")
 assert(startPresses==0,"the AI never presses Start")
 local log=assert(io.open("mario_ai_neat.log","r")):read("*a")
 assert(log:find("episode start",1,true),"an episode starts immediately")

@@ -46,7 +46,7 @@ end}
 local ok,errorMessage=pcall(dofile,"champion.lua")
 assert(not ok and tostring(errorMessage):find("champion flow stop",1,true),tostring(errorMessage))
 assert(stateCalls==0,"champion play must not create or restore a training slot")
-assert(timerWrites==0,"champion play must leave the SMB1 timer running")
+assert(timerWrites==6,"champion sets 999 once at each level start")
 assert(startPresses==0,"champion play must never press Start")
 for transitionFrame=3,6 do
   assert(buttonsByFrame[transitionFrame] and next(buttonsByFrame[transitionFrame])==nil,

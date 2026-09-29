@@ -24,6 +24,14 @@ probe.genes={{sourceNode=1,targetNode=AI.outputNode(1),weight=2,enabled=true,inn
   {sourceNode=AI.inputCount(),targetNode=AI.outputNode(1),weight=0.5,enabled=true,innovation=9002}}
 local outputs=AI.evaluateGenome(probe,{[1]=1})
 test("genome maps sensor values to controller action scores",outputs[1]>0.5)
+local splitPath=AI.newGenome(populationState)
+splitPath.genes={
+  {sourceNode=1,targetNode=187,weight=1,enabled=true,innovation=9101},
+  {sourceNode=187,targetNode=186,weight=1,enabled=true,innovation=9102},
+  {sourceNode=186,targetNode=AI.outputNode(1),weight=1,enabled=true,innovation=9103},
+}
+local splitOutputs=AI.evaluateGenome(splitPath,{[1]=1})
+test("a newer hidden node can feed an older hidden target",splitOutputs[1]>0.5)
 
 local input_state=state()
 input_state.enemies={{slot=0,id=6,name="goomba",status=0,worldX=input_state.worldX+24,worldY=input_state.worldY,horizontalVelocity=0}}
@@ -92,6 +100,12 @@ normalEpisode.episodeFrames=147
 normalEpisode.furthestWorldX=310
 test("a normal death remains a scored training episode",
   AI.isUnsafeTrainingStart(normalEpisode,death)==false)
+local resumedEpisode=AI.new(AI.newPopulation(3))
+AI.beginEpisode(resumedEpisode,state(40))
+AI.finishEpisode(resumedEpisode,death)
+test("finishing an attempt checkpoints the next unevaluated genome",
+  resumedEpisode.genomeIndex==2
+    and resumedEpisode.populationState.nextGenomeIndex==2)
 local victor=AI.new(AI.newPopulation(2))
 AI.beginEpisode(victor,smallState)
 local win=state();win.phase="victory"
@@ -99,15 +113,117 @@ test("reaching the flag earns a completion bonus",AI.finishEpisode(victor,win)==
 
 local save_path=os.tmpname()
 populationState.genomes[1].fitness=100
+populationState.nextGenomeIndex=5
 test("evolved genome population is saved to a persistent database",AI.save(populationState,save_path)==true)
 local restored=AI.load(save_path)
 test("generation and genome structure reload from the database",
   restored~=nil and #restored.genomes==12 and #restored.genomes[1].genes>0)
+test("training resumes at the next genome after a restart",
+  restored.nextGenomeIndex==5 and AI.new(restored).genomeIndex==5)
 local nextPopulation=AI.nextGeneration(restored)
 test("fitness selection creates a full mutated next generation",
   #nextPopulation.genomes==12 and nextPopulation.generation==restored.generation+1)
 test("best-scoring genome survives into the next generation",nextPopulation.genomes[1].fitness==100)
+test("a new generation starts evaluating at genome one",nextPopulation.nextGenomeIndex==1)
+local savedFile=assert(io.open(save_path,"r"))
+local legacyText=savedFile:read("*a");savedFile:close()
+legacyText=legacyText:gsub("P,%d+\n","",1)
+local legacyFile=assert(io.open(save_path,"w"));legacyFile:write(legacyText);legacyFile:close()
+local legacyPopulation=AI.load(save_path)
+test("older V1 databases without resume progress still load",
+  legacyPopulation~=nil and #legacyPopulation.genomes==12
+    and AI.new(legacyPopulation).genomeIndex==1)
 os.remove(save_path)
+
+-- A new species may contain only its founder. Its descendants must still
+-- explore new weights or links, while the global champion remains intact.
+math.randomseed(2006)
+local singletonPopulation=AI.newPopulation(12)
+local founder=singletonPopulation.genomes[1]
+founder.fitness=100
+singletonPopulation.species={{id=1,genomes={founder},representative=founder,
+  topFitness=0,staleness=0}}
+local singletonChildren=AI.nextGeneration(singletonPopulation)
+local function geneSignature(genome)
+  local parts={}
+  for _,gene in ipairs(genome.genes) do
+    parts[#parts+1]=table.concat({gene.sourceNode,gene.targetNode,gene.weight,
+      tostring(gene.enabled)},":")
+  end
+  return table.concat(parts,"|")
+end
+local founderSignature=geneSignature(founder)
+local changedChildren=0
+for childIndex=2,#singletonChildren.genomes do
+  if geneSignature(singletonChildren.genomes[childIndex])~=founderSignature then
+    changedChildren=changedChildren+1
+  end
+end
+test("one-member species produces changed descendants",changedChildren>0)
+test("accelerated breeding keeps one exact champion and the population size",
+  geneSignature(singletonChildren.genomes[1])==founderSignature
+    and #singletonChildren.genomes==12)
+
+local slowEpisode=AI.new(AI.newPopulation(1))
+AI.beginEpisode(slowEpisode,state(40))
+slowEpisode.episodeFrames=179
+test("early progress window permits a jump setup",AI.episodeStopReason(slowEpisode,state(40))==nil)
+slowEpisode.episodeFrames=180
+test("a stationary attempt stops after its initial window",
+  AI.episodeStopReason(slowEpisode,state(40))=="stuck")
+slowEpisode.furthestWorldX=57
+test("a moving attempt continues through the initial window",
+  AI.episodeStopReason(slowEpisode,state(57))==nil)
+
+math.randomseed(811)
+local sampledPopulation=AI.newPopulation(1)
+local globalLinks,gridLinks=0,0
+for sampleIndex=1,120 do
+  local sampledGenome=AI.newGenome(sampledPopulation)
+  sampledGenome.mutationRates={connections=0,link=1,bias=0,node=0,
+    enable=0,disable=0,step=0.1}
+  local originalGeneCount=#sampledGenome.genes
+  AI.mutate(sampledGenome,sampledPopulation)
+  if #sampledGenome.genes>originalGeneCount then
+    local sourceNode=sampledGenome.genes[#sampledGenome.genes].sourceNode
+    if sourceNode>169 then globalLinks=globalLinks+1
+    else gridLinks=gridLinks+1 end
+  end
+end
+test("new links favor compact game-state inputs while retaining grid exploration",
+  globalLinks>gridLinks/2 and gridLinks>0)
+
+local structuralPopulation=AI.newPopulation(1)
+structuralPopulation.nextInnovation=778
+local function splitCandidate(sourceNode,innovation)
+  local candidate=AI.newGenome(structuralPopulation)
+  candidate.genes={{sourceNode=sourceNode,targetNode=AI.outputNode(1),
+    weight=0.5,enabled=true,innovation=innovation}}
+  candidate.mutationRates={connections=0,link=0,bias=0,node=1.5,
+    enable=0,disable=0,step=0.1}
+  return candidate
+end
+math.randomseed(122)
+local firstSplit=splitCandidate(1,777)
+local matchingSplit=splitCandidate(1,777)
+local differentSplit=splitCandidate(2,778)
+AI.mutate(firstSplit,structuralPopulation)
+local originalHidden=structuralPopulation.splitHistory[777]
+AI.mutate(matchingSplit,structuralPopulation)
+AI.mutate(differentSplit,structuralPopulation)
+test("the same historical split reuses one hidden node across genomes",
+  originalHidden~=nil and structuralPopulation.splitHistory[777]==originalHidden
+    and matchingSplit.highestHiddenNode>=originalHidden)
+test("independent splits receive distinct hidden node numbers",
+  structuralPopulation.splitHistory[778]~=nil
+    and structuralPopulation.splitHistory[778]~=originalHidden)
+local structuralPath=os.tmpname()
+test("structural history checkpoint saves",AI.save(structuralPopulation,structuralPath))
+local structuralReload=AI.load(structuralPath)
+test("structural split history survives checkpoint reload",
+  structuralReload~=nil and structuralReload.splitHistory[777]==originalHidden
+    and structuralReload.splitHistory[778]==structuralPopulation.splitHistory[778])
+os.remove(structuralPath)
 
 local saved_handle,loaded_handle
 local modern_state=AI.createStateAdapter({
@@ -133,8 +249,9 @@ test("runtime log includes its event text",log_text:find("test event",1,true)~=n
 
 local timer_writes={}
 memory={writebyte=function(address,value) timer_writes[address]=value end}
-test("normal timer is enabled",AI.freezeTimerForTesting()==false)
-test("timer digits are left to SMB1",timer_writes[0x07F8]==nil and timer_writes[0x07F9]==nil and timer_writes[0x07FA]==nil)
+test("each attempt can start at 999",AI.setTimerTo999()==true)
+test("timer digits are initialized to 999",
+  timer_writes[0x07F8]==9 and timer_writes[0x07F9]==9 and timer_writes[0x07FA]==9)
 test("testing lives counter is refreshed",AI.keepLivesForTesting()==true and timer_writes[0x075A]==9)
 memory=nil
 
