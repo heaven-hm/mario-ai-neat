@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Sequence
@@ -117,12 +116,22 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
         # FCEUX is launched from the worker directory, so the bridge must be
         # absolute; otherwise a relative run directory is resolved twice.
         fceux_arguments = [lua_option, str(bridge.resolve()), *extra_args, str(rom.resolve())]
-        # macOS normally reuses an existing application instance.  `open -n`
-        # creates one window per Python worker, while other platforms invoke
-        # the configured FCEUX executable directly.
-        command = (["open", "-na", "FCEUX", "--args", *fceux_arguments]
-                   if sys.platform == "darwin" else [executable, *fceux_arguments])
-        processes.append(subprocess.Popen(command, cwd=bridge.parent))
+        # Launch the executable directly on every OS.  On macOS `open -na`
+        # returns the launcher PID rather than the emulator PID, which prevents
+        # reliable health checks and cleanup of the worker process.
+        command = [executable, *fceux_arguments]
+        try:
+            processes.append(subprocess.Popen(command, cwd=bridge.parent))
+        except BaseException:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+            for process in processes:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            raise
     return processes
 
 

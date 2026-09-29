@@ -67,21 +67,23 @@ captures a fixed state near the course start. Every later training reset
 restores that state. It never presses Start after a death or game-over screen.
 
 ```sh
-PYTHONPATH=python python3 -m mario_ai_fceux.train \
+PYTHONPATH=python python3 -m mario_ai_fceux.apex_train \
   --rom /absolute/path/to/SuperMarioBros.nes \
   --fceux fceux \
-  --workers 4 \
-  --run-dir runs/world-1-1-rainbow
+  --workers 8 \
+  --worlds 1,2,3,4,5,6,7,8 \
+  --run-dir runs/full-rainbow
 ```
 
-Resume exactly the saved model and replay database:
+Resume from the latest paired model and replay checkpoint:
 
 ```sh
-PYTHONPATH=python python3 -m mario_ai_fceux.train \
+PYTHONPATH=python python3 -m mario_ai_fceux.apex_train \
   --rom /absolute/path/to/SuperMarioBros.nes \
   --fceux fceux \
-  --workers 4 \
-  --run-dir runs/world-1-1-rainbow --resume
+  --workers 8 \
+  --worlds 1,2,3,4,5,6,7,8 \
+  --run-dir runs/full-rainbow --resume
 ```
 
 ### World curriculum
@@ -91,9 +93,9 @@ world number per worker to train a shared model across the first level of
 several worlds:
 
 ```bash
-PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.train \
+PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.apex_train \
   --rom SuperMarioBros.nes --fceux fceux --workers 8 \
-  --worlds 1,2,3,4,5,6,7,8 --run-dir runs/world-1-1-rainbow --resume
+  --worlds 1,2,3,4,5,6,7,8 --run-dir runs/full-rainbow --resume
 ```
 
 This starts one worker in every first course: **1-1 through 8-1**. SMB1's
@@ -103,16 +105,25 @@ values in the model observation so a shared network can distinguish courses.
 
 ### Checkpoints and storage
 
-`model.pt` and `replay.npz` are written atomically after 25,000 collected
-transitions and when training stops. Replay is entirely in memory during
-learning; collectors never write a database. `replay.npz` contains the global
-priority tree, every stored transition, and its random-generator state, so a
-resume retains the same experience distribution. These live checkpoints stay
-out of Git because they are mutable training artifacts.
+`model.pt` and `replay.npz` are written atomically every 10,000 learner updates
+and when training stops. Replay stays in memory during learning; actors send
+bounded batches and wait when the learner queue is full, so transitions are not
+dropped. `replay.npz` stores every transition, global sum/min priority trees,
+and replay RNG state. The checkpoint stores model/target/optimizer state and
+Python, NumPy, and PyTorch RNG state. Seeds and run conditions are in `run.json`.
+Asynchronous worker arrival order means resumed runs are seeded but not
+bit-for-bit deterministic. Live checkpoints stay out of Git.
 
 `Ctrl+C` writes `model.pt` before processes are closed. Do not run the Python
 trainer and `mario_ai_neat.lua` in the same FCEUX worker: they both control
 port 1.
+
+This is full Rainbow as implemented here: C51 distributional values, NoisyNet,
+Double DQN, dueling heads, n-step returns, and proportional PER with a global
+SumTree and global minimum-probability importance-weight normalization. The
+eight actors send bounded batches; the learner applies backpressure rather
+than losing transitions when it falls behind. The default queue holds 512
+batches to limit memory use.
 
 ### Automatic health report
 
@@ -122,24 +133,27 @@ checks free disk space, and records whether the Lua NEAT log is fresh. Read the
 latest snapshot at:
 
 ```text
-runs/world-1-1-rainbow/health/latest.json
+runs/full-rainbow/health/latest.json
 ```
 
 `repair_required` is empty when the Python worker observations are healthy.
 If it lists a stale worker, inspect that FCEUX window before restarting the
-trainer. This runs inside the trainer process; it is not a cron job or a
-separate macOS background service. The check does not kill or alter any active
-game session.
+trainer. The trainer creates the report at startup and refreshes it every ten minutes;
+checks remain tied to the actual worker and learner state.
 
 At the same time it writes a concise comparison table to:
 
 ```text
-runs/world-1-1-rainbow/health/learning_report.md
+runs/full-rainbow/health/learning_report.md
 ```
 
 The table compares Python decisions, optimizer updates, replay size, reward
 progress, and victories with Lua NEAT generation, record fitness, and latest
 distance. It reports a discovery only for a measured new record or victory.
+
+The ten-minute scheduled health command writes `cron_latest.json` and
+`cron_report.md` under the same health folder. Run `scripts/health_check.py`
+manually to create the same snapshot immediately.
 
 ## Evaluation and comparable benchmarks
 
@@ -148,19 +162,22 @@ which disables NoisyNet exploration and never sends training transitions:
 
 ```bash
 PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.evaluate \
-  --rom SuperMarioBros.nes --fceux fceux --run-dir runs/world-1-1-rainbow \
+  --rom SuperMarioBros.nes --fceux fceux --run-dir runs/full-rainbow \
   --world 1 --episodes 10
 ```
 
-It writes a timestamped `results.json` and `episodes.csv`. Produce compatible
-results for Lua NEAT Champion, basic DDQN, PPO, and Rainbow from the same ROM
+It writes a timestamped `results.json` and `episodes.csv`. The benchmark tool
+rejects reports with different ROM hashes, FCEUX executable hashes, worlds,
+start protocols, action repeats, or episode counts. The tool does not claim
+results until every policy finishes all episodes. Produce compatible results
+for Lua NEAT Champion, basic DDQN, PPO, and Rainbow from the same ROM
 hash, FCEUX version, world, action repeat, and episode count. Then create one
 comparison table:
 
 ```bash
 PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.benchmark \
   --result 'Lua NEAT=neat-results.json' --result 'Basic DDQN=ddqn-results.json' \
-  --result 'PPO=ppo-results.json' --result 'Rainbow=runs/world-1-1-rainbow/evaluations/.../results.json' \
+  --result 'PPO=ppo-results.json' --result 'Rainbow=runs/full-rainbow/evaluations/.../results.json' \
   --output benchmark.md
 ```
 

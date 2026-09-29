@@ -8,7 +8,9 @@ compressed snapshot is written only with a training checkpoint.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import uuid
 
 import numpy as np
 
@@ -29,31 +31,40 @@ class SumTree:
 
     def __init__(self, capacity: int) -> None:
         self.capacity = capacity
-        self.values = np.zeros(2 * capacity, dtype=np.float64)
+        # A padded power-of-two leaf layer keeps prefix search valid for any
+        # configured capacity, not only power-of-two replay sizes.
+        self.leaf_count = 1 << (capacity - 1).bit_length()
+        self.values = np.zeros(2 * self.leaf_count, dtype=np.float64)
+        self.minimums = np.full(2 * self.leaf_count, np.inf, dtype=np.float64)
 
     @property
     def total(self) -> float:
         return float(self.values[1])
 
+    @property
+    def minimum(self) -> float:
+        return float(self.minimums[1])
+
     def update(self, index: int, value: float) -> None:
-        node = index + self.capacity
-        difference = value - self.values[node]
+        node = index + self.leaf_count
         self.values[node] = value
+        self.minimums[node] = value
         node //= 2
         while node:
-            self.values[node] += difference
+            self.values[node] = self.values[node * 2] + self.values[node * 2 + 1]
+            self.minimums[node] = min(self.minimums[node * 2], self.minimums[node * 2 + 1])
             node //= 2
 
     def find_prefixsum(self, value: float) -> int:
         node = 1
-        while node < self.capacity:
+        while node < self.leaf_count:
             left = node * 2
-            if value <= self.values[left]:
+            if value < self.values[left]:
                 node = left
             else:
                 value -= self.values[left]
                 node = left + 1
-        return node - self.capacity
+        return node - self.leaf_count
 
 
 class PrioritizedReplayBuffer:
@@ -62,6 +73,10 @@ class PrioritizedReplayBuffer:
     def __init__(self, observation_size: int, capacity: int = 100_000,
                  alpha: float = 0.6, priority_epsilon: float = 1e-5,
                  seed: int = 0) -> None:
+        if observation_size < 1 or capacity < 1:
+            raise ValueError("observation_size and replay capacity must be positive")
+        if not 0.0 <= alpha <= 1.0 or priority_epsilon <= 0.0:
+            raise ValueError("PER alpha must be in [0, 1] and epsilon must be positive")
         self.observation_size = observation_size
         self.capacity = capacity
         self.alpha = alpha
@@ -77,6 +92,7 @@ class PrioritizedReplayBuffer:
         self.size = 0
         self.position = 0
         self.max_priority = 1.0
+        self.snapshot_id: str | None = None
 
     def __len__(self) -> int:
         return self.size
@@ -104,10 +120,11 @@ class PrioritizedReplayBuffer:
         boundaries = np.linspace(0.0, total, batch_size + 1)
         samples = self.rng.uniform(boundaries[:-1], boundaries[1:])
         indices = np.asarray([self.tree.find_prefixsum(float(sample)) for sample in samples], dtype=np.int64)
-        priorities = self.tree.values[indices + self.capacity]
+        priorities = self.tree.values[indices + self.tree.leaf_count]
         probabilities = priorities / total
-        weights = (self.size * probabilities) ** (-beta)
-        weights = (weights / weights.max()).astype(np.float32)
+        minimum_probability = self.tree.minimum / total
+        maximum_weight = (self.size * minimum_probability) ** (-beta)
+        weights = ((self.size * probabilities) ** (-beta) / maximum_weight).astype(np.float32)
         transitions = [Transition(self.states[index].copy(), int(self.actions[index]), float(self.rewards[index]),
                                   self.next_states[index].copy(), bool(self.terminated[index]),
                                   float(self.discounts[index]), float(priorities[row]))
@@ -120,20 +137,26 @@ class PrioritizedReplayBuffer:
             self.tree.update(int(index), raw_priority ** self.alpha)
             self.max_priority = max(self.max_priority, raw_priority)
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, snapshot_id: str | None = None) -> str:
         """Atomically persist all replay state needed to resume sampling exactly."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
+        self.snapshot_id = snapshot_id or uuid.uuid4().hex
         with temporary.open("wb") as handle:
             np.savez_compressed(handle, observation_size=self.observation_size, capacity=self.capacity,
                                 alpha=self.alpha, priority_epsilon=self.priority_epsilon, size=self.size,
-                                position=self.position, max_priority=self.max_priority, states=self.states[:self.size],
+                                position=self.position, max_priority=self.max_priority,
+                                snapshot_id=self.snapshot_id, format_version=2,
+                                states=self.states[:self.size],
                                 next_states=self.next_states[:self.size], actions=self.actions[:self.size],
                                 rewards=self.rewards[:self.size], discounts=self.discounts[:self.size],
                                 terminated=self.terminated[:self.size], tree=self.tree.values,
                                 rng_state=np.asarray([self.rng.bit_generator.state], dtype=object))
+            handle.flush()
+            os.fsync(handle.fileno())
         temporary.replace(path)
+        return self.snapshot_id
 
     @classmethod
     def load(cls, path: str | Path, seed: int = 0) -> "PrioritizedReplayBuffer":
@@ -143,13 +166,29 @@ class PrioritizedReplayBuffer:
             buffer.size = int(payload["size"])
             buffer.position = int(payload["position"])
             buffer.max_priority = float(payload["max_priority"])
+            buffer.snapshot_id = str(payload["snapshot_id"]) if "snapshot_id" in payload else None
             buffer.states[:buffer.size] = payload["states"]
             buffer.next_states[:buffer.size] = payload["next_states"]
             buffer.actions[:buffer.size] = payload["actions"]
             buffer.rewards[:buffer.size] = payload["rewards"]
             buffer.discounts[:buffer.size] = payload["discounts"]
             buffer.terminated[:buffer.size] = payload["terminated"]
-            buffer.tree.values[:] = payload["tree"]
+            saved_tree = payload["tree"]
+            if saved_tree.shape == buffer.tree.values.shape:
+                buffer.tree.values[:] = saved_tree
+                # Rebuild min-tree leaves from exact active sum-tree leaves.
+                leaf_values = buffer.tree.values[buffer.tree.leaf_count:
+                                                  buffer.tree.leaf_count + buffer.size]
+                buffer.tree.minimums[buffer.tree.leaf_count:
+                                     buffer.tree.leaf_count + buffer.size] = leaf_values
+                for node in range(buffer.tree.leaf_count - 1, 0, -1):
+                    buffer.tree.minimums[node] = min(buffer.tree.minimums[node * 2],
+                                                     buffer.tree.minimums[node * 2 + 1])
+            else:
+                # Migrate snapshots made before power-of-two tree padding.
+                old_leaf_offset = buffer.capacity
+                for index in range(buffer.size):
+                    buffer.tree.update(index, float(saved_tree[index + old_leaf_offset]))
             buffer.rng.bit_generator.state = payload["rng_state"][0]
         return buffer
 

@@ -29,7 +29,7 @@ def learner_main(inbox: Queue, outbox: Queue, run_directory: str, config_dict: d
         except (KeyError, RuntimeError, TypeError, ValueError):
             # A Rainbow-lite checkpoint has incompatible heads. Start a fresh
             # full-Rainbow run instead of silently mixing algorithm states.
-            pass
+            agent = RainbowAgent(replay, config=config, device=device)
     last_loss: float | None = None
     last_save_steps = agent.steps
     active = True

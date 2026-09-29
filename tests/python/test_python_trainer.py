@@ -37,9 +37,12 @@ class PythonTrainerTests(unittest.TestCase):
             replay.update_priorities(identifiers, np.full(4, 3.0))
             snapshot = Path(directory) / "replay.npz"
             replay.save(snapshot)
+            expected_next_sample = replay.sample(4, beta=0.4)[0]
             resumed = PrioritizedReplayBuffer.load(snapshot)
             self.assertEqual(len(resumed), 6)
             self.assertGreater(resumed.tree.total, 0)
+            self.assertEqual(resumed.tree.minimum, replay.tree.minimum)
+            np.testing.assert_array_equal(resumed.sample(4, beta=0.4)[0], expected_next_sample)
 
     def test_agent_trains_and_checkpoint_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

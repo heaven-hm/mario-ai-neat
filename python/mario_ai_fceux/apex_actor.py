@@ -1,0 +1,321 @@
+"""Ape-X actor: runs FCEUX, collects experience batches, sends to shared queue.
+
+Each actor plays independently with its own epsilon (Ape-X exploration schedule).
+N-step returns are computed per-actor so trajectories are never mixed.
+Actors send transition *batches* (default 32) to reduce IPC overhead.
+Model weights are received from the learner and loaded periodically.
+"""
+
+from __future__ import annotations
+
+import io
+import logging
+import os
+import signal
+import time
+from collections import deque
+from dataclasses import dataclass
+from multiprocessing.queues import Queue
+from pathlib import Path
+from typing import Deque
+
+import numpy as np
+import torch
+
+from .environment import FileWorker, Observation
+from .model import RainbowNetwork
+from .protocol import atomic_write_json, read_json
+from .replay import Transition
+
+logger = logging.getLogger(__name__)
+
+# Ape-X exploration schedule: actor 0 explores most, actor 7 exploits most.
+# Matches the Ape-X paper's per-actor epsilon annealing philosophy.
+APEX_EPSILONS = (0.40, 0.20, 0.10, 0.05, 0.025, 0.012, 0.006, 0.003)
+
+
+def _apex_epsilon(actor_index: int, total_actors: int) -> float:
+    """Return actor-specific epsilon following the Ape-X schedule."""
+    if total_actors <= 1:
+        return 0.10
+    fraction = actor_index / max(1, total_actors - 1)
+    # Interpolate log-linearly between max and min epsilon.
+    log_max = np.log(APEX_EPSILONS[0])
+    log_min = np.log(APEX_EPSILONS[-1])
+    return float(np.exp(log_max + fraction * (log_min - log_max)))
+
+
+@dataclass
+class ActorConfig:
+    observation_size: int = 184
+    action_count: int = 6
+    gamma: float = 0.99
+    n_step: int = 3
+    batch_size: int = 32          # transitions per queue push
+    atom_count: int = 51
+    value_min: float = -100.0
+    value_max: float = 100.0
+    weight_sync_every: int = 400  # steps between weight pulls
+    seed: int = 7
+
+
+class NStepBuffer:
+    """Per-worker n-step return accumulator. Trajectories are never mixed."""
+
+    def __init__(self, gamma: float, n_step: int) -> None:
+        self.gamma = gamma
+        self.n_step = n_step
+        self.pending: Deque[Transition] = deque()
+
+    def push(self, transition: Transition) -> list[Transition]:
+        """Add one step; return ready n-step transitions."""
+        self.pending.append(transition)
+        return self._drain(force=transition.terminated)
+
+    def flush(self) -> list[Transition]:
+        """Force-drain remaining steps at episode end."""
+        return self._drain(force=True)
+
+    def _drain(self, force: bool) -> list[Transition]:
+        ready: list[Transition] = []
+        while self.pending and (force or len(self.pending) >= self.n_step):
+            reward, discount, terminal = 0.0, 1.0, False
+            next_state = self.pending[0].next_state
+            for step in list(self.pending)[: self.n_step]:
+                reward += discount * step.reward
+                discount *= self.gamma
+                next_state, terminal = step.next_state, step.terminated
+                if terminal:
+                    break
+            first = self.pending.popleft()
+            ready.append(
+                Transition(
+                    first.state,
+                    first.action,
+                    reward,
+                    next_state,
+                    terminal,
+                    0.0 if terminal else discount,
+                    priority=1.0,  # learner assigns real priority after TD-error
+                )
+            )
+            if not force and len(self.pending) < self.n_step:
+                break
+        return ready
+
+
+def _select_action(
+    network: RainbowNetwork,
+    support: torch.Tensor,
+    state: np.ndarray,
+    epsilon: float,
+    action_count: int,
+    device: torch.device,
+) -> int:
+    """Epsilon-greedy action selection using the actor's local network copy."""
+    if np.random.random() < epsilon:
+        return int(np.random.randint(action_count))
+    network.reset_noise()
+    obs = torch.from_numpy(state.astype(np.float32)).unsqueeze(0).to(device)
+    with torch.no_grad():
+        q_values = network(obs, support)
+    return int(q_values.argmax(dim=1).item())
+
+
+def _load_weights_from_bytes(network: RainbowNetwork, weight_bytes: bytes,
+                              device: torch.device, evaluation: bool = False) -> None:
+    """Deserialise a weight snapshot broadcast by the learner."""
+    buf = io.BytesIO(weight_bytes)
+    state_dict = torch.load(buf, map_location=device, weights_only=True)
+    network.load_state_dict(state_dict)
+    network.train(mode=not evaluation)
+
+
+def _enqueue_batch(experience_queue: Queue, actor_index: int,
+                   transitions: list[Transition]) -> None:
+    """Send a complete batch, waiting for learner capacity instead of dropping it."""
+    if transitions:
+        experience_queue.put(("batch", actor_index, list(transitions)))
+
+
+def _terminal_transition(previous: Observation, current: Observation,
+                         action: int) -> Transition:
+    """Create the final state-action-reward record for death or level completion."""
+    return Transition(previous.state, action, _shaped_reward(previous, current),
+                      current.state, True, 0.0)
+
+
+def actor_main(
+    actor_index: int,
+    total_actors: int,
+    worker: FileWorker,
+    experience_queue: Queue,          # send batches of Transition to learner
+    weight_queue: Queue,              # receive serialized weights from learner
+    run_directory: str,
+    config_dict: dict,
+    device_str: str | None,
+) -> None:
+    """Entry point for one Ape-X actor subprocess.
+
+    The actor:
+    1. Plays Mario using a local copy of the network.
+    2. Accumulates n-step returns without touching shared state.
+    3. Pushes transition *batches* to experience_queue.
+    4. Reloads weights from weight_queue every ``weight_sync_every`` steps.
+    """
+    # Ignore Ctrl-C; parent handles shutdown.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    config = ActorConfig(**config_dict)
+    epsilon = _apex_epsilon(actor_index, total_actors)
+    device = torch.device(
+        device_str or ("mps" if torch.backends.mps.is_available()
+                       else "cuda" if torch.cuda.is_available() else "cpu")
+    )
+    support = torch.linspace(config.value_min, config.value_max,
+                             config.atom_count, device=device)
+    actor_seed = config.seed + actor_index * 1000
+    np.random.seed(actor_seed)
+    torch.manual_seed(actor_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(actor_seed)
+    network = RainbowNetwork(config.observation_size, config.action_count,
+                             config.atom_count).to(device)
+    # Train mode activates factorised NoisyNet exploration.  This network has
+    # no dropout or batch-normalisation layers, so only NoisyLinear changes.
+    network.train()
+
+    n_step_buf = NStepBuffer(config.gamma, config.n_step)
+    batch: list[Transition] = []
+
+    steps = 0
+    last_sync = 0
+    weights_ready = False
+    episode_max_x = 0
+    best_episode_x = 0
+    episodes = 0
+    victories = 0
+
+    metrics_path = Path(run_directory) / f"actor_{actor_index:02d}_metrics.json"
+
+    def _flush_batch() -> None:
+        if batch:
+            # Backpressure preserves experience until the learner can consume it.
+            _enqueue_batch(experience_queue, actor_index, batch)
+            batch.clear()
+
+    def _sync_weights() -> None:
+        nonlocal last_sync, weights_ready
+        # Drain all pending weight updates; use the most recent one.
+        latest: bytes | None = None
+        while True:
+            try:
+                _, weight_bytes = weight_queue.get_nowait()
+                latest = weight_bytes
+            except Exception:
+                break
+        if latest is not None:
+            try:
+                _load_weights_from_bytes(network, latest, device)
+                weights_ready = True
+            except Exception as exc:
+                logger.warning("actor %d weight load failed: %s", actor_index, exc)
+        if weights_ready:
+            last_sync = steps
+
+    logger.info("Actor %d started (epsilon=%.4f)", actor_index, epsilon)
+
+    while True:
+        if not weights_ready or steps - last_sync >= config.weight_sync_every:
+            _sync_weights()
+        if not weights_ready:
+            time.sleep(0.002)
+            continue
+        observation = worker.next_observation()
+        if observation is None:
+            time.sleep(0.002)
+            # Still check weights while idle.
+            if not weights_ready or steps - last_sync >= config.weight_sync_every:
+                _sync_weights()
+            continue
+
+        episode_max_x = max(episode_max_x, observation.world_x)
+        best_episode_x = max(best_episode_x, episode_max_x)
+
+        if observation.terminal:
+            # Replay must contain terminal outcomes, not just episode metrics.
+            if worker.previous is not None:
+                batch.extend(n_step_buf.push(_terminal_transition(
+                    worker.previous, observation, getattr(worker, "previous_action", 0),
+                )))
+                steps += 1
+            episodes += 1
+            if observation.reason == "victory":
+                victories += 1
+            # Flush n-step buffer at episode boundary.
+            for t in n_step_buf.flush():
+                batch.append(t)
+            _flush_batch()
+            worker.reset(observation)
+            worker.previous = None
+            worker.previous_action = 0  # type: ignore[attr-defined]
+            atomic_write_json(
+                metrics_path,
+                {
+                    "actor": actor_index,
+                    "epsilon": round(epsilon, 5),
+                    "steps": steps,
+                    "episodes": episodes,
+                    "victories": victories,
+                    "episode_max_x": episode_max_x,
+                    "best_episode_x": best_episode_x,
+                },
+            )
+            episode_max_x = 0
+            continue
+
+        # Select action.
+        action = _select_action(network, support, observation.state,
+                                epsilon, config.action_count, device)
+
+        worker.send_action(observation, action)
+
+        # Record transition once we have a previous state.
+        if worker.previous is not None:
+            prev = worker.previous
+            prev_action = getattr(worker, "previous_action", 0)
+            raw_reward = _shaped_reward(prev, observation)
+            t = Transition(
+                state=prev.state,
+                action=prev_action,
+                reward=raw_reward,
+                next_state=observation.state,
+                terminated=False,
+                discount=config.gamma,
+            )
+            for ready in n_step_buf.push(t):
+                batch.append(ready)
+            steps += 1
+
+            if len(batch) >= config.batch_size:
+                _flush_batch()
+
+        worker.previous = observation
+        worker.previous_action = action  # type: ignore[attr-defined]
+
+        # Periodic weight sync.
+        if steps - last_sync >= config.weight_sync_every:
+            _sync_weights()
+
+
+# ---------------------------------------------------------------------------
+# Reward shaping (same formula as the old train.py, kept actor-local)
+# ---------------------------------------------------------------------------
+
+def _shaped_reward(previous: Observation, current: Observation) -> float:
+    """Forward-progress reward; bounded so large jumps don't dominate PER."""
+    reward = max(-2.0, min(2.0, (current.world_x - previous.world_x) / 16.0))
+    reward += max(-0.2, min(0.2, (current.power - previous.power) * 0.1))
+    if current.terminal:
+        reward += 20.0 if current.reason == "victory" else -5.0
+    return reward

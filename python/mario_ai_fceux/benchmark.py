@@ -7,6 +7,32 @@ import json
 from pathlib import Path
 
 
+REQUIRED_CONDITIONS = ("rom_sha256", "fceux_sha256", "world", "action_repeat_frames",
+                       "start_protocol", "episodes_requested")
+
+
+def validate_reports(rows: list[tuple[str, dict[str, object]]]) -> None:
+    """Reject comparisons whose evaluation conditions or completion differ."""
+    if len(rows) < 2:
+        raise ValueError("at least two policies are required for a comparison")
+    names = [name for name, _ in rows]
+    if len(names) != len(set(names)):
+        raise ValueError("policy names must be unique")
+    reference = tuple(rows[0][1].get(key) for key in REQUIRED_CONDITIONS)
+    mismatches: list[str] = []
+    for name, report in rows:
+        conditions = tuple(report.get(key) for key in REQUIRED_CONDITIONS)
+        if any(value is None for value in conditions):
+            mismatches.append(f"{name}: missing required ROM/emulator/start/evaluation metadata")
+        elif conditions != reference:
+            mismatches.append(f"{name}: benchmark conditions differ")
+        if report.get("episodes_finished") != report.get("episodes_requested"):
+            mismatches.append(f"{name}: only {report.get('episodes_finished')} of "
+                              f"{report.get('episodes_requested')} episodes finished")
+    if mismatches:
+        raise ValueError("incomparable evaluation reports:\n" + "\n".join(mismatches))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare NEAT, DDQN, PPO, and Rainbow evaluation reports.")
     parser.add_argument("--result", action="append", required=True, metavar="NAME=PATH",
@@ -20,6 +46,7 @@ def main() -> None:
             raise ValueError("each --result must be NAME=PATH")
         report = json.loads(Path(raw_path).read_text(encoding="utf-8"))
         rows.append((name, report))
+    validate_reports(rows)
     lines = ["# SMB1 policy benchmark", "", "All policies must use the same ROM hash, FCEUX version, world, "
              "start state, episode count, action repeat, and evaluation-only mode.", "",
              "| Policy | Finished episodes | Victories | Completion rate | Best X |", "| --- | ---: | ---: | ---: | ---: |"]

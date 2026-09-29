@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -13,6 +15,8 @@ import numpy as np
 from .agent import AgentConfig, RainbowAgent
 from .environment import FileWorker, launch_fceux_workers
 from .replay import PrioritizedReplayBuffer
+
+ACTION_REPEAT_FRAMES = 12
 
 
 def arguments() -> argparse.Namespace:
@@ -38,7 +42,7 @@ def main() -> None:
     configuration = AgentConfig(**payload["config"])
     agent = RainbowAgent(PrioritizedReplayBuffer(configuration.observation_size, capacity=1, seed=configuration.seed),
                          configuration, options.device)
-    agent.load(checkpoint)
+    agent.load(checkpoint, validate_replay=False, restore_rng=False)
     repository_root = Path(__file__).resolve().parents[2]
     evaluation_directory = options.run_dir / "evaluations" / time.strftime("%Y%m%d-%H%M%S")
     evaluation_directory.mkdir(parents=True)
@@ -47,6 +51,8 @@ def main() -> None:
     worker = FileWorker("evaluation", evaluation_directory / "worker-00")
     episodes: list[dict[str, object]] = []
     maximum_x = 0
+    episode_decisions = 0
+    episode_started_at = time.monotonic()
     deadline = time.monotonic() + options.max_seconds
     try:
         while len(episodes) < options.episodes and time.monotonic() < deadline:
@@ -57,18 +63,30 @@ def main() -> None:
             maximum_x = max(maximum_x, observation.world_x)
             if observation.terminal:
                 episodes.append({"episode": len(episodes) + 1, "reason": observation.reason,
-                                 "max_x": maximum_x, "terminal_x": observation.world_x})
+                                 "max_x": maximum_x, "terminal_x": observation.world_x,
+                                 "action_decisions": episode_decisions,
+                                 "elapsed_seconds": round(time.monotonic() - episode_started_at, 3)})
                 worker.reset(observation)
                 maximum_x = 0
+                episode_decisions = 0
+                episode_started_at = time.monotonic()
                 continue
             action = int(agent.select_actions(np.asarray([observation.state]), explore=False)[0])
             worker.send_action(observation, action)
+            episode_decisions += 1
     finally:
         for process in processes:
             if process.poll() is None:
                 process.terminate()
     victories = sum(episode["reason"] == "victory" for episode in episodes)
+    rom_digest = hashlib.sha256(options.rom.read_bytes()).hexdigest()
+    fceux_path = Path(shutil.which(options.fceux) or options.fceux).resolve()
+    fceux_digest = hashlib.sha256(fceux_path.read_bytes()).hexdigest()
     report = {"algorithm": payload.get("algorithm"), "checkpoint": str(checkpoint), "world": options.world,
+              "rom_sha256": rom_digest, "fceux_executable": str(fceux_path),
+              "fceux_sha256": fceux_digest,
+              "action_repeat_frames": ACTION_REPEAT_FRAMES,
+              "start_protocol": "SMB1 title start and FCEUX training-slot restore",
               "episodes_requested": options.episodes, "episodes_finished": len(episodes), "victories": victories,
               "completion_rate": victories / len(episodes) if episodes else 0.0, "episodes": episodes}
     (evaluation_directory / "results.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

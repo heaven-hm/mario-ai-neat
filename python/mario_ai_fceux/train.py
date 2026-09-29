@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import multiprocessing
+import platform
 import shutil
 import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from .agent import AgentConfig
 from .environment import FileWorker, launch_fceux_workers
@@ -203,10 +208,24 @@ def main() -> None:
     bridge_template = repository_root / "python" / "fceux_bridge" / "mario_ai_fceux_bridge.lua"
     arguments.run_dir.mkdir(parents=True, exist_ok=True)
     configuration = AgentConfig(seed=arguments.seed)
-    metadata = {"algorithm": "Rainbow DQN (C51 + NoisyNet + Double + Dueling + PER + n-step)",
+    fceux_path = Path(shutil.which(arguments.fceux) or arguments.fceux).resolve()
+    try:
+        source_revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository_root,
+                                         capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        source_revision = "unknown"
+    metadata = {"algorithm": "Rainbow DQN (C51 + NoisyNet + Double + Dueling + global PER + n-step)",
                 "workers": arguments.workers, "worlds": requested_worlds, "observation_size": 184,
-                "actions": 6, "rom": str(arguments.rom), "seed": arguments.seed,
-                "replay": "in-memory global PER; replay.npz checkpoint snapshot"}
+                "actions": 6, "rom": str(arguments.rom),
+                "rom_sha256": hashlib.sha256(arguments.rom.read_bytes()).hexdigest(),
+                "fceux_executable": str(fceux_path),
+                "fceux_sha256": hashlib.sha256(fceux_path.read_bytes()).hexdigest(),
+                "action_repeat_frames": 12, "training_slot": 10,
+                "test_timer": 999, "test_lives": 99,
+                "seed": arguments.seed, "python": sys.version,
+                "platform": platform.platform(), "numpy": np.__version__, "pytorch": torch.__version__,
+                "source_revision": source_revision,
+                "replay": "in-memory global PER SumTree; atomic replay.npz snapshot"}
     (arguments.run_dir / "run.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     context = multiprocessing.get_context("spawn")
     learner_inbox = context.Queue(maxsize=20_000)

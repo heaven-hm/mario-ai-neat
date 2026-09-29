@@ -68,7 +68,8 @@ class RainbowNetwork(nn.Module):
         return value + advantage - advantage.mean(dim=1, keepdim=True)
 
     def distribution(self, observations: torch.Tensor) -> torch.Tensor:
-        return functional.softmax(self.logits(observations), dim=-1).clamp_min(1e-6)
+        probabilities = functional.softmax(self.logits(observations), dim=-1).clamp_min(1e-6)
+        return probabilities / probabilities.sum(dim=-1, keepdim=True)
 
     def forward(self, observations: torch.Tensor, support: torch.Tensor) -> torch.Tensor:
         return (self.distribution(observations) * support.view(1, 1, -1)).sum(dim=-1)

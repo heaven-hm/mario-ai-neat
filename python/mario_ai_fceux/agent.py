@@ -28,8 +28,8 @@ class AgentConfig:
     target_sync_steps: int = 2_000
     n_step: int = 3
     atom_count: int = 51
-    value_min: float = -20.0
-    value_max: float = 20.0
+    value_min: float = -100.0
+    value_max: float = 100.0
     per_beta_start: float = 0.4
     per_beta_steps: int = 1_000_000
     seed: int = 7
