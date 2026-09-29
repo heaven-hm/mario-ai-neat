@@ -42,7 +42,7 @@ branch's changes have not yet been benchmarked against the other projects.
 
 | Project | Game and runtime | Learning and evaluation | Strongest fit | Trade-off |
 | --- | --- | --- | --- | --- |
-| **Mario AI NEAT (this branch)** | SMB1 NES, embedded Lua in FCEUX | NEAT with SMB1 RAM/tile features, short history, event rewards, novelty archive, persistent context/action outcome memory, and evolved 1/2/4/6-frame action holds; one genome at a time | Direct SMB1 + FCEUX use, resumable genomes and maneuver experience, live HUD | Experimental changes; serial training; no completion-rate comparison yet |
+| **Mario AI NEAT (this branch)** | SMB1 NES, embedded Lua in FCEUX | NEAT with SMB1 RAM/tile features, short history, event rewards, novelty archive, similarity-weighted contextual Q memory, and evolved 1/2/4/6-frame action holds; one genome at a time | Direct SMB1 + FCEUX use, resumable genomes and online action feedback, live HUD | Experimental changes; serial training; no completion-rate comparison yet |
 | [MarI/O FCEUX port](https://github.com/juvester/mari-o-fceux/blob/master/neatevolve.lua) | SMB1, Lua in FCEUX | MarI/O-style NEAT, nearby tile/enemy grid, button outputs, fixed savestate, evolution in the emulator | Existing FCEUX Lua baseline and live network display | Smaller game-state feature set; no parallel evaluator |
 | [SethBling's MarI/O](https://gist.github.com/SethBling/598639f8d5e8afb5453a0b9519be51ff) | Primarily BizHawk; source handles Super Mario World and SMB1 | NEAT with a 13×13 local grid, button outputs, and species-based evolution | Influential reference implementation | Not an SMB1-only FCEUX project; source asks users not to redistribute it |
 | [Vivek's Super Mario NEAT](https://github.com/vivek3141/super-mario-neat) | Python with FCEUX and Python dependencies | NEAT, saved checkpoints, configurable runs, and multiprocessing for parallel genomes | Parallel training workflow; its README reports about 50% completion of 1-1 for the supplied checkpoint | Separate Python setup; reported results are the author's, not a benchmark against this project |
@@ -65,18 +65,20 @@ The `.db` file is a learning checkpoint, not a script. Do not load it through th
 
 Each genome plays from the same saved starting point. Training only captures FCEUX slot 9 near the beginning of a level, so every genome gets a comparable attempt. After all genomes have played, the AI uses their results to build the next generation. Exact behavioral duplicates are rejected while breeding, and the highest-scoring policy is carried forward.
 
-The checkpoint preserves a bounded history of episode results, five distinct network genomes, and a persistent **experience memory**. Each memory entry links a relative SMB1 context (for example, a nearby gap, a pipe/block, or an enemy approach) to an action and jump duration, with counts of successful and failed encounters. After repeated evidence, that record adds a small preference to similar future decisions; the neural network still chooses, and the safety filter still blocks disallowed actions. Successful obstacle crossings and failed/stuck attempts label the actions used during that encounter. The memory is shared across genomes and generations, so useful maneuvers do not depend only on a particular genome surviving selection.
+The checkpoint preserves episode results, five distinct network genomes, and a persistent **experience memory** shared by every genome. NEAT evolves the neural policy across generations. During each run, a contextual Q-learning table also updates action values from Mario's progress and game events, so feedback can be reused before a full generation finishes. Similar contexts (for example, a Goomba slightly nearer or farther away) share evidence with a lower weight; different hazard classes remain separate. The neural network still scores actions, and the safety filter still blocks disallowed actions.
 
-Experience records are written as optional `X` rows in `mario_ai_neat.db`. Existing V1 databases without these rows remain loadable and begin with empty experience memory; new encounters add records as training proceeds. The memory is bounded to 512 distinct contexts. It cannot reconstruct action sequences from old episode summaries or logs whose action details were not recorded, and it does not assume a pipe-clearing maneuver is learned until the new code observes a successful crossing. Champion Mode remains a direct replay of the archived neural genome for evaluation; experience-guided action selection is used during training.
+Experience records are written as optional `X` rows in `mario_ai_neat.db`; new rows include Q values and visit counts, while older V1 rows still load with zero Q evidence. Memory is bounded to 512 contexts. It cannot reconstruct action sequences from old episode summaries or logs that lack action details, and it does not assume a pipe-clearing maneuver is learned until the current script experiences it. Champion Mode remains a direct replay of the archived neural genome for evaluation; contextual experience guidance is used during training.
+
+The design comparison explains why this project uses NEAT plus lightweight online Q memory instead of adding an LLM, MoE, or Transformer to the FCEUX frame loop: [AI architecture research](docs/hybrid-ai-research.md).
 
 Each save also rotates the prior valid checkpoint into `mario_ai_neat.db.bak`. Legacy logs are imported once on the first launch of this version; fields absent from old logs are marked `-1` rather than guessed. An old historical score without its matching genome is preserved separately as score-only and is not treated as a replayable champion. The database still does not contain the FCEUX savestate.
 
 ```mermaid
 flowchart LR
-    Load["Load saved population and experience"] --> Recall["Recall similar state/action outcomes"]
-    Recall --> Play["NEAT policy chooses an allowed action and duration"]
-    Play --> Score["Score progress and survival"]
-    Score --> Memory["Label maneuver success or failure"]
+    Load["Load saved population and experience"] --> Recall["Recall similar context/action values"]
+    Recall --> Play["NEAT policy plus Q memory chooses a safe action"]
+    Play --> Score["Measure progress and game events"]
+    Score --> Memory["Update contextual action value online"]
     Memory --> Recall
     Score --> All{"All genomes played?"}
     All -->|"No"| Play
@@ -198,7 +200,7 @@ flowchart TD
 - **Temporal context and action timing:** delayed feature differences feed the same feed-forward network, and four evolved outputs select an action hold length. Immediate hazards bypass the hold.
 - **Event fitness and novelty:** small event rewards provide earlier feedback, while a persisted bounded archive retains some behavior diversity.
 
-This is a specialized NEAT-style implementation, not a byte-for-byte implementation of the NEAT paper. It uses six complete action choices, four action-hold choices, SMB1-specific fitness, a seeded starting policy, and a safety filter.
+This is a specialized hybrid, not a byte-for-byte implementation of the NEAT paper. NEAT evolves six complete action choices and four action-hold choices. A bounded contextual Q learner adds immediate temporal-difference feedback from progress and events, and a deterministic safety filter masks actions that would make a close threat unavoidable.
 
 ### Training speed and limitations
 
@@ -210,14 +212,12 @@ parallel-worker reference, but its multiprocessing system is not included in
 this single-process Lua trainer. This branch also retains fixed-start training;
 curriculum checkpoints need a separate workflow for user-prepared FCEUX states.
 
-Temporal inputs, event rewards, novelty, longer action holds, and experience
-memory are experimental. Memory can reuse a successful action/duration pairing
-in a similar context, but a different speed, enemy, or obstacle shape may
-require another maneuver. These features have not yet demonstrated a lower
-generation count or higher completion rate, and cannot guarantee learning the
-same skill in 10 generations. Existing databases remain loadable; old genome
-knowledge is retained, while experience memory starts empty until new
-encounters provide labeled evidence.
+Temporal inputs, event rewards, novelty, action holds, and contextual Q memory
+are experimental. Similarity-weighted transfer can reuse a learned choice in a
+nearby situation, but different geometry or timing may need new experience.
+This branch has not yet demonstrated a lower generation count or higher
+completion rate, and cannot guarantee a full level in 10 generations. See the
+[research comparison and evaluation protocol](docs/hybrid-ai-research.md).
 
 ### FCEUX and testing notes
 

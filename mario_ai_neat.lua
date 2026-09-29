@@ -943,7 +943,8 @@ function AI.save(populationState,path)
     for _,choice in ipairs(choiceIndices) do
       local evidence=populationState.experienceMemory[contextKey][choice]
       safeWriteLine(databaseFile,table.concat({"X",contextKey,choice,evidence.attempts,
-        evidence.successes,evidence.failures,string.format("%.8f",evidence.rewardMean or 0)},","))
+        evidence.successes,evidence.failures,string.format("%.8f",evidence.rewardMean or 0),
+        string.format("%.8f",evidence.qValue or 0),evidence.qVisits or 0},","))
     end
   end
   for genomeIndex, genome in ipairs(populationState.genomes) do
@@ -1068,18 +1069,20 @@ function AI.load(path)
       local choice,attempts=tonumber(fields[3]),tonumber(fields[4])
       local successes,failures=tonumber(fields[5]),tonumber(fields[6])
       local rewardMean=tonumber(fields[7])
+      local qValue,qVisits=tonumber(fields[8]) or 0,tonumber(fields[9]) or 0
       if type(contextKey)=="string" and #contextKey>0 and #contextKey<=96
         and choice and choice>=1 and choice<=ACTION_COUNT*DURATION_OUTPUT_COUNT
-        and attempts and attempts>=1 and attempts<=100000000
+        and attempts and attempts>=0 and attempts<=100000000
         and successes and failures and successes>=0 and failures>=0
-        and successes+failures<=attempts and rewardMean then
+        and successes+failures<=attempts and rewardMean and (attempts>0 or qVisits>0) then
         local choices=populationState.experienceMemory[contextKey]
         if not choices and AI.experienceMemorySize(populationState)<EXPERIENCE_CONTEXT_LIMIT then
           choices={};populationState.experienceMemory[contextKey]=choices
         end
         if choices then
           choices[math.floor(choice)]={attempts=math.floor(attempts),
-            successes=math.floor(successes),failures=math.floor(failures),rewardMean=rewardMean}
+            successes=math.floor(successes),failures=math.floor(failures),rewardMean=rewardMean,
+            qValue=clamp(qValue,-1,1),qVisits=math.max(0,math.floor(qVisits))}
         end
       end
     elseif fields[1]=="S" then
@@ -1222,6 +1225,63 @@ local function experienceChoice(actionIndex,durationIndex)
   return (actionIndex-1)*DURATION_OUTPUT_COUNT+durationIndex
 end
 
+-- Parse the compact sensor context into comparable features. Exact string
+-- matching wasted useful experience whenever a Goomba was one distance band
+-- closer on a later attempt, so memory now uses a small, class-aware kernel.
+local function experienceContextFeatures(contextKey)
+  local enemyClass,vertical,distance,grounded,speed,power=contextKey:match(
+    "^enemy:([^:]+):([^:]+):(%d+):([^:]+):v(%d+):p(%d+)$")
+  if enemyClass then
+    return {kind="enemy",class=enemyClass,vertical=vertical,distance=tonumber(distance),
+      grounded=grounded,speed=tonumber(speed),power=tonumber(power)}
+  end
+  local width,distance,grounded,speed,power=contextKey:match(
+    "^gap:w(%d+):d(%d+):([^:]+):v(%d+):p(%d+)$")
+  if width then
+    return {kind="gap",width=tonumber(width),distance=tonumber(distance),grounded=grounded,
+      speed=tonumber(speed),power=tonumber(power)}
+  end
+  local height,distance,grounded,speed,power=contextKey:match(
+    "^obstacle:h(%d+):d(%d+):([^:]+):v(%d+):p(%d+)$")
+  if height then
+    return {kind="obstacle",height=tonumber(height),distance=tonumber(distance),grounded=grounded,
+      speed=tonumber(speed),power=tonumber(power)}
+  end
+  grounded,speed,power=contextKey:match("^clear:([^:]+):v(%d+):p(%d+)$")
+  if grounded then
+    return {kind="clear",grounded=grounded,speed=tonumber(speed),power=tonumber(power)}
+  end
+  return nil
+end
+
+local function experienceContextSimilarity(firstKey,secondKey)
+  if firstKey==secondKey then return 1 end
+  local first=experienceContextFeatures(firstKey)
+  local second=experienceContextFeatures(secondKey)
+  if not first or not second or first.kind~=second.kind
+    or first.grounded~=second.grounded or first.power~=second.power then return 0 end
+  local speedDifference=math.abs(first.speed-second.speed)
+  if speedDifference>2 then return 0 end
+  local similarity=0.9^speedDifference
+  if first.kind=="enemy" then
+    if first.class~=second.class or first.vertical~=second.vertical then return 0 end
+    local distanceDifference=math.abs(first.distance-second.distance)
+    if distanceDifference>2 then return 0 end
+    return similarity*0.82^distanceDifference
+  elseif first.kind=="gap" then
+    local widthDifference=math.abs(first.width-second.width)
+    local distanceDifference=math.abs(first.distance-second.distance)
+    if widthDifference>1 or distanceDifference>2 then return 0 end
+    return similarity*0.78^widthDifference*0.84^distanceDifference
+  elseif first.kind=="obstacle" then
+    local heightDifference=math.abs(first.height-second.height)
+    local distanceDifference=math.abs(first.distance-second.distance)
+    if heightDifference>1 or distanceDifference>2 then return 0 end
+    return similarity*0.78^heightDifference*0.84^distanceDifference
+  end
+  return similarity
+end
+
 local function trimExperienceMemory(memory)
   local contextCount=0
   for _ in pairs(memory) do contextCount=contextCount+1 end
@@ -1229,7 +1289,9 @@ local function trimExperienceMemory(memory)
     local weakestKey,weakestEvidence
     for contextKey,choices in pairs(memory) do
       local evidence=0
-      for _,record in pairs(choices) do evidence=evidence+record.attempts end
+      for _,record in pairs(choices) do
+        evidence=evidence+(record.attempts or 0)+(record.qVisits or 0)
+      end
       if weakestEvidence==nil or evidence<weakestEvidence then
         weakestKey,weakestEvidence=contextKey,evidence
       end
@@ -1262,12 +1324,83 @@ function AI.updateExperienceMemory(populationState,contextKey,choice,succeeded)
 end
 
 local function experienceBiasFromMemory(memory,contextKey,actionIndex,durationIndex)
-  local record=memory and memory[contextKey]
-    and memory[contextKey][experienceChoice(actionIndex,durationIndex)]
-  if not record or record.attempts<2 then return 0 end
-  local successRate=(record.successes+1)/(record.attempts+2)
-  local confidence=math.min(1,record.attempts/6)
-  return clamp((successRate-0.5)*2*confidence*0.8,-0.8,0.8)
+  if not memory then return 0 end
+  local choice=experienceChoice(actionIndex,durationIndex)
+  local weightedSuccesses,weightedFailures,totalWeight=0,0,0
+  local weightedQ,totalQWeight=0,0
+  for rememberedContext,choices in pairs(memory) do
+    local similarity=experienceContextSimilarity(contextKey,rememberedContext)
+    local record=choices[choice]
+    if similarity>0 and record then
+      local evidenceWeight=similarity*similarity
+      if (record.attempts or 0)>0 then
+        weightedSuccesses=weightedSuccesses+(record.successes or 0)*evidenceWeight
+        weightedFailures=weightedFailures+(record.failures or 0)*evidenceWeight
+        totalWeight=totalWeight+(record.attempts or 0)*evidenceWeight
+      end
+      if (record.qVisits or 0)>0 then
+        local qWeight=evidenceWeight*math.min(record.qVisits,12)
+        weightedQ=weightedQ+(record.qValue or 0)*qWeight
+        totalQWeight=totalQWeight+qWeight
+      end
+    end
+  end
+  local outcomeBias=0
+  if totalWeight>0 then
+    -- A uniform Beta(1,1) prior keeps one lucky outcome from dominating.
+    local successRate=(weightedSuccesses+1)/(weightedSuccesses+weightedFailures+2)
+    local confidence=math.min(1,totalWeight/6)
+    outcomeBias=(successRate-0.5)*2*confidence*0.8
+  end
+  local qBias=0
+  if totalQWeight>0 then
+    local confidence=totalQWeight/(totalQWeight+4)
+    qBias=(weightedQ/totalQWeight)*confidence*0.8
+  end
+  return clamp(outcomeBias*0.5+qBias*0.5,-0.8,0.8)
+end
+
+local function experienceQValue(memory,contextKey,choice)
+  local weightedValue,totalWeight=0,0
+  for rememberedContext,choices in pairs(memory or {}) do
+    local similarity=experienceContextSimilarity(contextKey,rememberedContext)
+    local record=choices[choice]
+    if similarity>0 and record and (record.qVisits or 0)>0 then
+      local weight=similarity*similarity*math.min(record.qVisits,12)
+      weightedValue=weightedValue+(record.qValue or 0)*weight
+      totalWeight=totalWeight+weight
+    end
+  end
+  return totalWeight>0 and weightedValue/totalWeight or 0
+end
+
+-- Online contextual Q-learning lets an attempt improve the shared memory
+-- immediately; NEAT still evolves the broader neural policy across episodes.
+function AI.updateExperienceQ(populationState,contextKey,choice,reward,nextContextKey,terminal,discount)
+  if type(contextKey)~="string" or #contextKey==0 or #contextKey>96
+    or not choice or choice<1 or choice>ACTION_COUNT*DURATION_OUTPUT_COUNT then return false end
+  local memory=populationState.experienceMemory or {}
+  populationState.experienceMemory=memory
+  local choices=memory[contextKey]
+  if not choices then
+    if AI.experienceMemorySize(populationState)>=EXPERIENCE_CONTEXT_LIMIT then trimExperienceMemory(memory) end
+    choices={};memory[contextKey]=choices
+  end
+  local record=choices[choice] or {attempts=0,successes=0,failures=0,rewardMean=0,qValue=0,qVisits=0}
+  local bootstrap=not terminal and nextContextKey
+    and math.max(0,experienceQValue(memory,nextContextKey,1)) or 0
+  if not terminal and nextContextKey then
+    for nextChoice=2,ACTION_COUNT*DURATION_OUTPUT_COUNT do
+      bootstrap=math.max(bootstrap,experienceQValue(memory,nextContextKey,nextChoice))
+    end
+  end
+  local target=clamp((reward or 0)+(discount or 0.9)*bootstrap,-1,1)
+  local learningRate=0.25
+  record.qValue=clamp((record.qValue or 0)+learningRate*(target-(record.qValue or 0)),-1,1)
+  record.qVisits=(record.qVisits or 0)+1
+  choices[choice]=record
+  trimExperienceMemory(memory)
+  return true,record.qValue
 end
 
 function AI.experienceBias(populationState,contextKey,actionIndex,durationIndex)
@@ -1329,6 +1462,23 @@ local function finishPendingExperience(aiState,state,terminalReason)
   elseif moved>0 or eventReward>0 then
     AI.updateExperienceMemory(aiState.populationState,pending.context,pending.choice,true)
   end
+end
+
+local function finishPendingQTransition(aiState,state,nextContextKey,terminalReason)
+  local pending=aiState.pendingTransition
+  if not pending then return end
+  aiState.pendingTransition=nil
+  local terminal=terminalReason~=nil
+  local progressReward=clamp(((state.worldX or pending.worldX)-pending.worldX)/24,-0.5,0.5)
+  local eventReward=clamp(((aiState.episodeReward or 0)-pending.episodeReward)/24,-0.25,0.5)
+  local reward=progressReward+eventReward
+  if terminalReason=="death" then reward=-0.9
+  elseif terminalReason=="stuck" or terminalReason=="timeout" then reward=-0.55
+  elseif terminalReason=="victory" then reward=1 end
+  local elapsedFrames=math.max(1,(aiState.episodeFrames or pending.frame)-pending.frame)
+  local discount=0.9^(clamp(elapsedFrames/4,1,16))
+  AI.updateExperienceQ(aiState.populationState,pending.context,pending.choice,reward,
+    nextContextKey,terminal,discount)
 end
 
 local function calculateAllowedActions(state,enemy)
@@ -1429,6 +1579,7 @@ function AI.new(populationState)
     startWorldX=nil,furthestWorldX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
     lastAction=nil,frames=0,finished=false,episodeActive=false,championMode=false,
     recentGlobalInputs={},previousEpisodeState=nil,activeChallenge=nil,pendingExperience=nil,
+    pendingTransition=nil,
     behavior={jumps=0,retreats=0,
       passedEnemies=0,landings=0,powerUps=0},behaviorArchive=populationState.behaviorArchive or {}}
 end
@@ -1573,6 +1724,7 @@ function AI.beginEpisode(aiState,state)
   aiState.behavior={jumps=0,retreats=0,passedEnemies=0,landings=0,powerUps=0}
   aiState.activeChallenge=nil
   aiState.pendingExperience=nil
+  aiState.pendingTransition=nil
   aiState.nextLandmark=math.floor(state.worldX/128)+1
 end
 
@@ -1685,6 +1837,7 @@ function AI.decide(aiState,state)
   if not aiState.championMode then
     trackChallenge(aiState,state,contextKind,targetWorldX,
       aiState.behavior.passedEnemies>passedEnemiesBefore)
+    finishPendingQTransition(aiState,state,contextKey,nil)
   end
   local observationInputs=AI.buildObservationInputs(state)
   local temporalInputs=buildTemporalInputs(observationInputs,aiState.recentGlobalInputs)
@@ -1732,6 +1885,9 @@ function AI.decide(aiState,state)
         choice=experienceChoice(actionIndex,durationIndex),worldX=state.worldX,
         episodeReward=aiState.episodeReward or 0}
     end
+    aiState.pendingTransition={context=selectedContext,
+      choice=experienceChoice(actionIndex,durationIndex),worldX=state.worldX,
+      episodeReward=aiState.episodeReward or 0,frame=aiState.episodeFrames}
   end
   if action.name=="retreat" then
     aiState.behavior.retreats=aiState.behavior.retreats+1
@@ -2010,6 +2166,7 @@ function AI.finishEpisode(aiState,state,forced_reason)
   local progress=math.max(0,(aiState.furthestWorldX or state.worldX)-(aiState.startWorldX or state.worldX))
   local outcomeReason=forced_reason or state.phase
   if not aiState.championMode then
+    finishPendingQTransition(aiState,state,nil,outcomeReason)
     finishPendingExperience(aiState,state,outcomeReason)
     if aiState.activeChallenge then
       local challengeCleared=outcomeReason=="victory"

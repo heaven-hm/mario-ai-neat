@@ -102,6 +102,15 @@ AI.updateExperienceMemory(experiencePopulation,enemyContext,2,true)
 AI.updateExperienceMemory(experiencePopulation,enemyContext,2,true)
 local learnedBias=AI.experienceBias(experiencePopulation,enemyContext,1,2)
 test("repeated successful maneuver increases its learned action-duration bias",learnedBias>0)
+local similarEnemy=state(100)
+similarEnemy.enemies={{slot=0,id=6,name="goomba",status=0,worldX=140,worldY=192,horizontalVelocity=0}}
+local similarEnemyContext=AI.experienceContextKey(similarEnemy)
+test("experience generalizes across nearby enemy distances",
+  AI.experienceBias(experiencePopulation,similarEnemyContext,1,2)>0)
+local unrelatedGap=state(100)
+for column=6,9 do unrelatedGap.tiles[10*16+column]=0 end
+test("experience does not leak across unrelated hazard classes",
+  AI.experienceBias(experiencePopulation,AI.experienceContextKey(unrelatedGap),1,2)==0)
 for _=1,6 do AI.updateExperienceMemory(experiencePopulation,enemyContext,2,false) end
 test("repeated failed outcomes reduce the memory preference for that maneuver",
   AI.experienceBias(experiencePopulation,enemyContext,1,2)<learnedBias)
@@ -215,6 +224,18 @@ nextTemporalObservation.horizontalVelocity=1.25
 AI.decide(temporalState,nextTemporalObservation)
 test("temporal inputs track changes in Mario's recent movement",
   temporalState.lastTemporalInputs[1]<0)
+local onlineLearning=AI.new(AI.newPopulation(1))
+onlineLearning.populationState.genomes[1].genes={}
+local observedLearning=false
+for frameIndex=1,8 do
+  AI.decide(onlineLearning,state(80+frameIndex*4))
+end
+for _,choices in pairs(onlineLearning.populationState.experienceMemory) do
+  for _,record in pairs(choices) do
+    if (record.qVisits or 0)>0 then observedLearning=true end
+  end
+end
+test("training updates shared action values during a live episode",observedLearning)
 local noveltyState=AI.new(AI.newPopulation(1))
 AI.beginEpisode(noveltyState,state(80))
 noveltyState.episodeFrames=120
@@ -223,6 +244,15 @@ test("episode behavior is scored and added to the novelty archive",
   noveltyFitness>0 and #noveltyState.populationState.behaviorArchive==1)
 
 local save_path=os.tmpname()
+local qLearningPopulation=AI.newPopulation(1)
+local qUpdated,qValue=AI.updateExperienceQ(qLearningPopulation,enemyContext,2,0.8,
+  enemyContext,true,0.9)
+test("online Q update learns a positive action value from progress feedback",
+  qUpdated==true and qValue>0 and AI.experienceBias(qLearningPopulation,enemyContext,1,2)>0)
+local similarQBias=AI.experienceBias(qLearningPopulation,similarEnemyContext,1,2)
+test("learned action value transfers to a nearby enemy context",similarQBias>0)
+test("learned action value does not transfer between different hazard classes",
+  AI.experienceBias(qLearningPopulation,AI.experienceContextKey(unrelatedGap),1,2)==0)
 populationState.genomes[1].fitness=100
 populationState.nextGenomeIndex=5
 test("evolved genome population is saved to a persistent database",AI.save(populationState,save_path)==true)
@@ -240,7 +270,8 @@ populationState.topPerformers={{generation=4,genomeIndex=2,fitness=345.625,
   genome=AI.newGenome(populationState)}}
 populationState.topPerformers[1].genome.fitness=345.625
 populationState.scoreOnlyHistoricalBest=987.5
-populationState.experienceMemory={[enemyContext]={[2]={attempts=3,successes=2,failures=1,rewardMean=1/3}}}
+populationState.experienceMemory={[enemyContext]={[2]={attempts=3,successes=2,failures=1,
+  rewardMean=1/3,qValue=0.42,qVisits=7}}}
 local previousCheckpointFile=assert(io.open(save_path,"r"))
 local previousCheckpointText=previousCheckpointFile:read("*a");previousCheckpointFile:close()
 test("checkpoint saves the recent episode history and top genome snapshots",
@@ -270,6 +301,9 @@ test("successful and failed context/action evidence reloads from the checkpoint"
     and restoredHistory.experienceMemory[enemyContext][2].attempts==3
     and restoredHistory.experienceMemory[enemyContext][2].successes==2
     and restoredHistory.experienceMemory[enemyContext][2].failures==1)
+test("online Q values survive database save and resume",
+  restoredHistory.experienceMemory[enemyContext][2].qValue==0.42
+    and restoredHistory.experienceMemory[enemyContext][2].qVisits==7)
 populationState.behaviorArchive={{2,1,0,1,0,3}}
 test("novelty archive is saved as compact optional database data",AI.save(populationState,save_path))
 local restoredArchive=AI.load(save_path)
@@ -311,6 +345,12 @@ test("older V1 databases without resume progress still load",
   legacyPopulation~=nil and #legacyPopulation.genomes==12
     and AI.new(legacyPopulation).genomeIndex==1
     and AI.experienceMemorySize(legacyPopulation)==0)
+local oldExperienceFile=assert(io.open(save_path,"a"))
+oldExperienceFile:write("X,",enemyContext,",2,2,1,1,0.0\n");oldExperienceFile:close()
+local oldExperiencePopulation=AI.load(save_path)
+test("older experience rows load with neutral Q values",
+  oldExperiencePopulation.experienceMemory[enemyContext][2].qValue==0
+    and oldExperiencePopulation.experienceMemory[enemyContext][2].qVisits==0)
 os.remove(save_path);os.remove(save_path..".bak")
 
 -- A new species may contain only its founder. Its descendants must still
