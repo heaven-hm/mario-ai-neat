@@ -10,3 +10,8 @@
 *.db.bak.tmp
 !mario_ai_neat.db
 .DS_Store
+__pycache__/
+*.py[cod]
+runs/
+*.pt
+*.sqlite3
