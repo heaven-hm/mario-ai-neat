@@ -17,7 +17,7 @@ from .protocol import atomic_write_json
 from .replay import ReplayDatabase
 
 
-HEALTH_CHECK_INTERVAL_SECONDS = 15 * 60
+HEALTH_CHECK_INTERVAL_SECONDS = 10 * 60
 WORKER_STALE_SECONDS = 3 * 60
 MINIMUM_FREE_BYTES = 5 * 1024**3
 
@@ -130,7 +130,7 @@ def main() -> None:
     victories = int(saved_metrics.get("victories", 0))
     best_world_x = int(saved_metrics.get("best_x", 0))
     last_observation_at = {worker.worker_id: time.monotonic() for worker in workers}
-    next_health_check_at = time.monotonic()  # Produce one snapshot at launch, then every 15 minutes.
+    next_health_check_at = time.monotonic()  # Produce one snapshot at launch, then every 10 minutes.
     active = True
 
     def stop(*_: object) -> None:

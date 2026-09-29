@@ -38,6 +38,43 @@ Every worker has a different course start: **1-1, 2-1, 3-1, 4-1, 5-1, 6-1,
 7-1, and 8-1**. World, level, and area values are part of each observation so
 the shared model can distinguish those courses.
 
+### Why this project tests NEAT and Q-learning
+
+The project intentionally keeps two independent learning paths. They learn
+from the same SMB1 RAM and tile observations, but their learning mechanisms
+are different. Keeping both lets us measure progress with the same ROM, level
+start, and FCEUX setup instead of assuming one approach is better.
+
+| Path | Runtime and framework | What is learned | Why it is here |
+| --- | --- | --- | --- |
+| **Lua NEAT + contextual Q-learning** | FCEUX Lua; custom NEAT implementation and a bounded Q-value memory in `mario_ai_neat.db` | NEAT evolves neural-network topology and connection weights. Its small Q-learning memory records action values for similar local situations. | FCEUX-native training, inspectable evolving networks, and a persistent population baseline. |
+| **Python Rainbow DQN** | Python 3, PyTorch, NumPy, SQLite, FCEUX Lua bridge | One fixed neural network estimates a Q-value for each of six actions. It improves those estimates with rewards and replayed transitions. | Eight FCEUX workers can contribute to one learner at the same time, making Q-learning experiments much faster to collect. |
+
+Here, **Q-learning** means learning an action value: “from this game state,
+how useful is each action for future reward?” The Lua system stores a compact
+lookup-style Q memory for similar contexts. The Python system uses **deep
+Q-learning (DQN)**: a PyTorch neural network estimates those Q-values for the
+full 184-feature observation. It is called *Double DQN* because one network
+selects the next action while a target network evaluates it, reducing overly
+optimistic Q-values.
+
+```mermaid
+flowchart TB
+    State["Same SMB1 RAM + tile state"] --> Neat["Lua: NEAT policy\n+evolve population"]
+    State --> LuaQ["Lua: contextual Q memory\n+reuse local action evidence"]
+    State --> DQN["Python: Double DQN\n+predict six action Q-values"]
+    Neat --> LuaResult["Lua fitness and champion runs"]
+    LuaQ --> LuaResult
+    DQN --> PythonResult["Parallel Python benchmark runs"]
+    LuaResult --> Compare["Compare: best X, completion rate,\ndecisions, wall-clock time"]
+    PythonResult --> Compare
+```
+
+NEAT and DQN are **not merged into one controller**. Lua NEAT remains a
+separate FCEUX player; Python DQN is a separate FCEUX player with its own
+checkpoint and replay database. This avoids mixing their scores and makes the
+comparison meaningful.
+
 We created the Python path because Lua NEAT evaluates one genome at a time.
 Python can learn from every worker's transition immediately, so an enemy jump
 or death provides training signal without waiting for a full 100-genome
