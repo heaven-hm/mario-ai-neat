@@ -187,6 +187,12 @@ PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.benchmark \
   --output benchmark.md
 ```
 
+The evaluator in this branch currently loads Rainbow checkpoints only. The
+benchmark command validates and formats reports; it does not train or run the
+Lua NEAT, basic DDQN, or PPO policies for you. Those policy-specific evaluators
+and trained checkpoints are still needed before a real four-way comparison can
+be claimed.
+
 ## Benchmark it honestly
 
 Compare this path with the Lua NEAT trainer using the same ROM, same World 1-1
