@@ -21,6 +21,8 @@ Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super 
 - Scores each attempt for progress and survival, then evolves the population.
 - Saves learning in `mario_ai_neat.db` so later sessions can continue from the saved population.
 
+See the [five highest scored networks in the included database](docs/best-networks.md) for a small diagram built from real saved connections.
+
 ## Start playing and training
 
 1. Open a compatible **Super Mario Bros. 1 NES ROM** in FCEUX. The ROM is not included.
