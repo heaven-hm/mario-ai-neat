@@ -87,6 +87,68 @@ rearThreat.enemies={{slot=0,id=6,name="goomba",status=0,worldX=52,worldY=192,hor
 action=AI.decide(AI.new(AI.newPopulation(1)),rearThreat)
 test("Fire Mario can turn back to attack a nearby rear enemy",action.name=="retreat" and action.B==true)
 
+local pipeAhead=state(100)
+for row=7,10 do pipeAhead.tiles[row*16+8]=0x54 end
+test("experience context identifies a nearby solid obstacle",
+  AI.experienceContextKey(pipeAhead):find("obstacle",1,true)~=nil)
+local gapContext=state(100)
+for column=6,9 do gapContext.tiles[10*16+column]=0 end
+test("experience context distinguishes a gap from a pipe",
+  AI.experienceContextKey(gapContext):find("gap",1,true)~=nil)
+local enemyContext=AI.experienceContextKey(approaching)
+test("experience context includes an approaching enemy",enemyContext:find("enemy",1,true)~=nil)
+local experiencePopulation=AI.newPopulation(2)
+AI.updateExperienceMemory(experiencePopulation,enemyContext,2,true)
+AI.updateExperienceMemory(experiencePopulation,enemyContext,2,true)
+local learnedBias=AI.experienceBias(experiencePopulation,enemyContext,1,2)
+test("repeated successful maneuver increases its learned action-duration bias",learnedBias>0)
+for _=1,6 do AI.updateExperienceMemory(experiencePopulation,enemyContext,2,false) end
+test("repeated failed outcomes reduce the memory preference for that maneuver",
+  AI.experienceBias(experiencePopulation,enemyContext,1,2)<learnedBias)
+local clearKey=AI.experienceContextKey(state())
+local durationMemory=AI.newPopulation(1)
+durationMemory.genomes[1].genes={}
+for _=1,20 do AI.updateExperienceMemory(durationMemory,clearKey,20,true) end
+local durationRunner=AI.new(durationMemory)
+local recalledAction=AI.decide(durationRunner,state())
+test("recalled evidence can guide both the selected action and jump duration",
+  recalledAction.name=="jump_place" and durationRunner.lastHoldFrames==6)
+local shieldMemory=AI.newPopulation(1)
+shieldMemory.genomes[1].genes={}
+local closeContext=AI.experienceContextKey(close)
+for _=1,20 do AI.updateExperienceMemory(shieldMemory,closeContext,4,true) end
+local shieldRunner=AI.new(shieldMemory)
+local shieldedAction=AI.decide(shieldRunner,close)
+test("experience bias cannot override the immediate enemy safety filter",
+  shieldedAction.name~="run" and shieldedAction.name~="walk" and shieldedAction.name~="jump_run")
+local experienceRun=AI.new(experiencePopulation)
+AI.beginEpisode(experienceRun,approaching)
+AI.decide(experienceRun,approaching)
+AI.finishEpisode(experienceRun,{phase="playing",worldX=approaching.worldX},"stuck")
+local recordedExperience=false
+for _,choices in pairs(experiencePopulation.experienceMemory) do
+  for _,evidence in pairs(choices) do
+    if evidence.attempts>0 then recordedExperience=true end
+  end
+end
+test("failed hazard encounters are retained as reusable evidence",recordedExperience==true)
+local successPopulation=AI.newPopulation(1)
+local successRun=AI.new(successPopulation)
+AI.beginEpisode(successRun,approaching)
+AI.decide(successRun,approaching)
+local passedEnemyState=state(180)
+passedEnemyState.enemies={{slot=0,id=6,name="goomba",status=0,worldX=164,
+  worldY=192,horizontalVelocity=0}}
+AI.decide(successRun,passedEnemyState)
+local recordedSuccess=false
+for _,choices in pairs(successPopulation.experienceMemory) do
+  for _,evidence in pairs(choices) do
+    if evidence.successes>0 then recordedSuccess=true end
+  end
+end
+test("passing an observed enemy labels the approach actions as reusable successes",
+  recordedSuccess==true)
+
 local fitnessState=AI.new(AI.newPopulation(2))
 local smallState=state();AI.beginEpisode(fitnessState,smallState)
 fitnessState.furthestWorldX=smallState.worldX+10
@@ -178,6 +240,7 @@ populationState.topPerformers={{generation=4,genomeIndex=2,fitness=345.625,
   genome=AI.newGenome(populationState)}}
 populationState.topPerformers[1].genome.fitness=345.625
 populationState.scoreOnlyHistoricalBest=987.5
+populationState.experienceMemory={[enemyContext]={[2]={attempts=3,successes=2,failures=1,rewardMean=1/3}}}
 local previousCheckpointFile=assert(io.open(save_path,"r"))
 local previousCheckpointText=previousCheckpointFile:read("*a");previousCheckpointFile:close()
 test("checkpoint saves the recent episode history and top genome snapshots",
@@ -202,12 +265,18 @@ test("historical top genome reloads with its learned connections",
     and AI.policySignature(restoredHistory.topPerformers[1].genome)
       ==AI.policySignature(populationState.topPerformers[1].genome)
     and restoredHistory.scoreOnlyHistoricalBest==987.5)
+test("successful and failed context/action evidence reloads from the checkpoint",
+  restoredHistory.experienceMemory[enemyContext]~=nil
+    and restoredHistory.experienceMemory[enemyContext][2].attempts==3
+    and restoredHistory.experienceMemory[enemyContext][2].successes==2
+    and restoredHistory.experienceMemory[enemyContext][2].failures==1)
 populationState.behaviorArchive={{2,1,0,1,0,3}}
 test("novelty archive is saved as compact optional database data",AI.save(populationState,save_path))
 local restoredArchive=AI.load(save_path)
 test("novelty archive resumes with the saved population",
   restoredArchive~=nil and #restoredArchive.behaviorArchive==1
-    and restoredArchive.behaviorArchive[1][1]==2)
+    and restoredArchive.behaviorArchive[1][1]==2
+    and restoredArchive.experienceMemory[enemyContext][2].attempts==3)
 local nextPopulation=AI.nextGeneration(restored)
 test("fitness selection creates a full mutated next generation",
   #nextPopulation.genomes==12 and nextPopulation.generation==restored.generation+1)
@@ -235,11 +304,13 @@ test("the all-time saved top genome seeds the next population",
 local savedFile=assert(io.open(save_path,"r"))
 local legacyText=savedFile:read("*a");savedFile:close()
 legacyText=legacyText:gsub("P,%d+\n","",1)
+legacyText=legacyText:gsub("X,[^\n]*\n","")
 local legacyFile=assert(io.open(save_path,"w"));legacyFile:write(legacyText);legacyFile:close()
 local legacyPopulation=AI.load(save_path)
 test("older V1 databases without resume progress still load",
   legacyPopulation~=nil and #legacyPopulation.genomes==12
-    and AI.new(legacyPopulation).genomeIndex==1)
+    and AI.new(legacyPopulation).genomeIndex==1
+    and AI.experienceMemorySize(legacyPopulation)==0)
 os.remove(save_path);os.remove(save_path..".bak")
 
 -- A new species may contain only its founder. Its descendants must still

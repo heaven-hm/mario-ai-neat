@@ -42,7 +42,7 @@ branch's changes have not yet been benchmarked against the other projects.
 
 | Project | Game and runtime | Learning and evaluation | Strongest fit | Trade-off |
 | --- | --- | --- | --- | --- |
-| **Mario AI NEAT (this branch)** | SMB1 NES, embedded Lua in FCEUX | NEAT with SMB1 RAM/tile features, short history, event rewards, novelty archive, and evolved 1/2/4/6-frame action holds; one genome at a time | Direct SMB1 + FCEUX use, resumable database, live HUD | Experimental changes; serial training; no completion-rate comparison yet |
+| **Mario AI NEAT (this branch)** | SMB1 NES, embedded Lua in FCEUX | NEAT with SMB1 RAM/tile features, short history, event rewards, novelty archive, persistent context/action outcome memory, and evolved 1/2/4/6-frame action holds; one genome at a time | Direct SMB1 + FCEUX use, resumable genomes and maneuver experience, live HUD | Experimental changes; serial training; no completion-rate comparison yet |
 | [MarI/O FCEUX port](https://github.com/juvester/mari-o-fceux/blob/master/neatevolve.lua) | SMB1, Lua in FCEUX | MarI/O-style NEAT, nearby tile/enemy grid, button outputs, fixed savestate, evolution in the emulator | Existing FCEUX Lua baseline and live network display | Smaller game-state feature set; no parallel evaluator |
 | [SethBling's MarI/O](https://gist.github.com/SethBling/598639f8d5e8afb5453a0b9519be51ff) | Primarily BizHawk; source handles Super Mario World and SMB1 | NEAT with a 13×13 local grid, button outputs, and species-based evolution | Influential reference implementation | Not an SMB1-only FCEUX project; source asks users not to redistribute it |
 | [Vivek's Super Mario NEAT](https://github.com/vivek3141/super-mario-neat) | Python with FCEUX and Python dependencies | NEAT, saved checkpoints, configurable runs, and multiprocessing for parallel genomes | Parallel training workflow; its README reports about 50% completion of 1-1 for the supplied checkpoint | Separate Python setup; reported results are the author's, not a benchmark against this project |
@@ -65,24 +65,31 @@ The `.db` file is a learning checkpoint, not a script. Do not load it through th
 
 Each genome plays from the same saved starting point. Training only captures FCEUX slot 9 near the beginning of a level, so every genome gets a comparable attempt. After all genomes have played, the AI uses their results to build the next generation. Exact behavioral duplicates are rejected while breeding, and the highest-scoring policy is carried forward.
 
-The checkpoint preserves a bounded history of episode results and the five highest-scoring distinct network genomes. Champion Mode compares those archived genomes with the current population, so it can replay a saved historical best rather than only the strongest genome in the current generation. Each save also rotates the prior valid checkpoint into `mario_ai_neat.db.bak`. Legacy logs are imported once on the first launch of this version; fields absent from old logs are marked `-1` rather than guessed. An old historical score without its matching genome is preserved separately as score-only and is not treated as a replayable champion. The database still does not contain the FCEUX savestate.
+The checkpoint preserves a bounded history of episode results, five distinct network genomes, and a persistent **experience memory**. Each memory entry links a relative SMB1 context (for example, a nearby gap, a pipe/block, or an enemy approach) to an action and jump duration, with counts of successful and failed encounters. After repeated evidence, that record adds a small preference to similar future decisions; the neural network still chooses, and the safety filter still blocks disallowed actions. Successful obstacle crossings and failed/stuck attempts label the actions used during that encounter. The memory is shared across genomes and generations, so useful maneuvers do not depend only on a particular genome surviving selection.
+
+Experience records are written as optional `X` rows in `mario_ai_neat.db`. Existing V1 databases without these rows remain loadable and begin with empty experience memory; new encounters add records as training proceeds. The memory is bounded to 512 distinct contexts. It cannot reconstruct action sequences from old episode summaries or logs whose action details were not recorded, and it does not assume a pipe-clearing maneuver is learned until the new code observes a successful crossing. Champion Mode remains a direct replay of the archived neural genome for evaluation; experience-guided action selection is used during training.
+
+Each save also rotates the prior valid checkpoint into `mario_ai_neat.db.bak`. Legacy logs are imported once on the first launch of this version; fields absent from old logs are marked `-1` rather than guessed. An old historical score without its matching genome is preserved separately as score-only and is not treated as a replayable champion. The database still does not contain the FCEUX savestate.
 
 ```mermaid
 flowchart LR
-    Load["Load saved population"] --> Play["Play one genome"]
+    Load["Load saved population and experience"] --> Recall["Recall similar state/action outcomes"]
+    Recall --> Play["NEAT policy chooses an allowed action and duration"]
     Play --> Score["Score progress and survival"]
+    Score --> Memory["Label maneuver success or failure"]
+    Memory --> Recall
     Score --> All{"All genomes played?"}
     All -->|"No"| Play
     All -->|"Yes"| Evolve["Select, cross over, mutate"]
-    Evolve --> Save["Save next generation"]
-    Save --> Play
+    Evolve --> Save["Save genomes and experience memory"]
+    Save --> Recall
 ```
 
 ## Resume, start over, or play the champion
 
 ### Resume training
 
-The included `mario_ai_neat.db` is a generation 111 population checkpoint. Keep it beside `mario_ai_neat.lua`, load the SMB1 ROM, then start the Lua script in FCEUX. It automatically loads the population and continues training. The script uses this exact filename; it does not automatically find `mario_ai_heaven_neat.db` or other database names.
+The included `mario_ai_neat.db` is a resumable population checkpoint. Keep it beside `mario_ai_neat.lua`, load the SMB1 ROM, then start the Lua script in FCEUX. It automatically loads the population and continues training. The script uses this exact filename; it does not automatically find `mario_ai_heaven_neat.db` or other database names.
 
 If the log says `discarded unsafe training start`, the saved FCEUX slot was too close to a death. The AI leaves that slot, waits for Mario's normal respawn, and records a new start. It does not press Start or score that short failed attempt. If the game remains on a title or game-over screen, start the game manually; the AI never presses Start for you.
 
@@ -203,11 +210,14 @@ parallel-worker reference, but its multiprocessing system is not included in
 this single-process Lua trainer. This branch also retains fixed-start training;
 curriculum checkpoints need a separate workflow for user-prepared FCEUX states.
 
-Temporal inputs, event rewards, novelty, and longer action holds are
-experimental. They change the fitness landscape and have not yet demonstrated
-a lower generation count or higher level completion rate. Existing databases
-remain loadable, but evolution can behave differently when resumed with these
-new features.
+Temporal inputs, event rewards, novelty, longer action holds, and experience
+memory are experimental. Memory can reuse a successful action/duration pairing
+in a similar context, but a different speed, enemy, or obstacle shape may
+require another maneuver. These features have not yet demonstrated a lower
+generation count or higher completion rate, and cannot guarantee learning the
+same skill in 10 generations. Existing databases remain loadable; old genome
+knowledge is retained, while experience memory starts empty until new
+encounters provide labeled evidence.
 
 ### FCEUX and testing notes
 

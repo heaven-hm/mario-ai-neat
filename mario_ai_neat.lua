@@ -138,6 +138,8 @@ local ACTION_HOLD_FRAMES = {1, 2, 4, 6}
 local NOVELTY_ARCHIVE_LIMIT = 48
 local EPISODE_HISTORY_LIMIT = 1000
 local TOP_PERFORMER_LIMIT = 5
+local EXPERIENCE_CONTEXT_LIMIT = 512
+local EXPERIENCE_TRACE_LIMIT = 64
 local DEFAULT_POPULATION_SIZE = 300
 local SPECIES_DISTANCE_THRESHOLD = 1.0
 local MAX_STALE_GENERATIONS = 15
@@ -629,7 +631,7 @@ function AI.newPopulation(populationSize)
   local populationState = {generation=1,nextInnovation=ACTION_COUNT,innovations={},genomes={},species={},
     bestFitness=0,population=populationSize or DEFAULT_POPULATION_SIZE,nextGenomeIndex=1,
     nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={},behaviorArchive={},
-    episodeHistory={},topPerformers={},legacyLogImported=false}
+    episodeHistory={},topPerformers={},experienceMemory={},legacyLogImported=false}
   for genomeIndex = 1, populationState.population do
     local genome
     if genomeIndex == 1 then
@@ -768,6 +770,7 @@ function AI.nextGeneration(populationState)
     bestFitness=populationState.bestFitness,population=populationState.population,
     nextGenomeIndex=1,behaviorArchive=populationState.behaviorArchive or {},
     episodeHistory=populationState.episodeHistory or {},topPerformers=populationState.topPerformers or {},
+    experienceMemory=populationState.experienceMemory or {},
     legacyLogImported=populationState.legacyLogImported or false}
   local targetPopulationSize = populationState.population or DEFAULT_POPULATION_SIZE
   local activePolicies={[genomeSignature(champion)]=true}
@@ -926,6 +929,23 @@ function AI.save(populationState,path)
         string.format("%.17g",gene.weight),gene.enabled and 1 or 0,gene.innovation},","))
     end
   end
+  local experienceKeys={}
+  for contextKey in pairs(populationState.experienceMemory or {}) do
+    experienceKeys[#experienceKeys+1]=contextKey
+  end
+  table.sort(experienceKeys)
+  for _,contextKey in ipairs(experienceKeys) do
+    local choiceIndices={}
+    for choice in pairs(populationState.experienceMemory[contextKey]) do
+      choiceIndices[#choiceIndices+1]=choice
+    end
+    table.sort(choiceIndices)
+    for _,choice in ipairs(choiceIndices) do
+      local evidence=populationState.experienceMemory[contextKey][choice]
+      safeWriteLine(databaseFile,table.concat({"X",contextKey,choice,evidence.attempts,
+        evidence.successes,evidence.failures,string.format("%.8f",evidence.rewardMean or 0)},","))
+    end
+  end
   for genomeIndex, genome in ipairs(populationState.genomes) do
     safeWriteLine(databaseFile,table.concat({"G",genomeIndex,genome.fitness or 0,
       genome.highestHiddenNode or NEURAL_INPUT_COUNT,genome.species or 0},","))
@@ -973,7 +993,7 @@ function AI.load(path)
   local populationState={generation=tonumber(generation),nextInnovation=tonumber(innovationId),
     bestFitness=tonumber(bestFitness),population=tonumber(populationSize),genomes={},species={},innovations={},
     nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={},behaviorArchive={},episodeHistory={},
-    topPerformers={},legacyLogImported=false}
+    topPerformers={},experienceMemory={},legacyLogImported=false}
   for genomeIndex = 1, tonumber(genomeCount) do
     populationState.genomes[genomeIndex] = createEmptyGenome()
     populationState.genomes[genomeIndex].fitness = 0
@@ -1043,6 +1063,25 @@ function AI.load(path)
           targetNode=tonumber(fields[4]),weight=tonumber(fields[5]),enabled=tonumber(fields[6])==1,
           innovation=tonumber(fields[7])}
       end
+    elseif fields[1]=="X" then
+      local contextKey=fields[2]
+      local choice,attempts=tonumber(fields[3]),tonumber(fields[4])
+      local successes,failures=tonumber(fields[5]),tonumber(fields[6])
+      local rewardMean=tonumber(fields[7])
+      if type(contextKey)=="string" and #contextKey>0 and #contextKey<=96
+        and choice and choice>=1 and choice<=ACTION_COUNT*DURATION_OUTPUT_COUNT
+        and attempts and attempts>=1 and attempts<=100000000
+        and successes and failures and successes>=0 and failures>=0
+        and successes+failures<=attempts and rewardMean then
+        local choices=populationState.experienceMemory[contextKey]
+        if not choices and AI.experienceMemorySize(populationState)<EXPERIENCE_CONTEXT_LIMIT then
+          choices={};populationState.experienceMemory[contextKey]=choices
+        end
+        if choices then
+          choices[math.floor(choice)]={attempts=math.floor(attempts),
+            successes=math.floor(successes),failures=math.floor(failures),rewardMean=rewardMean}
+        end
+      end
     elseif fields[1]=="S" then
       local splitInnovation,hiddenNode=tonumber(fields[2]),tonumber(fields[3])
       if splitInnovation and hiddenNode and hiddenNode>NEURAL_INPUT_COUNT
@@ -1098,6 +1137,200 @@ local function findClosestThreat(state)
   return nearestEnemy
 end
 
+local function distanceBand(distance)
+  if distance <= 24 then return 0 end
+  if distance <= 40 then return 1 end
+  if distance <= 64 then return 2 end
+  if distance <= 96 then return 3 end
+  return 4
+end
+
+-- Context keys omit absolute world position so similar situations can share
+-- experience across different level locations and training sessions.
+local function describeExperienceContext(state)
+  local grounded=state.grounded and "g" or "a"
+  local speedBand=math.floor((clamp(state.horizontalVelocity or 0,-4,4)+4)/2)
+  local powerBand=state.power==2 and 2 or (state.power==1 and 1 or 0)
+  local enemy=findClosestThreat(state)
+  if enemy and enemy.worldX>state.worldX then
+    local enemyDistance=enemy.worldX-state.worldX
+    local enemyClass=NON_STOMPABLE_ENEMIES[enemy.id] and "air" or "ground"
+    local verticalBand=math.abs(enemy.worldY-state.worldY)>24 and "high" or "level"
+    local key=string.format("enemy:%s:%s:%d:%s:v%d:p%d",enemyClass,verticalBand,
+      distanceBand(enemyDistance),grounded,speedBand,powerBand)
+    return key,"enemy",enemy.worldX
+  end
+
+  local firstGapDistance
+  local gapWidth=0
+  for horizontalOffset=16,96,16 do
+    if not isSolidTileAtOffset(state,horizontalOffset,16) then
+      if not firstGapDistance then firstGapDistance=horizontalOffset end
+      gapWidth=gapWidth+1
+    elseif firstGapDistance then
+      break
+    end
+  end
+  if firstGapDistance then
+    return string.format("gap:w%d:d%d:%s:v%d:p%d",math.min(gapWidth,5),
+      distanceBand(firstGapDistance),grounded,speedBand,powerBand),"gap",
+      state.worldX+firstGapDistance+gapWidth*16
+  end
+
+  -- Sample above the floor to separate a pipe/block face from ordinary ground.
+  for horizontalOffset=16,96,16 do
+    local obstacleHeight=0
+    for _,verticalOffset in ipairs({-48,-32,-16}) do
+      if isSolidTileAtOffset(state,horizontalOffset,verticalOffset) then
+        obstacleHeight=obstacleHeight+1
+      end
+    end
+    if obstacleHeight>0 then
+      local obstacleWidth=1
+      for nextOffset=horizontalOffset+16,96,16 do
+        local nextColumnHasObstacle=false
+        for _,verticalOffset in ipairs({-48,-32,-16}) do
+          if isSolidTileAtOffset(state,nextOffset,verticalOffset) then
+            nextColumnHasObstacle=true
+            break
+          end
+        end
+        if not nextColumnHasObstacle then break end
+        obstacleWidth=obstacleWidth+1
+      end
+      return string.format("obstacle:h%d:d%d:%s:v%d:p%d",obstacleHeight,
+        distanceBand(horizontalOffset),grounded,speedBand,powerBand),"obstacle",
+        state.worldX+horizontalOffset+obstacleWidth*16
+    end
+  end
+
+  local key=string.format("clear:%s:v%d:p%d",grounded,speedBand,powerBand)
+  return key,nil,nil
+end
+
+function AI.experienceContextKey(state)
+  return describeExperienceContext(state)
+end
+
+function AI.experienceMemorySize(populationState)
+  local count=0
+  for _ in pairs(populationState.experienceMemory or {}) do count=count+1 end
+  return count
+end
+
+local function experienceChoice(actionIndex,durationIndex)
+  return (actionIndex-1)*DURATION_OUTPUT_COUNT+durationIndex
+end
+
+local function trimExperienceMemory(memory)
+  local contextCount=0
+  for _ in pairs(memory) do contextCount=contextCount+1 end
+  while contextCount>EXPERIENCE_CONTEXT_LIMIT do
+    local weakestKey,weakestEvidence
+    for contextKey,choices in pairs(memory) do
+      local evidence=0
+      for _,record in pairs(choices) do evidence=evidence+record.attempts end
+      if weakestEvidence==nil or evidence<weakestEvidence then
+        weakestKey,weakestEvidence=contextKey,evidence
+      end
+    end
+    if not weakestKey then break end
+    memory[weakestKey]=nil
+    contextCount=contextCount-1
+  end
+end
+
+function AI.updateExperienceMemory(populationState,contextKey,choice,succeeded)
+  if type(contextKey)~="string" or #contextKey==0 or #contextKey>96
+    or not choice or choice<1 or choice>ACTION_COUNT*DURATION_OUTPUT_COUNT then return false end
+  local memory=populationState.experienceMemory or {}
+  populationState.experienceMemory=memory
+  local choices=memory[contextKey]
+  if not choices then choices={};memory[contextKey]=choices end
+  local record=choices[choice] or {attempts=0,successes=0,failures=0,rewardMean=0}
+  record.attempts=record.attempts+1
+  if succeeded then
+    record.successes=record.successes+1
+  else
+    record.failures=record.failures+1
+  end
+  local reward=succeeded and 1 or -1
+  record.rewardMean=record.rewardMean+(reward-record.rewardMean)/record.attempts
+  choices[choice]=record
+  trimExperienceMemory(memory)
+  return true
+end
+
+local function experienceBiasFromMemory(memory,contextKey,actionIndex,durationIndex)
+  local record=memory and memory[contextKey]
+    and memory[contextKey][experienceChoice(actionIndex,durationIndex)]
+  if not record or record.attempts<2 then return 0 end
+  local successRate=(record.successes+1)/(record.attempts+2)
+  local confidence=math.min(1,record.attempts/6)
+  return clamp((successRate-0.5)*2*confidence*0.8,-0.8,0.8)
+end
+
+function AI.experienceBias(populationState,contextKey,actionIndex,durationIndex)
+  return experienceBiasFromMemory(populationState.experienceMemory,contextKey,actionIndex,durationIndex)
+end
+
+local function labelChallenge(aiState,succeeded)
+  local challenge=aiState.activeChallenge
+  if not challenge then return end
+  for _,choiceRecord in pairs(challenge.choices) do
+    AI.updateExperienceMemory(aiState.populationState,choiceRecord.context,
+      choiceRecord.choice,succeeded)
+  end
+  aiState.activeChallenge=nil
+end
+
+local function trackChallenge(aiState,state,currentKind,targetWorldX,passedEnemy)
+  local challenge=aiState.activeChallenge
+  if challenge then
+    local passedTarget=state.worldX>=challenge.targetWorldX+8
+    local successfulEnemy=challenge.kind=="enemy" and passedEnemy
+    local clearLanding=state.grounded and currentKind~=challenge.kind
+      and state.worldX>=challenge.targetWorldX+8
+    if successfulEnemy or (challenge.kind=="enemy" and passedTarget) or clearLanding then
+      labelChallenge(aiState,true)
+      challenge=nil
+    end
+  end
+  if not aiState.activeChallenge and currentKind and state.grounded then
+    aiState.activeChallenge={kind=currentKind,targetWorldX=targetWorldX or state.worldX,
+      choices={},choiceOrder={},startedFrame=aiState.episodeFrames}
+  end
+end
+
+local function rememberChallengeChoice(aiState,contextKey,actionIndex,durationIndex)
+  local challenge=aiState.activeChallenge
+  if not challenge then return end
+  local choice=experienceChoice(actionIndex,durationIndex)
+  local pairKey=contextKey..":"..choice
+  if not challenge.choices[pairKey] and #challenge.choiceOrder<EXPERIENCE_TRACE_LIMIT then
+    challenge.choices[pairKey]={context=contextKey,choice=choice}
+    challenge.choiceOrder[#challenge.choiceOrder+1]=pairKey
+  end
+end
+
+local function finishPendingExperience(aiState,state,terminalReason)
+  local pending=aiState.pendingExperience
+  if not pending then return end
+  aiState.pendingExperience=nil
+  if pending.kind then return end -- Hazard choices get outcome-level credit below.
+  local moved=(state.worldX or pending.worldX)-pending.worldX
+  local eventReward=(aiState.episodeReward or 0)-pending.episodeReward
+  if terminalReason then
+    if terminalReason=="death" or terminalReason=="stuck" or terminalReason=="timeout" then
+      AI.updateExperienceMemory(aiState.populationState,pending.context,pending.choice,false)
+    elseif terminalReason=="victory" then
+      AI.updateExperienceMemory(aiState.populationState,pending.context,pending.choice,true)
+    end
+  elseif moved>0 or eventReward>0 then
+    AI.updateExperienceMemory(aiState.populationState,pending.context,pending.choice,true)
+  end
+end
+
 local function calculateAllowedActions(state,enemy)
   -- This is a narrow safety shield, not a second controller. It removes only
   -- actions that would make an observed close threat immediately unavoidable.
@@ -1125,28 +1358,33 @@ local function calculateAllowedActions(state,enemy)
   return allowed
 end
 
-local function chooseAction(genome,state,memoryInputs)
+local function chooseAction(genome,state,memoryInputs,experienceMemory)
   local enemy=findClosestThreat(state)
   local allowed=calculateAllowedActions(state,enemy)
   local observationInputs=AI.buildObservationInputs(state)
   local actionScores,nodeValues,durationScores=AI.evaluateGenome(genome,observationInputs,memoryInputs)
   if state.power==2 and enemy and enemy.worldX-state.worldX>36 then actionScores[1]=actionScores[1]+0.3 end
-  local selectedActionIndex,highestActionScore
+  local contextKey=describeExperienceContext(state)
+  local selectedActionIndex,selectedDurationIndex,highestPairScore
   for actionIndex=1,ACTION_COUNT do
-    if allowed[actionIndex] and (not highestActionScore or actionScores[actionIndex]>highestActionScore) then
-      selectedActionIndex,highestActionScore=actionIndex,actionScores[actionIndex]
+    if allowed[actionIndex] then
+      for durationIndex=1,DURATION_OUTPUT_COUNT do
+        local memoryBias=experienceBiasFromMemory(experienceMemory,contextKey,actionIndex,durationIndex)
+        local durationPrior=durationScores[durationIndex]
+        if durationScores[1]==0 and durationScores[2]==0
+          and durationScores[3]==0 and durationScores[4]==0 and durationIndex==2 then
+          durationPrior=0.001
+        end
+        local pairScore=actionScores[actionIndex]+durationPrior+memoryBias
+        if not highestPairScore or pairScore>highestPairScore then
+          selectedActionIndex,selectedDurationIndex,highestPairScore=actionIndex,durationIndex,pairScore
+        end
+      end
     end
   end
-  local durationIndex,highestDurationScore=1,-math.huge
-  for candidateIndex=1,DURATION_OUTPUT_COUNT do
-    local score=durationScores[candidateIndex]
-    if score>highestDurationScore then
-      durationIndex,highestDurationScore=candidateIndex,score
-    end
-  end
-  if highestDurationScore==0 then durationIndex=2 end
-  return ACTION_OPTIONS[selectedActionIndex or 4],selectedActionIndex or 4,enemy,
-    actionScores,nodeValues,observationInputs,ACTION_HOLD_FRAMES[durationIndex]
+  if not selectedActionIndex then selectedActionIndex,selectedDurationIndex=4,2 end
+  return ACTION_OPTIONS[selectedActionIndex],selectedActionIndex,enemy,
+    actionScores,nodeValues,observationInputs,ACTION_HOLD_FRAMES[selectedDurationIndex],selectedDurationIndex,contextKey
 end
 
 local ACTION_LABEL = {
@@ -1185,11 +1423,13 @@ end
 
 function AI.new(populationState)
   populationState=populationState or AI.newPopulation()
+  populationState.experienceMemory=populationState.experienceMemory or {}
   return {populationState=populationState,
     genomeIndex=populationState.nextGenomeIndex or 1,episodeFrames=0,
     startWorldX=nil,furthestWorldX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
     lastAction=nil,frames=0,finished=false,episodeActive=false,championMode=false,
-    recentGlobalInputs={},previousEpisodeState=nil,behavior={jumps=0,retreats=0,
+    recentGlobalInputs={},previousEpisodeState=nil,activeChallenge=nil,pendingExperience=nil,
+    behavior={jumps=0,retreats=0,
       passedEnemies=0,landings=0,powerUps=0},behaviorArchive=populationState.behaviorArchive or {}}
 end
 
@@ -1331,6 +1571,8 @@ function AI.beginEpisode(aiState,state)
   aiState.cachedAction=nil
   aiState.actionFramesRemaining=0
   aiState.behavior={jumps=0,retreats=0,passedEnemies=0,landings=0,powerUps=0}
+  aiState.activeChallenge=nil
+  aiState.pendingExperience=nil
   aiState.nextLandmark=math.floor(state.worldX/128)+1
 end
 
@@ -1437,7 +1679,13 @@ function AI.decide(aiState,state)
   aiState.episodeFrames=aiState.episodeFrames+1
   if state.worldX>aiState.furthestWorldX then aiState.furthestWorldX=state.worldX;aiState.lastProgressFrame=aiState.episodeFrames end
   aiState.bestForm=math.max(aiState.bestForm or 0,state.power==2 and 2 or (state.size==1 and 0 or 1))
+  local passedEnemiesBefore=aiState.behavior.passedEnemies
   recordBehaviorEvents(aiState,state)
+  local contextKey,contextKind,targetWorldX=describeExperienceContext(state)
+  if not aiState.championMode then
+    trackChallenge(aiState,state,contextKind,targetWorldX,
+      aiState.behavior.passedEnemies>passedEnemiesBefore)
+  end
   local observationInputs=AI.buildObservationInputs(state)
   local temporalInputs=buildTemporalInputs(observationInputs,aiState.recentGlobalInputs)
   local memoryInputs={}
@@ -1461,8 +1709,10 @@ function AI.decide(aiState,state)
   -- This extends MarI/O's FCEUX observe/evaluate/joypad cycle with an evolved
   -- action horizon. The horizon is an SMB1-specific extension, not copied code:
   -- https://github.com/juvester/mari-o-fceux/blob/master/neatevolve.lua
-  local action,actionIndex,enemy,actionScores,nodeValues,_,holdFrames=
-    chooseAction(genome,state,memoryInputs)
+  if not aiState.championMode then finishPendingExperience(aiState,state,nil) end
+  local action,actionIndex,enemy,actionScores,nodeValues,_,holdFrames,durationIndex,selectedContext=
+    chooseAction(genome,state,memoryInputs,
+      not aiState.championMode and aiState.populationState.experienceMemory or nil)
   action.name=ACTION_OPTIONS[actionIndex].name
   action.reason=enemy and ("learned "..action.name.." | threat "..enemy.name)
     or ("learned "..action.name)
@@ -1474,6 +1724,15 @@ function AI.decide(aiState,state)
   aiState.actionFramesRemaining=holdFrames-1
   aiState.cachedAction=action
   aiState.lastHoldFrames=holdFrames
+  if not aiState.championMode then
+    rememberChallengeChoice(aiState,selectedContext,actionIndex,durationIndex)
+    local activeKind=contextKind or (aiState.activeChallenge and aiState.activeChallenge.kind)
+    if not activeKind then
+      aiState.pendingExperience={context=selectedContext,
+        choice=experienceChoice(actionIndex,durationIndex),worldX=state.worldX,
+        episodeReward=aiState.episodeReward or 0}
+    end
+  end
   if action.name=="retreat" then
     aiState.behavior.retreats=aiState.behavior.retreats+1
   end
@@ -1676,8 +1935,8 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
   local actionName=action and action.name or "idle"
   local shortAction=({run="RUN",jump_run="JUMP",retreat="BACK",brake="STOP",
     jump_place="HOP",walk="WALK"})[actionName] or "IDLE"
-  hudText(guiApi,2,28,string.format("X%d +%d %s",state.worldX,progress,
-    shortAction),"white","black")
+  hudText(guiApi,2,28,string.format("X%d +%d %s M%d",state.worldX,progress,
+    shortAction,AI.experienceMemorySize(aiState.populationState)),"white","black")
 
   -- Keep the network rendering lightweight so the game remains responsive.
   local drawnConnections=0
@@ -1749,6 +2008,15 @@ function AI.finishEpisode(aiState,state,forced_reason)
   if not aiState.episodeActive then return nil end
   local genome=activeGenome(aiState)
   local progress=math.max(0,(aiState.furthestWorldX or state.worldX)-(aiState.startWorldX or state.worldX))
+  local outcomeReason=forced_reason or state.phase
+  if not aiState.championMode then
+    finishPendingExperience(aiState,state,outcomeReason)
+    if aiState.activeChallenge then
+      local challengeCleared=outcomeReason=="victory"
+        or (state.worldX>=aiState.activeChallenge.targetWorldX+8 and state.grounded)
+      labelChallenge(aiState,challengeCleared)
+    end
+  end
   local survival=math.min(aiState.episodeFrames,12000)*0.02
   local power=(aiState.bestForm or 0)*150
   local descriptor=behaviorDescriptor(aiState,progress)
@@ -1858,10 +2126,11 @@ function AI.run()
       importedEpisodes,archivedGenomes),logPath)
     savePopulation("legacy checkpoint history migration")
   end
-  AI.appendLog(string.format("started | database=%s | generation=%d | population=%d | mode=%s | state=%s | timer=999 per episode (countdown enabled) | test_lives=%s",
+  AI.appendLog(string.format("started | database=%s | generation=%d | population=%d | mode=%s | state=%s | experience_contexts=%d | timer=999 per episode (countdown enabled) | test_lives=%s",
     loaded and "loaded" or "new",aiState.populationState.generation,#aiState.populationState.genomes,
     aiState.championMode and "champion" or "training",
     fixedTraining and ("slot "..TRAINING_SAVESTATE_SLOT.." via "..stateAdapter.kind) or (stateProblem or "continuous"),
+    AI.experienceMemorySize(aiState.populationState),
     TESTING_INFINITE_LIVES and "refreshed" or "off"),logPath)
   if not loaded then savePopulation("initial population") end
   emu.registerexit(function()
