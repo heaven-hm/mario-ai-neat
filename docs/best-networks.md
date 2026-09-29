@@ -12,30 +12,40 @@ These are the five highest scored genomes in the committed [training database](.
 
 The numbers in the last two columns are actual connection weights, rounded to two decimals. All five networks also contain hidden nodes 186 and 187. A positive weight raises a node's input when its source is positive; a negative weight lowers it. The final action also depends on the other links, node activation, and the AI's close-threat action filter.
 
-## A readable view of genome 4
+## The five complete diagrams
 
-This diagram contains **six of genome 4's 23 enabled links**. It shows the connections most useful for understanding its jump and retreat choices; it is not the entire network.
+Each image shows **every enabled connection** in that saved genome, like the compact network display in FCEUX. The 13 × 13 squares on the left represent nearby game cells; the next column contains player and world inputs. Yellow circles are hidden nodes, and the right column lists possible actions. Teal lines have positive weights and coral lines have negative weights. Bright input squares are connected inputs, **not live sensor activations**.
 
-```mermaid
-flowchart LR
-    gap["Gap ahead · input 183"] -- "+3.04" --> jump["Running jump · output 2"]
-    enemy["Enemy horizontal position · input 175"] -- "+1.43" --> jump
-    enemy -- "−1.43" --> retreat["Retreat · output 3"]
-    cell["Cell 48 px ahead · input 88"] -- "−1.55" --> hidden["Hidden node 187"]
-    hidden -- "+1.89" --> retreat
-    bias["Constant bias · input 185"] -- "−2.23" --> retreat
-```
+### Genome 3
 
-The **gap** input strongly pushes the running-jump output. The **enemy position** input connects to both jump and retreat with opposite signs. The cell 48 pixels ahead reaches retreat through hidden node 187. That cell can represent empty space, solid terrain, or an enemy; the diagram alone cannot tell us which action will win in every game state.
+![Genome 3 neural network with 21 enabled links](images/network-genome-3.svg)
 
-## What differs across the five
+Its gap-to-jump link is weaker than the other four, and hidden node 187 has a negative connection to retreat.
 
-- **Genome 3** has a weaker gap-to-jump link and a negative link from hidden node 187 to retreat. Its other connections still gave it the same saved fitness.
-- **Genome 4** is the example above. It has 23 enabled links, the most of these five.
-- **Genome 5** increases the gap-to-jump link to +3.09 and the hidden-to-retreat link to +1.93. It has 22 enabled links.
-- **Genome 6** closely resembles genome 4, with two fewer enabled links. It also has an enabled bias-to-running-jump link that genome 4 has disabled.
-- **Genome 7** keeps the same basic paths with slightly different weights and 21 enabled links.
+### Genome 4
+
+![Genome 4 neural network with 23 enabled links](images/network-genome-4.svg)
+
+This one has the most enabled links of the five. A detected gap strongly feeds the running-jump action; enemy position also feeds jump and retreat with opposite signs.
+
+### Genome 5
+
+![Genome 5 neural network with 22 enabled links](images/network-genome-5.svg)
+
+Its gap-to-jump link is +3.09, the strongest of these five, and hidden node 187 feeds retreat at +1.93.
+
+### Genome 6
+
+![Genome 6 neural network with 21 enabled links](images/network-genome-6.svg)
+
+It closely resembles genome 4, with two fewer enabled links. Its bias-to-running-jump link is enabled; genome 4 has that link disabled.
+
+### Genome 7
+
+![Genome 7 neural network with 21 enabled links](images/network-genome-7.svg)
+
+It keeps the same main gap, enemy, and hidden-node paths with slightly different weights. It earned the same saved fitness as the others.
 
 The database header's `4336.78` is the population's **historical best fitness**, not the current fitness of these five genomes. Fitness values are comparable for attempts from the same training start; changing the starting point changes the task being scored.
 
-**Source:** `mario_ai_neat.db` at SHA-256 `af20c809267307e56eb4c785b303c4f34c3aec26d0779800ae13007b66703335`. The table uses enabled `N` records and `G` fitness records from that file; input and output names follow [`mario_ai_neat.lua`](../mario_ai_neat.lua).
+**Source:** `mario_ai_neat.db` at SHA-256 `af20c809267307e56eb4c785b303c4f34c3aec26d0779800ae13007b66703335`. The images use every enabled `N` record for each genome; scores come from `G` records. Input and output names follow [`mario_ai_neat.lua`](../mario_ai_neat.lua). Regenerate the images with [`scripts/render_network_diagrams.py`](../scripts/render_network_diagrams.py) after changing the database.
