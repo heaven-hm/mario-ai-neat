@@ -6,9 +6,9 @@ An AI that learns to play **Super Mario Bros. 1 for NES in FCEUX**. It uses NEAT
 
 ## See it in action
 
-![Mario AI training in FCEUX](docs/images/mario-ai-neat-training.png)
+![Mario AI NEAT playing Super Mario Bros. 1 in FCEUX, with its live neural network and controller display](docs/images/mario-ai-neat-training.png)
 
-*The FCEUX display shows the current genome, chosen action, nearby threat, progress, and saved-learning status.*
+*Mario AI playing SMB1 in FCEUX. The compact overlay shows the active genome, nearby input grid, network connections, selected action, and controller buttons while the game remains visible.*
 
 Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super Mario World; this project targets SMB1 in FCEUX.
 
@@ -63,7 +63,7 @@ Set `PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_neat.lua`, then load t
 
 ## What you'll see and what to expect
 
-Mario AI evolves candidate controllers; it does not understand the game like a person or learn language. Early attempts may die or make little progress. Fitness favors reaching farther, surviving, keeping power-ups, and completing the level. The overlay shows the active genome, action, threat or gap, progress, and database status.
+Mario AI evolves candidate controllers; it does not understand the game like a person or learn language. Early attempts may die or make little progress. Fitness favors reaching farther, surviving, keeping power-ups, and completing the level. The overlay shows the active genome, input grid, network connections, selected action, pressed buttons, and progress. Click **[HIDE]** in FCEUX to clear the view, then **[AI]** to show the overlay again.
 
 Training time and results depend on the ROM, starting point, and number of attempts. A higher generation number means more rounds of evaluation and evolution; it does not guarantee that the AI can finish the level.
 
@@ -189,6 +189,6 @@ Tests cover network evaluation, enemy sensors and safety, population persistence
 
 - `mario_ai_neat.lua` — self-contained SMB1 AI, NEAT trainer, FCEUX loop, and persistence.
 - `mario_ai_neat.db` — included population checkpoint; keep it beside the Lua file to resume.
-- `docs/images/mario-ai-neat-training.png` — FCEUX training screenshot used above.
+- `docs/images/mario-ai-neat-training.png` — main FCEUX screenshot used above.
 - `docs/learning.md` — detailed training and persistence notes.
 - `docs/limitations.md` and `docs/ram-map.md` — known limitations and SMB1 memory references.
