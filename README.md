@@ -6,9 +6,9 @@ An AI that learns to play **Super Mario Bros. 1 for NES in FCEUX**. It uses NEAT
 
 ## See it in action
 
-![Mario AI NEAT playing Super Mario Bros. 1 in FCEUX, with its live neural network and controller display](docs/images/mario-ai-neat-training.png)
+![Mario AI NEAT playing Super Mario Bros. 1 in FCEUX, with a live neural network and mini NES controller](docs/images/mario-ai-neat-training.png)
 
-*Mario AI playing SMB1 in FCEUX. The compact overlay shows the active genome, nearby input grid, network connections, selected action, and controller buttons while the game remains visible.*
+*Mario AI playing SMB1 in FCEUX. The compact overlay shows the active genome, nearby input grid, network connections, selected action, and a mini NES controller while the game remains visible.*
 
 Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super Mario World; this project targets SMB1 in FCEUX.
 
@@ -49,7 +49,9 @@ flowchart LR
 
 ### Resume training
 
-The included `mario_ai_neat.db` is the current population checkpoint. Keep it beside `mario_ai_neat.lua`, load the SMB1 ROM, then start the Lua script in FCEUX. It automatically loads the population and continues training. The script uses this exact filename; it does not automatically find `mario_ai_heaven_neat.db` or other database names.
+The included `mario_ai_neat.db` is a generation 35 population checkpoint. Keep it beside `mario_ai_neat.lua`, load the SMB1 ROM, then start the Lua script in FCEUX. It automatically loads the population and continues training. The script uses this exact filename; it does not automatically find `mario_ai_heaven_neat.db` or other database names.
+
+If the log says `discarded unsafe training start`, the saved FCEUX slot was too close to a death. The AI leaves that slot, waits for Mario's normal respawn, and records a new start. It does not press Start or score that short failed attempt. If the game remains on a title or game-over screen, start the game manually; the AI never presses Start for you.
 
 To use a checkpoint with a different name, stop the Lua script, back up the checkpoint, and copy it beside the Lua file as `mario_ai_neat.db`. Do not replace the database while the script is running.
 
