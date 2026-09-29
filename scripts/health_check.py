@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import subprocess
 import time
@@ -41,7 +42,24 @@ def main() -> int:
         metadata = {}
     expected_workers = int(metadata.get("training_actors", 8))
     commands = process_commands()
-    trainers = sum(MARKER in command and str(run_directory) in command for command in commands)
+    def belongs_to_run(command: str) -> bool:
+        if MARKER not in command:
+            return False
+        # Training is often launched with a repository-relative --run-dir,
+        # while FCEUX bridge paths are absolute. Normalize both forms.
+        if str(run_directory) in command:
+            return True
+        try:
+            tokens = shlex.split(command)
+            run_index = tokens.index("--run-dir")
+            process_run = Path(tokens[run_index + 1])
+            if not process_run.is_absolute():
+                process_run = repository_root / process_run
+            return process_run.resolve() == run_directory
+        except (ValueError, IndexError):
+            return False
+
+    trainers = sum(belongs_to_run(command) for command in commands)
     worker_prefix = str(run_directory / "worker-")
     worker_commands = [command for command in commands
                        if "mario_ai_fceux_bridge.lua" in command and worker_prefix in command]
@@ -65,6 +83,50 @@ def main() -> int:
         trainer_health = json.loads(trainer_health_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         trainer_health = {}
+    # The in-process report is periodic. Prefer the learner's live 10-second
+    # status and per-actor HUD files so cron does not report stale counters.
+    learner_path = run_directory / "learner_status.json"
+    try:
+        live_learner = json.loads(learner_path.read_text(encoding="utf-8"))
+        if learner_path.stat().st_mtime >= trainer_health_path.stat().st_mtime:
+            trainer_health["learner"] = live_learner
+    except (OSError, json.JSONDecodeError):
+        pass
+    live_actors = []
+    for index in range(expected_workers):
+        try:
+            hud = json.loads((run_directory / f"worker-{index:02d}" / "hud.json")
+                             .read_text(encoding="utf-8"))
+            live_actors.append({
+                "actor": index,
+                "steps": int(hud.get("steps", 0)),
+                "episodes": int(hud.get("episodes", 0)),
+                "deaths": int(hud.get("deaths", 0)),
+                "victories": int(hud.get("victories", 0)),
+                "best_episode_x": int(hud.get("best_x", 0)),
+            })
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    if live_actors:
+        trainer_health["actors"] = live_actors
+    current_learner = trainer_health.get("learner", {})
+    trainer_health["measured_progress"] = {
+        "python_transitions": current_learner.get("transitions_received", 0),
+        "python_optimizer_updates": current_learner.get("optimizer_updates", 0),
+        "python_replay_size": current_learner.get("replay_transitions", 0),
+        "python_best_episode_x": max(
+            (int(actor.get("best_episode_x", 0)) for actor in trainer_health.get("actors", [])),
+            default=0,
+        ),
+        "python_victories": sum(
+            int(actor.get("victories", 0)) for actor in trainer_health.get("actors", [])
+        ),
+    }
+    eval_path = run_directory / "eval_latest.json"
+    try:
+        trainer_health["evaluation"] = json.loads(eval_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass
     if trainer_age is None or trainer_age > 12 * 60:
         repairs.append("trainer health snapshot is missing or older than 12 minutes")
 
