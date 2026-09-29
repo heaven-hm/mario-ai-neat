@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from .agent import AgentConfig, RainbowAgent
-from .environment import FileWorker, launch_fceux_workers
+from .environment import START_PROTOCOL, FileWorker, launch_fceux_workers
 from .replay import PrioritizedReplayBuffer
 
 ACTION_REPEAT_FRAMES = 12
@@ -112,7 +112,7 @@ def main() -> None:
               "rom_sha256": rom_digest, "fceux_executable": str(fceux_path),
               "fceux_sha256": fceux_digest,
               "action_repeat_frames": ACTION_REPEAT_FRAMES,
-              "start_protocol": "SMB1 title start and FCEUX training-slot restore",
+              "start_protocol": START_PROTOCOL,
               "episodes_requested": options.episodes, "episodes_finished": len(episodes), "victories": victories,
               "completion_rate": victories / len(episodes) if episodes else 0.0, "episodes": episodes}
     (evaluation_directory / "results.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

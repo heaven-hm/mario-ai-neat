@@ -50,7 +50,7 @@ from .agent import AgentConfig
 from .apex_actor import ActorConfig, actor_main, _apex_epsilon
 from .apex_eval import eval_worker_main
 from .apex_learner import apex_learner_main
-from .environment import FileWorker, launch_fceux_workers
+from .environment import START_PROTOCOL, FileWorker, launch_fceux_workers
 from .protocol import atomic_write_json
 from .train import read_lua_neat_summary
 
@@ -251,7 +251,7 @@ def main() -> None:
         "eval_world": args.eval_world,
         "eval_episodes": args.eval_episodes,
         "action_repeat_frames": 12,
-        "start_protocol": "SMB1 title world select; fixed FCEUX training slot",
+        "start_protocol": START_PROTOCOL,
         "determinism": "seeded components; asynchronous queue interleaving is not bitwise reproducible",
         "torch_version": torch.__version__,
         "numpy_version": np.__version__,

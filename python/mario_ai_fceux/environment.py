@@ -15,6 +15,7 @@ from .protocol import atomic_write_json, read_json
 
 
 ACTION_NAMES = ("run", "jump_run", "retreat", "brake", "jump_place", "walk")
+START_PROTOCOL = "SMB1 title-screen world selection + FCEUX savestate slot 10"
 
 
 @dataclass(frozen=True)

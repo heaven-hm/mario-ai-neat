@@ -13,6 +13,7 @@ from mario_ai_fceux.benchmark import validate_reports
 class BenchmarkValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.report = {
+            "algorithm": "Rainbow",
             "rom_sha256": "rom",
             "fceux_sha256": "fceux",
             "world": 1,
@@ -22,7 +23,8 @@ class BenchmarkValidationTests(unittest.TestCase):
             "evaluation_seed": 2026,
             "episodes_requested": 10,
             "episodes_finished": 10,
-            "episodes": [{"episode": index, "reason": "death", "max_x": 0}
+            "episodes": [{"episode": index, "reason": "death", "max_x": 0,
+                           "action_decisions": 12, "elapsed_seconds": 5.0}
                          for index in range(10)],
             "victories": 0,
             "completion_rate": 0.0,
@@ -50,6 +52,27 @@ class BenchmarkValidationTests(unittest.TestCase):
         inconsistent = {**self.report, "victories": 1}
         with self.assertRaisesRegex(ValueError, "victory count"):
             validate_reports([("NEAT", self.report), ("Rainbow", inconsistent)])
+
+    def test_rejects_nan_episode_metrics(self) -> None:
+        invalid = {**self.report, "episodes": [dict(item) for item in self.report["episodes"]]}
+        invalid["episodes"][0]["elapsed_seconds"] = float("nan")
+        with self.assertRaisesRegex(ValueError, "malformed episode records"):
+            validate_reports([("NEAT", self.report), ("Rainbow", invalid)])
+
+    def test_rejects_negative_or_boolean_action_counts(self) -> None:
+        invalid = {**self.report, "episodes": [dict(item) for item in self.report["episodes"]]}
+        invalid["episodes"][0]["action_decisions"] = True
+        with self.assertRaisesRegex(ValueError, "malformed episode records"):
+            validate_reports([("NEAT", self.report), ("Rainbow", invalid)])
+
+    def test_rejects_non_object_report(self) -> None:
+        with self.assertRaisesRegex(ValueError, "reports must be JSON objects"):
+            validate_reports([("NEAT", self.report), ("Rainbow", [])])
+
+    def test_rejects_missing_algorithm_name(self) -> None:
+        invalid = {**self.report, "algorithm": "  "}
+        with self.assertRaisesRegex(ValueError, "missing policy algorithm label"):
+            validate_reports([("NEAT", self.report), ("Rainbow", invalid)])
 
 
 if __name__ == "__main__":

@@ -172,10 +172,12 @@ PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.evaluate \
 
 It writes a timestamped `results.json` and `episodes.csv`. The benchmark tool
 rejects reports with different ROM hashes, FCEUX executable hashes, worlds,
-start protocols, action repeats, or episode counts. The tool does not claim
-results until every policy finishes all episodes. Produce compatible results
-for Lua NEAT Champion, basic DDQN, PPO, and Rainbow from the same ROM
-hash, FCEUX version, world, action repeat, and episode count. Then create one
+start protocols, action repeats, evaluation seeds, or episode counts. It also
+rejects incomplete, non-finite, or inconsistent episode metrics. Python reports
+declare the same SMB1 title-screen world-selection and FCEUX savestate-slot-10
+start protocol. The output table shows wins, completion rate, mean/best X,
+action decisions, and seconds. Produce compatible results for Lua NEAT Champion,
+basic DDQN, PPO, and Rainbow from the same conditions. Then create one
 comparison table:
 
 ```bash
