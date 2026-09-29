@@ -6,5 +6,7 @@
 *.log
 *.db
 *.db.tmp
+*.db.bak
+*.db.bak.tmp
 !mario_ai_neat.db
 .DS_Store

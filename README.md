@@ -57,15 +57,15 @@ faster or completes more often.
 1. Open a compatible **Super Mario Bros. 1 NES ROM** in FCEUX. The ROM is not included.
 2. Keep `mario_ai_neat.lua` and `mario_ai_neat.db` together in one folder.
 3. Start the level manually, then load `mario_ai_neat.lua` from FCEUX's Lua script menu. The script finds and loads the adjacent database automatically.
-4. The AI starts playing immediately from Mario's current position, evaluates genomes, and saves progress as it trains.
+4. For comparable training attempts, Mario must be near the beginning of the level (world X ≤ 128). If loaded mid-level, the AI waits with neutral controls and logs a reset instruction. Reset SMB1 to the beginning; the AI starts once it detects the valid start.
 
 The `.db` file is a learning checkpoint, not a script. Do not load it through the Lua menu. To resume later, load the Lua script again with the same database beside it. Leave `PLAY_CHAMPION_ONLY = false` to continue training.
 
 ### Training loop
 
-Each genome plays from the same saved starting point. After all genomes have played, the AI uses their results to build the next generation.
+Each genome plays from the same saved starting point. Training only captures FCEUX slot 9 near the beginning of a level, so every genome gets a comparable attempt. After all genomes have played, the AI uses their results to build the next generation. Exact behavioral duplicates are rejected while breeding, and the highest-scoring policy is carried forward.
 
-Training captures FCEUX slot 9 at Mario's position when the script starts. For a full-level training start, stop the Lua script, reset SMB1 to the level beginning, start the game manually, and load the script again. Keep the same `.db` file to retain the learned population; the database does not contain the savestate.
+The checkpoint preserves a bounded history of episode results and the five highest-scoring distinct network genomes. Champion Mode compares those archived genomes with the current population, so it can replay a saved historical best rather than only the strongest genome in the current generation. Each save also rotates the prior valid checkpoint into `mario_ai_neat.db.bak`. Legacy logs are imported once on the first launch of this version; fields absent from old logs are marked `-1` rather than guessed. An old historical score without its matching genome is preserved separately as score-only and is not treated as a replayable champion. The database still does not contain the FCEUX savestate.
 
 ```mermaid
 flowchart LR
@@ -94,13 +94,13 @@ Stop the script and move `mario_ai_neat.db` to a backup location. The next launc
 
 ### Play the best saved genome
 
-Set `PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_neat.lua`, then load the script. It plays the highest-fitness saved genome without evolving the population or restoring slot 9. After touching the flagpole, it releases the controller while SMB1 finishes its normal level transition, then continues in the next level. Set it to `false` and reload to resume training.
+Set `PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_neat.lua`, then load the script. It plays the highest-fitness genome in the current population or the archived top-performer list without evolving or restoring slot 9. After touching the flagpole, it releases the controller while SMB1 finishes its normal level transition, then continues in the next level. Set it to `false` and reload to resume training.
 
 ## What you'll see and what to expect
 
 Mario AI evolves candidate controllers; it does not understand the game like a person or learn language. Early attempts may die or make little progress. Fitness favors reaching farther, surviving, keeping power-ups, and completing the level. The overlay shows the active genome, input grid, labeled sensors such as enemy DX and speed X, network connections, selected action, pressed buttons, and progress. Click the upper-right corner of the FCEUX screen to hide the overlay, then click **[AI]** there to show it again.
 
-Training time and results depend on the ROM, starting point, and number of attempts. A higher generation number means more rounds of evaluation and evolution; it does not guarantee that the AI can finish the level.
+Training time and results depend on the ROM and number of attempts. Fixed level-start evaluations, duplicate-policy filtering, protected top genomes, and explicit episode history reduce wasted comparisons and make progress easier to audit. They cannot guarantee a particular generation count or level completion.
 
 ## Technical details
 

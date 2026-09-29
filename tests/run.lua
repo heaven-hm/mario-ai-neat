@@ -17,6 +17,10 @@ end
 math.randomseed(117)
 local populationState=AI.newPopulation(12)
 test("trainer initializes a population of independently mutated genomes",#populationState.genomes==12)
+test("fixed-start training accepts the level start",
+  AI.isValidTrainingStart(state(40))==true)
+test("fixed-start training rejects an arbitrary mid-level checkpoint",
+  AI.isValidTrainingStart(state(1000))==false)
 test("new genomes contain executable action outputs",#populationState.genomes[1].genes>0)
 
 local probe=AI.newGenome(populationState)
@@ -115,6 +119,14 @@ local victor=AI.new(AI.newPopulation(2))
 AI.beginEpisode(victor,smallState)
 local win=state();win.phase="victory"
 test("reaching the flag earns the dominant completion bonus",AI.finishEpisode(victor,win)>=10000)
+test("completed attempts retain a detailed progress record",
+  #victor.populationState.episodeHistory==1
+    and victor.populationState.episodeHistory[1].reason=="victory"
+    and victor.populationState.episodeHistory[1].startWorldX==smallState.worldX
+    and victor.populationState.episodeHistory[1].maxWorldX==smallState.worldX)
+test("top-performing checkpoint keeps the complete champion genome",
+  #victor.populationState.topPerformers==1
+    and #victor.populationState.topPerformers[1].genome.genes==#victor.populationState.genomes[1].genes)
 
 local timedGenome=AI.newGenome(AI.newPopulation(1))
 timedGenome.genes={{sourceNode=AI.inputCount(),targetNode=AI.outputNode(8),
@@ -157,6 +169,39 @@ test("generation and genome structure reload from the database",
   restored~=nil and #restored.genomes==12 and #restored.genomes[1].genes>0)
 test("training resumes at the next genome after a restart",
   restored.nextGenomeIndex==5 and AI.new(restored).genomeIndex==5)
+populationState.episodeHistory={{generation=4,genomeIndex=2,fitness=345.625,
+  startWorldX=100,maxWorldX=225,frames=87,reason="death",power=1,jumps=2,
+  retreats=1,passedEnemies=1,landings=1,powerUps=0,episodeReward=14,novelty=0.5}}
+populationState.topPerformers={{generation=4,genomeIndex=2,fitness=345.625,
+  maxWorldX=225,progress=125,reason="death",frames=87,power=1,jumps=2,
+  retreats=1,passedEnemies=1,landings=1,powerUps=0,episodeReward=14,novelty=0.5,
+  genome=AI.newGenome(populationState)}}
+populationState.topPerformers[1].genome.fitness=345.625
+populationState.scoreOnlyHistoricalBest=987.5
+local previousCheckpointFile=assert(io.open(save_path,"r"))
+local previousCheckpointText=previousCheckpointFile:read("*a");previousCheckpointFile:close()
+test("checkpoint saves the recent episode history and top genome snapshots",
+  AI.save(populationState,save_path))
+local checkpointTextFile=assert(io.open(save_path,"r"))
+local checkpointText=checkpointTextFile:read("*a");checkpointTextFile:close()
+local backupFile=assert(io.open(save_path..".bak","r"))
+local backupText=backupFile:read("*a");backupFile:close()
+test("replacing a checkpoint preserves the previous complete file as a backup",
+  checkpointText:find("MARIO_AI_NEAT_V1",1,true)~=nil
+    and backupText==previousCheckpointText
+    and AI.load(save_path..".bak")~=nil)
+local restoredHistory=AI.load(save_path)
+test("episode details reload with the population checkpoint",
+  #restoredHistory.episodeHistory==1
+    and restoredHistory.episodeHistory[1].maxWorldX==225
+    and restoredHistory.episodeHistory[1].episodeReward==14)
+test("historical top genome reloads with its learned connections",
+  #restoredHistory.topPerformers==1
+    and restoredHistory.topPerformers[1].fitness==345.625
+    and #restoredHistory.topPerformers[1].genome.genes==#populationState.topPerformers[1].genome.genes
+    and AI.policySignature(restoredHistory.topPerformers[1].genome)
+      ==AI.policySignature(populationState.topPerformers[1].genome)
+    and restoredHistory.scoreOnlyHistoricalBest==987.5)
 populationState.behaviorArchive={{2,1,0,1,0,3}}
 test("novelty archive is saved as compact optional database data",AI.save(populationState,save_path))
 local restoredArchive=AI.load(save_path)
@@ -166,8 +211,27 @@ test("novelty archive resumes with the saved population",
 local nextPopulation=AI.nextGeneration(restored)
 test("fitness selection creates a full mutated next generation",
   #nextPopulation.genomes==12 and nextPopulation.generation==restored.generation+1)
+local signatures={}
+local duplicatePolicy=false
+for _,genome in ipairs(nextPopulation.genomes) do
+  local signature=AI.policySignature(genome)
+  if signatures[signature] then duplicatePolicy=true end
+  signatures[signature]=true
+end
+test("evolved population excludes behaviorally duplicated policies",not duplicatePolicy)
 test("best-scoring genome survives into the next generation",nextPopulation.genomes[1].fitness==100)
 test("a new generation starts evaluating at genome one",nextPopulation.nextGenomeIndex==1)
+local archiveSeed=AI.newPopulation(12)
+archiveSeed.genomes[1].fitness=10
+local archivedBest=AI.newGenome(archiveSeed)
+archivedBest.fitness=900
+archiveSeed.topPerformers={{generation=7,genomeIndex=4,fitness=900,
+  genome=archivedBest}}
+local archiveSeedSignature=AI.policySignature(archivedBest)
+local archiveSeedNext=AI.nextGeneration(archiveSeed)
+test("the all-time saved top genome seeds the next population",
+  AI.policySignature(archiveSeedNext.genomes[1])==archiveSeedSignature
+    and archiveSeedNext.genomes[1].fitness==900)
 local savedFile=assert(io.open(save_path,"r"))
 local legacyText=savedFile:read("*a");savedFile:close()
 legacyText=legacyText:gsub("P,%d+\n","",1)
@@ -176,7 +240,7 @@ local legacyPopulation=AI.load(save_path)
 test("older V1 databases without resume progress still load",
   legacyPopulation~=nil and #legacyPopulation.genomes==12
     and AI.new(legacyPopulation).genomeIndex==1)
-os.remove(save_path)
+os.remove(save_path);os.remove(save_path..".bak")
 
 -- A new species may contain only its founder. Its descendants must still
 -- explore new weights or links, while the global champion remains intact.
@@ -283,12 +347,61 @@ local legacy_state=AI.createStateAdapter({
 test("legacy FCEUX state adapter maps slot 9 to create slot 10",legacy_state~=nil and legacy_state.kind=="create" and legacy_state.handle.slot==10)
 populationState.genomes[2].fitness=125
 test("champion selection finds the highest-fitness genome",AI.bestGenomeIndex(populationState)==2)
+populationState.topPerformers={{fitness=999,genome=AI.newGenome(populationState),generation=8,genomeIndex=4}}
+test("champion selection considers the highest archived genome",
+  AI.bestPerformer(populationState).source=="archive"
+    and AI.bestPerformer(populationState).fitness==999)
 
 local log_path=os.tmpname()
 test("runtime log appends and flushes episode diagnostics",AI.appendLog("test event",log_path)==true)
 local log_file=io.open(log_path,"r")
 local log_text=log_file:read("*a");log_file:close();os.remove(log_path)
 test("runtime log includes its event text",log_text:find("test event",1,true)~=nil)
+
+local legacy_log_path=os.tmpname()
+local legacy_log=assert(io.open(legacy_log_path,"w"))
+legacy_log:write("[2026-09-29 12:00:00] episode start | generation=4 | genome=1/2 | x=40 | power=0\n",
+  "[2026-09-29 12:00:03] episode end | reason=death | fitness=75.50 | max_x=89 | frames=46\n")
+legacy_log:close()
+local legacyCheckpoint=AI.newPopulation(2)
+legacyCheckpoint.generation=4;legacyCheckpoint.nextGenomeIndex=2
+legacyCheckpoint.bestFitness=1200
+local importedCount,importedGenomes=AI.importLegacyLogHistory(legacyCheckpoint,legacy_log_path)
+test("legacy log migration imports exact progress and a matching saved genome",
+  importedCount==1 and importedGenomes==1 and #legacyCheckpoint.episodeHistory==1
+    and legacyCheckpoint.episodeHistory[1].startWorldX==40
+    and legacyCheckpoint.episodeHistory[1].maxWorldX==89
+    and legacyCheckpoint.topPerformers[1].fitness==75.5
+    and legacyCheckpoint.bestFitness==75.5
+    and legacyCheckpoint.scoreOnlyHistoricalBest==1200)
+test("legacy log migration marks unavailable historical behavior fields as unknown",
+  legacyCheckpoint.episodeHistory[1].jumps==-1
+    and legacyCheckpoint.episodeHistory[1].episodeReward==-1)
+local repeatedImport=AI.importLegacyLogHistory(legacyCheckpoint,legacy_log_path)
+test("legacy log migration cannot duplicate imported episode rows",repeatedImport==0
+  and #legacyCheckpoint.episodeHistory==1)
+os.remove(legacy_log_path)
+
+local legacy_log_path=os.tmpname()
+local legacy_log=assert(io.open(legacy_log_path,"w"))
+legacy_log:write("[2026-09-29 12:00:00] episode start | generation=4 | genome=1/2 | x=40 | power=0\n",
+  "[2026-09-29 12:00:03] episode end | reason=death | fitness=75.50 | max_x=89 | frames=46\n")
+legacy_log:close()
+local legacyCheckpoint=AI.newPopulation(2)
+legacyCheckpoint.generation=4;legacyCheckpoint.nextGenomeIndex=2
+local importedCount,importedGenomes=AI.importLegacyLogHistory(legacyCheckpoint,legacy_log_path)
+test("legacy log migration imports exact progress and a matching saved genome",
+  importedCount==1 and importedGenomes==1 and #legacyCheckpoint.episodeHistory==1
+    and legacyCheckpoint.episodeHistory[1].startWorldX==40
+    and legacyCheckpoint.episodeHistory[1].maxWorldX==89
+    and legacyCheckpoint.topPerformers[1].fitness==75.5)
+test("legacy log migration marks unavailable historical behavior fields as unknown",
+  legacyCheckpoint.episodeHistory[1].jumps==-1
+    and legacyCheckpoint.episodeHistory[1].episodeReward==-1)
+local repeatedImport=AI.importLegacyLogHistory(legacyCheckpoint,legacy_log_path)
+test("legacy log migration cannot duplicate imported episode rows",repeatedImport==0
+  and #legacyCheckpoint.episodeHistory==1)
+os.remove(legacy_log_path)
 
 local timer_writes={}
 memory={writebyte=function(address,value) timer_writes[address]=value end}

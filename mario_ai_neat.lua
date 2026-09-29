@@ -136,6 +136,8 @@ local MEMORY_LAGS = {1, 4}
 local MEMORY_INPUT_COUNT = MEMORY_FEATURE_COUNT * #MEMORY_LAGS
 local ACTION_HOLD_FRAMES = {1, 2, 4, 6}
 local NOVELTY_ARCHIVE_LIMIT = 48
+local EPISODE_HISTORY_LIMIT = 1000
+local TOP_PERFORMER_LIMIT = 5
 local DEFAULT_POPULATION_SIZE = 300
 local SPECIES_DISTANCE_THRESHOLD = 1.0
 local MAX_STALE_GENERATIONS = 15
@@ -154,6 +156,33 @@ local ACTION_OPTIONS = {
 local NON_STOMPABLE_ENEMIES = {[0x07]=true,[0x0C]=true,[0x0D]=true,[0x11]=true,[0x12]=true}
 
 local function safeWriteLine(file, value) file:write(value, "\n") end
+
+local function currentTimestamp()
+  return os and os.date and os.date("%Y-%m-%d %H:%M:%S") or "unknown"
+end
+
+local function writeFile(path,contents)
+  local file=io and io.open and io.open(path,"w")
+  if not file then return false end
+  local wrote=file:write(contents)
+  file:close()
+  return wrote~=nil
+end
+
+local function backupFile(path)
+  local source=io and io.open and io.open(path,"r")
+  if not source then return true end
+  local contents=source:read("*a")
+  source:close()
+  local backupPath=path..".bak"
+  local temporaryBackupPath=backupPath..".tmp"
+  if not writeFile(temporaryBackupPath,contents) then return false end
+  local renamed=os and os.rename and os.rename(temporaryBackupPath,backupPath)
+  if renamed then return true end
+  local copied=writeFile(backupPath,contents)
+  if os and os.remove then os.remove(temporaryBackupPath) end
+  return copied
+end
 
 local function memoryNode(index) return MEMORY_INPUT_OFFSET + index end
 local function isMemoryInput(nodeId)
@@ -485,6 +514,24 @@ local function cloneGenome(genome)
   return genomeCopy
 end
 
+-- The signature describes the active policy. Disabled genes do not change
+-- current behavior, and rounding avoids treating serialization noise as novelty.
+local function genomeSignature(genome)
+  local activeGenes={}
+  for _,gene in ipairs(genome.genes or {}) do
+    if gene.enabled then
+      activeGenes[#activeGenes+1]=table.concat({gene.sourceNode,gene.targetNode,
+        string.format("%.4f",gene.weight)},":")
+    end
+  end
+  table.sort(activeGenes)
+  return table.concat(activeGenes,"|")
+end
+
+function AI.policySignature(genome)
+  return genomeSignature(genome)
+end
+
 function AI.newGenome(populationState)
   local genome=createEmptyGenome()
   -- Sparse initial networks keep the first generation diverse and inexpensive.
@@ -581,7 +628,8 @@ end
 function AI.newPopulation(populationSize)
   local populationState = {generation=1,nextInnovation=ACTION_COUNT,innovations={},genomes={},species={},
     bestFitness=0,population=populationSize or DEFAULT_POPULATION_SIZE,nextGenomeIndex=1,
-    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={},behaviorArchive={}}
+    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={},behaviorArchive={},
+    episodeHistory={},topPerformers={},legacyLogImported=false}
   for genomeIndex = 1, populationState.population do
     local genome
     if genomeIndex == 1 then
@@ -693,6 +741,12 @@ end
 function AI.nextGeneration(populationState)
   rankSpecies(populationState)
   local champion = populationState.genomes[1]
+  local historicChampion=populationState.topPerformers and populationState.topPerformers[1]
+  if historicChampion and historicChampion.genome
+    and (historicChampion.fitness or 0)>(champion.fitness or 0) then
+    champion=cloneGenome(historicChampion.genome)
+    champion.fitness=historicChampion.fitness
+  end
   local survivingSpecies = {}
   for _, speciesGroup in ipairs(populationState.species) do
     if speciesGroup.staleness < MAX_STALE_GENERATIONS or speciesGroup.genomes[1] == champion then
@@ -712,11 +766,34 @@ function AI.nextGeneration(populationState)
     nextHiddenNode=populationState.nextHiddenNode,splitHistory=populationState.splitHistory,
     species=survivingSpecies,genomes={cloneGenome(champion)},
     bestFitness=populationState.bestFitness,population=populationState.population,
-    nextGenomeIndex=1,behaviorArchive=populationState.behaviorArchive or {}}
+    nextGenomeIndex=1,behaviorArchive=populationState.behaviorArchive or {},
+    episodeHistory=populationState.episodeHistory or {},topPerformers=populationState.topPerformers or {},
+    legacyLogImported=populationState.legacyLogImported or false}
   local targetPopulationSize = populationState.population or DEFAULT_POPULATION_SIZE
+  local activePolicies={[genomeSignature(champion)]=true}
   while #nextPopulation.genomes < targetPopulationSize do
     local speciesGroup = chooseSpeciesForBreeding(survivingSpecies)
-    nextPopulation.genomes[#nextPopulation.genomes+1] = breedChild(speciesGroup,nextPopulation)
+    local child=breedChild(speciesGroup,nextPopulation)
+    local signature=genomeSignature(child)
+    local retryCount=0
+    while activePolicies[signature] and retryCount<32 do
+      child=breedChild(speciesGroup,nextPopulation)
+      signature=genomeSignature(child)
+      retryCount=retryCount+1
+    end
+    -- A fresh sparse genome is a final escape from a clone-heavy species.
+    if activePolicies[signature] then
+      retryCount=0
+      repeat
+        child=AI.newGenome(nextPopulation)
+        AI.mutate(child,nextPopulation)
+        signature=genomeSignature(child)
+        retryCount=retryCount+1
+      until not activePolicies[signature] or retryCount>=128
+    end
+    assert(not activePolicies[signature],"unable to generate a distinct NEAT policy")
+    activePolicies[signature]=true
+    nextPopulation.genomes[#nextPopulation.genomes+1]=child
   end
   assignSpecies(nextPopulation)
   return nextPopulation
@@ -809,6 +886,10 @@ function AI.save(populationState,path)
   -- unevaluated genome after a stopped or crashed FCEUX session.
   safeWriteLine(databaseFile,"P,"..tostring(populationState.nextGenomeIndex or 1))
   safeWriteLine(databaseFile,"H,"..tostring(populationState.nextHiddenNode or NEURAL_INPUT_COUNT))
+  safeWriteLine(databaseFile,"L,"..(populationState.legacyLogImported and "1" or "0"))
+  if populationState.scoreOnlyHistoricalBest then
+    safeWriteLine(databaseFile,"K,"..tostring(populationState.scoreOnlyHistoricalBest))
+  end
   for splitInnovation,hiddenNode in pairs(populationState.splitHistory or {}) do
     safeWriteLine(databaseFile,table.concat({"S",splitInnovation,hiddenNode},","))
   end
@@ -816,6 +897,34 @@ function AI.save(populationState,path)
   -- Store compact behavior summaries, not replay states or external source code.
   for _,descriptor in ipairs(populationState.behaviorArchive or {}) do
     safeWriteLine(databaseFile,table.concat({"B",unpack(descriptor)},","))
+  end
+  -- Keep enough compact episode evidence to audit progress after FCEUX closes.
+  for _,episode in ipairs(populationState.episodeHistory or {}) do
+    safeWriteLine(databaseFile,table.concat({"E",episode.generation or 0,episode.genomeIndex or 0,
+      episode.fitness or 0,episode.startWorldX or 0,episode.maxWorldX or 0,episode.frames or 0,
+      episode.reason or "unknown",episode.power or 0,episode.jumps or 0,episode.retreats or 0,
+      episode.passedEnemies or 0,episode.landings or 0,episode.powerUps or 0,
+      episode.episodeReward or 0,episode.novelty or 0,episode.timestamp or "unknown"},","))
+  end
+  -- Persist full connections for the distinct highest-scoring policies, not
+  -- just a historical score that can no longer be replayed.
+  for rank,performer in ipairs(populationState.topPerformers or {}) do
+    local genome=performer.genome
+    safeWriteLine(databaseFile,table.concat({"T",rank,performer.generation or 0,
+      performer.genomeIndex or 0,performer.fitness or 0,performer.maxWorldX or 0,
+      performer.progress or 0,performer.reason or "unknown",performer.frames or 0,
+      performer.power or 0,performer.jumps or 0,performer.retreats or 0,
+      performer.passedEnemies or 0,performer.landings or 0,performer.powerUps or 0,
+      performer.episodeReward or 0,performer.novelty or 0,
+      genome.highestHiddenNode or NEURAL_INPUT_COUNT,genome.species or 0,#genome.genes,
+      performer.timestamp or "unknown"},","))
+    for mutationName,mutationRate in pairs(genome.mutationRates or {}) do
+      safeWriteLine(databaseFile,table.concat({"TR",rank,mutationName,mutationRate},","))
+    end
+    for _,gene in ipairs(genome.genes or {}) do
+      safeWriteLine(databaseFile,table.concat({"TN",rank,gene.sourceNode,gene.targetNode,
+        string.format("%.17g",gene.weight),gene.enabled and 1 or 0,gene.innovation},","))
+    end
   end
   for genomeIndex, genome in ipairs(populationState.genomes) do
     safeWriteLine(databaseFile,table.concat({"G",genomeIndex,genome.fitness or 0,
@@ -829,6 +938,10 @@ function AI.save(populationState,path)
     end
   end
   databaseFile:close()
+  if not backupFile(path) then
+    if os and os.remove then os.remove(temporaryPath) end
+    return false
+  end
   local renamed = os and os.rename and os.rename(temporaryPath,path)
   if not renamed then
     local temporaryFile = io.open(temporaryPath,"r")
@@ -859,7 +972,8 @@ function AI.load(path)
   if not generation then databaseFile:close();return nil end
   local populationState={generation=tonumber(generation),nextInnovation=tonumber(innovationId),
     bestFitness=tonumber(bestFitness),population=tonumber(populationSize),genomes={},species={},innovations={},
-    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={},behaviorArchive={}}
+    nextHiddenNode=NEURAL_INPUT_COUNT,splitHistory={},behaviorArchive={},episodeHistory={},
+    topPerformers={},legacyLogImported=false}
   for genomeIndex = 1, tonumber(genomeCount) do
     populationState.genomes[genomeIndex] = createEmptyGenome()
     populationState.genomes[genomeIndex].fitness = 0
@@ -877,6 +991,10 @@ function AI.load(path)
       if savedNode and isHiddenNode(savedNode) then
         populationState.nextHiddenNode=math.floor(savedNode)
       end
+    elseif fields[1]=="L" then
+      populationState.legacyLogImported=tonumber(fields[2])==1
+    elseif fields[1]=="K" then
+      populationState.scoreOnlyHistoricalBest=tonumber(fields[2])
     elseif fields[1]=="B" then
       local descriptor={}
       for fieldIndex=2,#fields do
@@ -885,6 +1003,45 @@ function AI.load(path)
       end
       if #descriptor==6 and #populationState.behaviorArchive<NOVELTY_ARCHIVE_LIMIT then
         populationState.behaviorArchive[#populationState.behaviorArchive+1]=descriptor
+      end
+    elseif fields[1]=="E" then
+      if #populationState.episodeHistory<EPISODE_HISTORY_LIMIT then
+        local episode={generation=tonumber(fields[2]),genomeIndex=tonumber(fields[3]),
+          fitness=tonumber(fields[4]),startWorldX=tonumber(fields[5]),maxWorldX=tonumber(fields[6]),
+          frames=tonumber(fields[7]),reason=fields[8],power=tonumber(fields[9]),
+          jumps=tonumber(fields[10]),retreats=tonumber(fields[11]),passedEnemies=tonumber(fields[12]),
+          landings=tonumber(fields[13]),powerUps=tonumber(fields[14]),
+          episodeReward=tonumber(fields[15]),novelty=tonumber(fields[16]),timestamp=fields[17]}
+        if episode.generation and episode.fitness and episode.maxWorldX then
+          populationState.episodeHistory[#populationState.episodeHistory+1]=episode
+        end
+      end
+    elseif fields[1]=="T" then
+      local rank=tonumber(fields[2])
+      if rank and rank>=1 and rank<=TOP_PERFORMER_LIMIT then
+        local genome=createEmptyGenome()
+        genome.fitness=tonumber(fields[5]) or 0
+        genome.highestHiddenNode=tonumber(fields[18]) or NEURAL_INPUT_COUNT
+        genome.species=tonumber(fields[19]) or 0
+        populationState.topPerformers[rank]={generation=tonumber(fields[3]),
+          genomeIndex=tonumber(fields[4]),fitness=tonumber(fields[5]),maxWorldX=tonumber(fields[6]),
+          progress=tonumber(fields[7]),reason=fields[8],frames=tonumber(fields[9]),
+          power=tonumber(fields[10]),jumps=tonumber(fields[11]),retreats=tonumber(fields[12]),
+          passedEnemies=tonumber(fields[13]),landings=tonumber(fields[14]),
+          powerUps=tonumber(fields[15]),episodeReward=tonumber(fields[16]),
+          novelty=tonumber(fields[17]),timestamp=fields[21],genome=genome}
+      end
+    elseif fields[1]=="TR" then
+      local rank=tonumber(fields[2])
+      local performer=rank and populationState.topPerformers[rank]
+      if performer and fields[3] then performer.genome.mutationRates[fields[3]]=tonumber(fields[4]) or 0 end
+    elseif fields[1]=="TN" then
+      local rank=tonumber(fields[2])
+      local performer=rank and populationState.topPerformers[rank]
+      if performer then
+        performer.genome.genes[#performer.genome.genes+1]={sourceNode=tonumber(fields[3]),
+          targetNode=tonumber(fields[4]),weight=tonumber(fields[5]),enabled=tonumber(fields[6])==1,
+          innovation=tonumber(fields[7])}
       end
     elseif fields[1]=="S" then
       local splitInnovation,hiddenNode=tonumber(fields[2]),tonumber(fields[3])
@@ -1046,6 +1203,124 @@ function AI.bestGenomeIndex(populationState)
   return championIndex,bestFitness or 0
 end
 
+function AI.bestPerformer(populationState)
+  local genomeIndex,currentFitness=AI.bestGenomeIndex(populationState)
+  local best={genome=populationState.genomes[genomeIndex],fitness=currentFitness,
+    genomeIndex=genomeIndex,source="population"}
+  for _,performer in ipairs(populationState.topPerformers or {}) do
+    if performer.genome and (performer.fitness or 0)>best.fitness then
+      best={genome=performer.genome,fitness=performer.fitness,genomeIndex=performer.genomeIndex,
+        generation=performer.generation,source="archive"}
+    end
+  end
+  return best
+end
+
+local function updateEpisodeHistory(populationState,episode)
+  populationState.episodeHistory=populationState.episodeHistory or {}
+  populationState.episodeHistory[#populationState.episodeHistory+1]=episode
+  while #populationState.episodeHistory>EPISODE_HISTORY_LIMIT do
+    table.remove(populationState.episodeHistory,1)
+  end
+end
+
+local function updateTopPerformers(populationState,episode,genome)
+  populationState.topPerformers=populationState.topPerformers or {}
+  populationState.bestFitness=math.max(populationState.bestFitness or 0,episode.fitness or 0)
+  local signature=genomeSignature(genome)
+  for index,performer in ipairs(populationState.topPerformers) do
+    if genomeSignature(performer.genome)==signature then
+      if episode.fitness>(performer.fitness or 0) then
+        episode.genome=cloneGenome(genome)
+        populationState.topPerformers[index]=episode
+      end
+      table.sort(populationState.topPerformers,function(first,second)
+        return first.fitness>second.fitness
+      end)
+      return
+    end
+  end
+  episode.genome=cloneGenome(genome)
+  populationState.topPerformers[#populationState.topPerformers+1]=episode
+  table.sort(populationState.topPerformers,function(first,second)
+    return first.fitness>second.fitness
+  end)
+  while #populationState.topPerformers>TOP_PERFORMER_LIMIT do
+    table.remove(populationState.topPerformers)
+  end
+end
+
+local function activeGenome(aiState)
+  if aiState.championMode and aiState.championGenome then return aiState.championGenome end
+  return aiState.populationState.genomes[aiState.genomeIndex]
+end
+
+function AI.importLegacyLogHistory(populationState,path)
+  if populationState.legacyLogImported then return 0,0 end
+  local logFile=io and io.open and io.open(path,"r")
+  local importedEpisodes=0
+  local importedCurrentGenomes=0
+  local bestForCurrentGenome={}
+  populationState.episodeHistory=populationState.episodeHistory or {}
+  if logFile then
+    local activeStart
+    for line in logFile:lines() do
+      local timestamp,generation,genomeIndex,_,startWorldX,power=line:match(
+        "^%[([^%]]+)%] episode start | generation=(%d+) | genome=(%d+)/(%d+) | x=(%d+) | power=(%d+)")
+      if timestamp then
+        activeStart={timestamp=timestamp,generation=tonumber(generation),
+          genomeIndex=tonumber(genomeIndex),startWorldX=tonumber(startWorldX),power=tonumber(power)}
+      else
+        local endTimestamp,reason,fitness,maxWorldX,frames=line:match(
+          "^%[([^%]]+)%] episode end | reason=([^|]+) | fitness=([%-%d%.]+) | max_x=(%d+) | frames=(%d+)")
+        if endTimestamp and activeStart then
+          reason=reason:match("^%s*(.-)%s*$")
+          fitness,maxWorldX,frames=tonumber(fitness),tonumber(maxWorldX),tonumber(frames)
+          local episode={generation=activeStart.generation,genomeIndex=activeStart.genomeIndex,
+            fitness=fitness,startWorldX=activeStart.startWorldX,maxWorldX=maxWorldX,
+            progress=math.max(0,maxWorldX-activeStart.startWorldX),frames=frames,reason=reason,
+            power=activeStart.power,jumps=-1,retreats=-1,passedEnemies=-1,landings=-1,
+            powerUps=-1,episodeReward=-1,novelty=-1,timestamp=endTimestamp}
+          updateEpisodeHistory(populationState,episode)
+          importedEpisodes=importedEpisodes+1
+          if episode.generation==populationState.generation
+            and episode.genomeIndex<(populationState.nextGenomeIndex or 1) then
+            local old=bestForCurrentGenome[episode.genomeIndex]
+            if not old or episode.fitness>old.fitness then
+              bestForCurrentGenome[episode.genomeIndex]=episode
+            end
+          end
+          activeStart=nil
+        end
+      end
+    end
+    logFile:close()
+  end
+  for genomeIndex,episode in pairs(bestForCurrentGenome) do
+    local genome=populationState.genomes[genomeIndex]
+    if genome then
+      genome.fitness=episode.fitness
+      updateTopPerformers(populationState,episode,genome)
+      importedCurrentGenomes=importedCurrentGenomes+1
+    end
+  end
+  local recoverableBest=0
+  for _,genome in ipairs(populationState.genomes) do
+    recoverableBest=math.max(recoverableBest,genome.fitness or 0)
+  end
+  for _,performer in ipairs(populationState.topPerformers) do
+    recoverableBest=math.max(recoverableBest,performer.fitness or 0)
+  end
+  if (populationState.bestFitness or 0)>recoverableBest then
+    -- Older files kept the score but not necessarily the corresponding genome.
+    populationState.scoreOnlyHistoricalBest=math.max(
+      populationState.scoreOnlyHistoricalBest or 0,populationState.bestFitness or 0)
+    populationState.bestFitness=recoverableBest
+  end
+  populationState.legacyLogImported=true
+  return importedEpisodes,importedCurrentGenomes
+end
+
 function AI.beginEpisode(aiState,state)
   aiState.episodeFrames=0;aiState.episodeReward=0;aiState.startWorldX=state.worldX;aiState.furthestWorldX=state.worldX
   aiState.lastProgressFrame=0;aiState.finished=false
@@ -1057,6 +1332,10 @@ function AI.beginEpisode(aiState,state)
   aiState.actionFramesRemaining=0
   aiState.behavior={jumps=0,retreats=0,passedEnemies=0,landings=0,powerUps=0}
   aiState.nextLandmark=math.floor(state.worldX/128)+1
+end
+
+function AI.isValidTrainingStart(state)
+  return state~=nil and state.phase=="playing" and state.worldX<=LEVEL_START_MAX_X
 end
 
 local function buildTemporalInputs(observationInputs,recentGlobalInputs)
@@ -1165,7 +1444,7 @@ function AI.decide(aiState,state)
   for memoryIndex=1,MEMORY_INPUT_COUNT do memoryInputs[memoryIndex]=temporalInputs[memoryIndex] end
   aiState.lastObservationInputs=observationInputs
   aiState.lastTemporalInputs=memoryInputs
-  local genome=aiState.populationState.genomes[aiState.genomeIndex]
+  local genome=activeGenome(aiState)
   local urgentEnemy=findClosestThreat(state)
   local immediateHazard=(urgentEnemy and urgentEnemy.worldX-state.worldX<56)
     or hasGapAhead(state)>0
@@ -1383,7 +1662,7 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
     hudText(guiApi,224,12,"[AI]","cyan","black")
     return false
   end
-  local genome=aiState.populationState.genomes[aiState.genomeIndex]
+  local genome=activeGenome(aiState)
   if not genome then return false end
   local nodePositions=makeHudNodePositions(genome)
   -- The graph and labeled sensors stay above Mario's ground-level play area.
@@ -1468,7 +1747,7 @@ end
 
 function AI.finishEpisode(aiState,state,forced_reason)
   if not aiState.episodeActive then return nil end
-  local genome=aiState.populationState.genomes[aiState.genomeIndex]
+  local genome=activeGenome(aiState)
   local progress=math.max(0,(aiState.furthestWorldX or state.worldX)-(aiState.startWorldX or state.worldX))
   local survival=math.min(aiState.episodeFrames,12000)*0.02
   local power=(aiState.bestForm or 0)*150
@@ -1480,12 +1759,22 @@ function AI.finishEpisode(aiState,state,forced_reason)
   if forced_reason=="stuck" then fitness=fitness-20 end
   if forced_reason=="timeout" then fitness=fitness-80 end
   aiState.totalEpisodes=aiState.totalEpisodes+1
+  local episode={generation=aiState.populationState.generation,genomeIndex=aiState.genomeIndex,
+    fitness=fitness,startWorldX=aiState.startWorldX or state.worldX,
+    maxWorldX=aiState.furthestWorldX or state.worldX,progress=progress,
+    frames=aiState.episodeFrames,reason=forced_reason or state.phase,
+    power=aiState.bestForm or 0,jumps=aiState.behavior.jumps or 0,
+    retreats=aiState.behavior.retreats or 0,passedEnemies=aiState.behavior.passedEnemies or 0,
+    landings=aiState.behavior.landings or 0,powerUps=aiState.behavior.powerUps or 0,
+    episodeReward=aiState.episodeReward or 0,novelty=novelty,timestamp=currentTimestamp()}
+  updateEpisodeHistory(aiState.populationState,episode)
   aiState.startWorldX=nil
   aiState.episodeActive=false
   aiState.lastFitness=fitness
   aiState.lastNovelty=novelty
   if not aiState.championMode then
     genome.fitness=fitness
+    updateTopPerformers(aiState.populationState,episode,genome)
     aiState.genomeIndex=aiState.genomeIndex+1
     if aiState.genomeIndex>#aiState.populationState.genomes then
       aiState.populationState=AI.nextGeneration(aiState.populationState)
@@ -1535,6 +1824,11 @@ function AI.run()
   local loaded=AI.load(databasePath)
   local aiState=AI.new(loaded or AI.newPopulation())
   local logPath=getLogPath()
+  local needsHistoryMigration=loaded and not aiState.populationState.legacyLogImported
+  local importedEpisodes,archivedGenomes=0,0
+  if needsHistoryMigration then
+    importedEpisodes,archivedGenomes=AI.importLegacyLogHistory(aiState.populationState,logPath)
+  end
   local stateAdapter,stateProblem
   -- Champion play must be able to finish the flagpole sequence and enter the
   -- next level; only training restores a fixed start after each attempt.
@@ -1548,12 +1842,21 @@ function AI.run()
   local flagpoleWorldX=nil
   if PLAY_CHAMPION_ONLY and loaded then
     aiState.championMode=true
-    aiState.genomeIndex=AI.bestGenomeIndex(aiState.populationState)
+    local champion=AI.bestPerformer(aiState.populationState)
+    aiState.genomeIndex=champion.genomeIndex or 1
+    aiState.championGenome=cloneGenome(champion.genome)
+    AI.appendLog(string.format("champion selected | source=%s | generation=%s | fitness=%.2f",
+      champion.source,tostring(champion.generation or aiState.populationState.generation),champion.fitness),logPath)
   end
   local function savePopulation(context)
     aiState.databaseOK=AI.save(aiState.populationState,databasePath)
     if not aiState.databaseOK then AI.appendLog("database save failed: "..context,logPath) end
     return aiState.databaseOK
+  end
+  if needsHistoryMigration then
+    AI.appendLog(string.format("checkpoint history migrated | episodes=%d | current-genome snapshots=%d",
+      importedEpisodes,archivedGenomes),logPath)
+    savePopulation("legacy checkpoint history migration")
   end
   AI.appendLog(string.format("started | database=%s | generation=%d | population=%d | mode=%s | state=%s | timer=999 per episode (countdown enabled) | test_lives=%s",
     loaded and "loaded" or "new",aiState.populationState.generation,#aiState.populationState.genomes,
@@ -1576,6 +1879,7 @@ function AI.run()
     end
   end
   local lastSaveFrame=0
+  local waitingForLevelStartLogged=false
   while true do
     local state=AI.observe(aiState.frames+1)
     AI.keepLivesForTesting()
@@ -1595,23 +1899,36 @@ function AI.run()
       waitingForRespawn=false
       AI.appendLog("Mario respawned; finding a new training start",logPath)
     end
+    local waitingForLevelStart=false
     if state.phase=="playing" and not aiState.episodeActive
       and not awaitingNextLevel and not restoredAfterVictory then
-      if fixedTraining and not stateSaved then
-        if stateAdapter:save() then
-          stateSaved=true
-          AI.appendLog("saved fixed training start in slot "..TRAINING_SAVESTATE_SLOT,logPath)
-        else
-          fixedTraining=false
-          AI.appendLog("training slot save failed; switched to continuous training",logPath)
+      if not aiState.championMode and not AI.isValidTrainingStart(state) then
+        waitingForLevelStart=true
+        if not waitingForLevelStartLogged then
+          waitingForLevelStartLogged=true
+          AI.appendLog(string.format("waiting for level start | current_x=%d | reset SMB1 to World 1-1 and restart the Lua script",
+            state.worldX),logPath)
         end
+      else
+        waitingForLevelStartLogged=false
+        if fixedTraining and not stateSaved then
+          if stateAdapter:save() then
+            stateSaved=true
+            AI.appendLog("saved fixed training start in slot "..TRAINING_SAVESTATE_SLOT,logPath)
+          else
+            fixedTraining=false
+            AI.appendLog("training slot save failed; switched to continuous training",logPath)
+          end
+        end
+        AI.beginEpisode(aiState,state)
+        AI.setTimerTo999()
+        AI.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
+          aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,state.worldX,state.power),logPath)
       end
-      AI.beginEpisode(aiState,state)
-      AI.setTimerTo999()
-      AI.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
-        aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,state.worldX,state.power),logPath)
     end
-    if awaitingNextLevel or restoredAfterVictory then
+    if waitingForLevelStart then
+      joypad.set(1,{})
+    elseif awaitingNextLevel or restoredAfterVictory then
       joypad.set(1,{})
     elseif state.phase=="playing" then
       local action=AI.decide(aiState,state)
