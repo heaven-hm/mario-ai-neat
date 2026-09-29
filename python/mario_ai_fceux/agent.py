@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import asdict, dataclass
 import os
 import random
+import shutil
 from pathlib import Path
 from typing import Deque
 
@@ -171,26 +172,86 @@ class RainbowAgent:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
+        replay_snapshot_id = None
         try:
+            if replay_path is not None:
+                replay_path = Path(replay_path)
+                replay_path.parent.mkdir(parents=True, exist_ok=True)
+                replay_backup = replay_path.with_suffix(replay_path.suffix + ".bak")
+                checkpoint_backup = path.with_suffix(path.suffix + ".bak")
+                # Preserve the previous pair before replacing either member.
+                if replay_path.exists() and path.exists():
+                    replay_copy = replay_backup.with_suffix(replay_backup.suffix + ".tmp")
+                    checkpoint_copy = checkpoint_backup.with_suffix(checkpoint_backup.suffix + ".tmp")
+                    shutil.copy2(replay_path, replay_copy)
+                    shutil.copy2(path, checkpoint_copy)
+                    os.replace(replay_copy, replay_backup)
+                    os.replace(checkpoint_copy, checkpoint_backup)
+                replay_snapshot_id = self.replay.save(replay_path)
             torch.save({"algorithm": "Rainbow DQN (C51 + NoisyNet + Double + Dueling + PER + n-step)",
                         "config": asdict(self.config), "steps": self.steps, "optimizer_steps": self.optimizer_steps,
                         "online": self.online.state_dict(), "target": self.target.state_dict(),
                         "optimizer": self.optimizer.state_dict(), "python_random": random.getstate(),
-                        "numpy_random": np.random.get_state(), "torch_random": torch.get_rng_state()}, temporary)
+                        "numpy_random": np.random.get_state(), "torch_random": torch.get_rng_state(),
+                        "torch_cuda_random": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                        "torch_mps_random": (torch.mps.get_rng_state()
+                                             if torch.backends.mps.is_available()
+                                             and hasattr(torch.mps, "get_rng_state") else None),
+                        "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+                        "replay_snapshot_id": replay_snapshot_id}, temporary)
             os.replace(temporary, path)
-            if replay_path is not None:
-                self.replay.save(replay_path)
         finally:
             if temporary.exists():
                 temporary.unlink()
 
-    def load(self, path: str | Path) -> None:
+    @staticmethod
+    def load_checkpoint_pair(checkpoint_path: str | Path, replay_path: str | Path,
+                             observation_size: int, seed: int = 0,
+                             capacity: int = 100_000) -> tuple[Path, PrioritizedReplayBuffer]:
+        """Load a matching model/replay pair, falling back to the prior pair."""
+        checkpoint_path, replay_path = Path(checkpoint_path), Path(replay_path)
+        candidates = (
+            (checkpoint_path, replay_path),
+            (checkpoint_path.with_suffix(checkpoint_path.suffix + ".bak"),
+             replay_path.with_suffix(replay_path.suffix + ".bak")),
+        )
+        failures = []
+        for model_candidate, replay_candidate in candidates:
+            if not model_candidate.exists() or not replay_candidate.exists():
+                continue
+            try:
+                payload = torch.load(model_candidate, map_location="cpu", weights_only=False)
+                replay = PrioritizedReplayBuffer.load(replay_candidate, seed)
+                expected_snapshot = payload.get("replay_snapshot_id")
+                if expected_snapshot is not None and replay.snapshot_id != expected_snapshot:
+                    raise ValueError("model and replay snapshot IDs differ")
+                return model_candidate, replay
+            except (OSError, RuntimeError, ValueError, KeyError) as exc:
+                failures.append(f"{model_candidate.name}: {exc}")
+        if failures:
+            raise RuntimeError("no consistent Rainbow model/replay checkpoint pair: " + "; ".join(failures))
+        if replay_path.exists():
+            return checkpoint_path, PrioritizedReplayBuffer.load(replay_path, seed)
+        return checkpoint_path, PrioritizedReplayBuffer(observation_size, capacity=capacity, seed=seed)
+
+    def load(self, path: str | Path, *, validate_replay: bool = True,
+             restore_rng: bool = True) -> None:
         payload = torch.load(path, map_location=self.device, weights_only=False)
+        saved_config = payload.get("config")
+        if saved_config is not None:
+            normalized_saved_config = asdict(AgentConfig(**saved_config))
+            if normalized_saved_config != asdict(self.config):
+                differences = [name for name, value in asdict(self.config).items()
+                               if normalized_saved_config.get(name) != value]
+                raise ValueError("checkpoint AgentConfig differs in: " + ", ".join(differences))
+        snapshot_id = payload.get("replay_snapshot_id")
+        if validate_replay and snapshot_id is not None and self.replay.snapshot_id != snapshot_id:
+            raise ValueError("checkpoint model and replay snapshot do not match")
         self.online.load_state_dict(payload["online"])
         self.target.load_state_dict(payload["target"])
         self.optimizer.load_state_dict(payload["optimizer"])
         self.steps, self.optimizer_steps = int(payload.get("steps", 0)), int(payload.get("optimizer_steps", 0))
-        if "python_random" in payload:
+        if restore_rng and "python_random" in payload:
             random.setstate(payload["python_random"])
             np.random.set_state(payload["numpy_random"])
             torch_state = payload["torch_random"]
@@ -199,6 +260,15 @@ class RainbowAgent:
             # crash a resume over an unusable old RNG record.
             if isinstance(torch_state, torch.Tensor) and torch_state.dtype == torch.uint8:
                 torch.set_rng_state(torch_state.cpu())
+            cuda_state = payload.get("torch_cuda_random")
+            if torch.cuda.is_available() and cuda_state:
+                torch.cuda.set_rng_state_all(cuda_state)
+            mps_state = payload.get("torch_mps_random")
+            if (torch.backends.mps.is_available() and mps_state is not None
+                    and hasattr(torch.mps, "set_rng_state")):
+                torch.mps.set_rng_state(mps_state.cpu())
+            if "deterministic_algorithms" in payload:
+                torch.use_deterministic_algorithms(bool(payload["deterministic_algorithms"]))
 
 
 # Old import name remains available for external users; it now implements full Rainbow.

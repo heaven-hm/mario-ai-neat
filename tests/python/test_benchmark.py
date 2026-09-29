@@ -18,8 +18,14 @@ class BenchmarkValidationTests(unittest.TestCase):
             "world": 1,
             "action_repeat_frames": 12,
             "start_protocol": "clean-start-v1",
+            "evaluation_mode": "greedy_no_learning",
+            "evaluation_seed": 2026,
             "episodes_requested": 10,
             "episodes_finished": 10,
+            "episodes": [{"episode": index, "reason": "death", "max_x": 0}
+                         for index in range(10)],
+            "victories": 0,
+            "completion_rate": 0.0,
         }
 
     def test_accepts_complete_reports_with_identical_conditions(self) -> None:
@@ -34,6 +40,16 @@ class BenchmarkValidationTests(unittest.TestCase):
         incomplete = {**self.report, "episodes_finished": 9}
         with self.assertRaisesRegex(ValueError, "only 9 of 10"):
             validate_reports([("NEAT", self.report), ("Rainbow", incomplete)])
+
+    def test_rejects_training_metrics_mislabeled_as_greedy_evaluation(self) -> None:
+        training = {**self.report, "evaluation_mode": "epsilon_greedy_training"}
+        with self.assertRaisesRegex(ValueError, "disable learning and exploration"):
+            validate_reports([("NEAT", self.report), ("Rainbow", training)])
+
+    def test_rejects_inconsistent_victory_metrics(self) -> None:
+        inconsistent = {**self.report, "victories": 1}
+        with self.assertRaisesRegex(ValueError, "victory count"):
+            validate_reports([("NEAT", self.report), ("Rainbow", inconsistent)])
 
 
 if __name__ == "__main__":

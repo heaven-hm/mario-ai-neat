@@ -8,7 +8,8 @@ from pathlib import Path
 
 
 REQUIRED_CONDITIONS = ("rom_sha256", "fceux_sha256", "world", "action_repeat_frames",
-                       "start_protocol", "episodes_requested")
+                       "start_protocol", "episodes_requested", "evaluation_mode",
+                       "evaluation_seed")
 
 
 def validate_reports(rows: list[tuple[str, dict[str, object]]]) -> None:
@@ -29,6 +30,20 @@ def validate_reports(rows: list[tuple[str, dict[str, object]]]) -> None:
         if report.get("episodes_finished") != report.get("episodes_requested"):
             mismatches.append(f"{name}: only {report.get('episodes_finished')} of "
                               f"{report.get('episodes_requested')} episodes finished")
+        if report.get("evaluation_mode") != "greedy_no_learning":
+            mismatches.append(f"{name}: evaluation must disable learning and exploration")
+        episodes = report.get("episodes")
+        if not isinstance(episodes, list) or len(episodes) != report.get("episodes_finished"):
+            mismatches.append(f"{name}: episode records do not match the finished count")
+        elif isinstance(episodes, list):
+            victories = sum(isinstance(item, dict) and item.get("reason") == "victory"
+                            for item in episodes)
+            if victories != report.get("victories"):
+                mismatches.append(f"{name}: victory count does not match its episode records")
+            completion_rate = float(report.get("completion_rate", -1.0))
+            expected_rate = victories / len(episodes) if episodes else 0.0
+            if abs(completion_rate - expected_rate) > 1e-9:
+                mismatches.append(f"{name}: completion rate does not match its episode records")
     if mismatches:
         raise ValueError("incomparable evaluation reports:\n" + "\n".join(mismatches))
 

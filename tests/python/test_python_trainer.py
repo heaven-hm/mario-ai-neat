@@ -66,6 +66,61 @@ class PythonTrainerTests(unittest.TestCase):
             self.assertEqual(resumed.steps, agent.steps)
             self.assertEqual(resumed.select_actions(np.zeros((1, 4), dtype=np.float32), explore=False).shape, (1,))
             self.assertEqual(len(resumed_replay), len(replay))
+            evaluation_agent = RainbowAgent(
+                PrioritizedReplayBuffer(observation_size=4, capacity=1, seed=9),
+                config=config, device="cpu",
+            )
+            evaluation_agent.load(checkpoint, validate_replay=False, restore_rng=False)
+
+    def test_rainbow_learns_preferred_action_in_a_fixed_reward_task(self) -> None:
+        replay = PrioritizedReplayBuffer(observation_size=4, capacity=128, seed=13)
+        config = AgentConfig(observation_size=4, action_count=2, gamma=0.0,
+                             learning_rate=1e-3, batch_size=16, learning_starts=16,
+                             target_sync_steps=20, n_step=1, atom_count=11,
+                             value_min=-2, value_max=2, seed=13)
+        agent = RainbowAgent(replay, config=config, device="cpu")
+        state = np.zeros(4, dtype=np.float32)
+        for _ in range(32):
+            replay.add(Transition(state, 0, -1.0, state, True, 0.0))
+            replay.add(Transition(state, 1, 1.0, state, True, 0.0))
+        before = agent.select_actions(np.asarray([state]), explore=False)[0]
+        for _ in range(120):
+            self.assertIsNotNone(agent.learn())
+        after = agent.select_actions(np.asarray([state]), explore=False)[0]
+        self.assertEqual(after, 1)
+        self.assertGreater(agent.optimizer_steps, 0)
+        # The seeded initial policy can already choose correctly; training must
+        # at minimum produce a clear preference in expected action value.
+        values, _ = agent.inspect(np.asarray([state]))
+        self.assertGreater(values[0, 1], values[0, 0])
+
+    def test_checkpoint_pair_falls_back_to_matching_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            replay_path, checkpoint = root / "replay.npz", root / "model.pt"
+            config = AgentConfig(observation_size=4, action_count=2, batch_size=2,
+                                 learning_starts=2, atom_count=5, value_min=-2,
+                                 value_max=2, seed=5)
+            replay = PrioritizedReplayBuffer(observation_size=4, capacity=16, seed=5)
+            for index in range(4):
+                state = np.full(4, index, dtype=np.float32)
+                replay.add(Transition(state, index % 2, 0.1, state + 1, False, 0.99))
+            agent = RainbowAgent(replay, config=config, device="cpu")
+            agent.save(checkpoint, replay_path)
+            first_snapshot = replay.snapshot_id
+            replay.add(Transition(np.ones(4), 1, 1.0, np.zeros(4), True, 0.0))
+            agent.save(checkpoint, replay_path)
+            self.assertNotEqual(replay.snapshot_id, first_snapshot)
+
+            unrelated = PrioritizedReplayBuffer(observation_size=4, capacity=16, seed=99)
+            unrelated.add(Transition(np.zeros(4), 0, 0.0, np.ones(4), False, 0.99))
+            unrelated.save(replay_path)
+            recovered_checkpoint, recovered_replay = RainbowAgent.load_checkpoint_pair(
+                checkpoint, replay_path, observation_size=4, seed=5,
+            )
+            self.assertEqual(recovered_checkpoint, checkpoint.with_suffix(".pt.bak"))
+            self.assertEqual(recovered_replay.snapshot_id, first_snapshot)
+            self.assertEqual(len(recovered_replay), 4)
 
     @unittest.skipUnless(__import__("torch").backends.mps.is_available(),
                          "This regression test exercises an MPS-mapped checkpoint")

@@ -74,23 +74,31 @@ def apex_learner_main(
     replay_path = directory / "replay.npz"
     checkpoint_path = directory / "model.pt"
 
-    replay = (
-        PrioritizedReplayBuffer.load(replay_path, config.seed)
-        if resume and replay_path.exists()
-        else PrioritizedReplayBuffer(
+    if resume and checkpoint_path.exists():
+        checkpoint_to_load, replay = RainbowAgent.load_checkpoint_pair(
+            checkpoint_path, replay_path, config.observation_size,
+            config.seed, max(replay_capacity, config.batch_size * 2),
+        )
+    elif resume and replay_path.exists():
+        checkpoint_to_load = checkpoint_path
+        replay = PrioritizedReplayBuffer.load(replay_path, config.seed)
+    else:
+        checkpoint_to_load = checkpoint_path
+        replay = PrioritizedReplayBuffer(
             config.observation_size,
             capacity=max(replay_capacity, config.batch_size * 2),
             seed=config.seed,
         )
-    )
     agent = RainbowAgent(replay, config=config, device=device_str)
     if resume and checkpoint_path.exists():
         try:
-            agent.load(checkpoint_path)
-            logger.info("Resumed from %s (step %d, opt %d)", checkpoint_path,
+            agent.load(checkpoint_to_load)
+            logger.info("Resumed from %s (step %d, opt %d)", checkpoint_to_load,
                         agent.steps, agent.optimizer_steps)
         except Exception as exc:
-            logger.warning("Could not load checkpoint (%s); starting fresh.", exc)
+            raise RuntimeError(
+                f"Could not safely resume {checkpoint_path}; refusing to discard learned state: {exc}"
+            ) from exc
 
     last_loss: float | None = None
     last_weight_sync = 0

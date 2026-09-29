@@ -105,12 +105,15 @@ values in the model observation so a shared network can distinguish courses.
 
 ### Checkpoints and storage
 
-`model.pt` and `replay.npz` are written atomically every 10,000 learner updates
-and when training stops. Replay stays in memory during learning; actors send
-bounded batches and wait when the learner queue is full, so transitions are not
-dropped. `replay.npz` stores every transition, global sum/min priority trees,
-and replay RNG state. The checkpoint stores model/target/optimizer state and
-Python, NumPy, and PyTorch RNG state. Seeds and run conditions are in `run.json`.
+`model.pt` and `replay.npz` are written every 10,000 learner updates and when
+training stops. Replay stays in memory during learning; actors send bounded
+batches and wait when the learner queue is full, so transitions are not
+dropped. The replay snapshot stores every transition, global sum/min priority
+trees, and its sampling RNG state. The model checkpoint stores the model,
+target network, optimizer, Python/NumPy/PyTorch RNG state, learner counters,
+determinism setting, and the replay snapshot ID. The prior model/replay pair is
+kept as `.bak`; resume validates IDs and falls back to that pair if the latest
+pair was interrupted or corrupted. Seeds and run conditions are in `run.json`.
 Asynchronous worker arrival order means resumed runs are seeded but not
 bit-for-bit deterministic. Live checkpoints stay out of Git.
 
@@ -163,7 +166,7 @@ which disables NoisyNet exploration and never sends training transitions:
 ```bash
 PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.evaluate \
   --rom SuperMarioBros.nes --fceux fceux --run-dir runs/full-rainbow \
-  --world 1 --episodes 10
+  --world 1 --episodes 10 --evaluation-seed 2026
 ```
 
 It writes a timestamped `results.json` and `episodes.csv`. The benchmark tool

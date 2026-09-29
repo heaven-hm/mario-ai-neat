@@ -20,16 +20,24 @@ def learner_main(inbox: Queue, outbox: Queue, run_directory: str, config_dict: d
     directory = Path(run_directory)
     config = AgentConfig(**config_dict)
     replay_path, checkpoint_path = directory / "replay.npz", directory / "model.pt"
-    replay = (PrioritizedReplayBuffer.load(replay_path, config.seed) if resume and replay_path.exists()
-              else PrioritizedReplayBuffer(config.observation_size, seed=config.seed))
+    if resume and checkpoint_path.exists():
+        checkpoint_to_load, replay = RainbowAgent.load_checkpoint_pair(
+            checkpoint_path, replay_path, config.observation_size, config.seed,
+        )
+    elif resume and replay_path.exists():
+        checkpoint_to_load = checkpoint_path
+        replay = PrioritizedReplayBuffer.load(replay_path, config.seed)
+    else:
+        checkpoint_to_load = checkpoint_path
+        replay = PrioritizedReplayBuffer(config.observation_size, seed=config.seed)
     agent = RainbowAgent(replay, config=config, device=device)
     if resume and checkpoint_path.exists():
         try:
-            agent.load(checkpoint_path)
-        except (KeyError, RuntimeError, TypeError, ValueError):
-            # A Rainbow-lite checkpoint has incompatible heads. Start a fresh
-            # full-Rainbow run instead of silently mixing algorithm states.
-            agent = RainbowAgent(replay, config=config, device=device)
+            agent.load(checkpoint_to_load)
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            raise RuntimeError(
+                f"Could not safely resume {checkpoint_path}; refusing to discard learned state: {error}"
+            ) from error
     last_loss: float | None = None
     last_save_steps = agent.steps
     active = True
