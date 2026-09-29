@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import signal
 import time
 from pathlib import Path
@@ -16,6 +17,11 @@ from .protocol import atomic_write_json
 from .replay import ReplayDatabase
 
 
+HEALTH_CHECK_INTERVAL_SECONDS = 15 * 60
+WORKER_STALE_SECONDS = 3 * 60
+MINIMUM_FREE_BYTES = 5 * 1024**3
+
+
 def shaped_reward(previous, current) -> float:
     """Reward forward SMB1 progress and make deaths materially undesirable."""
     reward = max(-2.0, min(2.0, (current.world_x - previous.world_x) / 16.0))
@@ -23,6 +29,56 @@ def shaped_reward(previous, current) -> float:
     if current.terminal:
         reward += 20.0 if current.reason == "victory" else -5.0
     return reward
+
+
+def write_health_report(run_directory: Path, repository_root: Path,
+                        last_observation_at: dict[str, float],
+                        expected_workers: int) -> dict[str, object]:
+    """Record a trainer-owned health snapshot without a separate OS service.
+
+    The trainer already receives each worker's observation, so this is more
+    dependable on macOS than an external scheduled process that may be denied
+    access to the user's project folder. A stale observation means the worker
+    needs attention; this report never kills or restarts a live FCEUX process.
+    """
+    monotonic_now = time.monotonic()
+    unix_now = time.time()
+    worker_ages = {
+        worker_id: round(max(0.0, monotonic_now - observed_at), 1)
+        for worker_id, observed_at in sorted(last_observation_at.items())
+    }
+    fresh_workers = sum(age <= WORKER_STALE_SECONDS for age in worker_ages.values())
+    repairs: list[str] = []
+    if fresh_workers != expected_workers:
+        stale_workers = [worker_id for worker_id, age in worker_ages.items()
+                         if age > WORKER_STALE_SECONDS]
+        repairs.append("stale Python worker observations: " + ", ".join(stale_workers))
+    disk = shutil.disk_usage(repository_root)
+    if disk.free < MINIMUM_FREE_BYTES:
+        repairs.append("disk free space is below 5 GB")
+    lua_log = repository_root / "mario_ai_neat.log"
+    lua_log_age = (round(max(0.0, unix_now - lua_log.stat().st_mtime), 1)
+                   if lua_log.exists() else None)
+    lua_state = "running" if lua_log_age is not None and lua_log_age <= HEALTH_CHECK_INTERVAL_SECONDS else "not_detected_or_stale"
+    report: dict[str, object] = {
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "healthy": not repairs,
+        "repair_required": repairs,
+        "python_rainbow": {
+            "trainer_state": "running",
+            "expected_workers": expected_workers,
+            "fresh_workers": fresh_workers,
+            "worker_observation_ages_seconds": worker_ages,
+        },
+        "lua_neat": {"log_age_seconds": lua_log_age, "state": lua_state},
+        "disk": {"free_bytes": disk.free, "total_bytes": disk.total},
+    }
+    health_directory = run_directory / "health"
+    health_directory.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(health_directory / "latest.json", report)
+    with (health_directory / "history.jsonl").open("a", encoding="utf-8") as history_file:
+        history_file.write(json.dumps(report, separators=(",", ":")) + "\n")
+    return report
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -73,6 +129,8 @@ def main() -> None:
     deaths = int(saved_metrics.get("deaths", 0))
     victories = int(saved_metrics.get("victories", 0))
     best_world_x = int(saved_metrics.get("best_x", 0))
+    last_observation_at = {worker.worker_id: time.monotonic() for worker in workers}
+    next_health_check_at = time.monotonic()  # Produce one snapshot at launch, then every 15 minutes.
     active = True
 
     def stop(*_: object) -> None:
@@ -88,7 +146,12 @@ def main() -> None:
                 observation = worker.next_observation()
                 if observation is None:
                     continue
+                last_observation_at[worker.worker_id] = time.monotonic()
                 ready.append((worker, observation))
+
+            if time.monotonic() >= next_health_check_at:
+                write_health_report(arguments.run_dir, repository_root, last_observation_at, arguments.workers)
+                next_health_check_at = time.monotonic() + HEALTH_CHECK_INTERVAL_SECONDS
 
             # Replay updates mutate one shared model, so they must stay
             # ordered.  The FCEUX instances themselves continue in parallel.

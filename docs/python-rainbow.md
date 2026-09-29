@@ -109,6 +109,21 @@ uses the local file in `runs/world-1-1-rainbow/`.
 trainer and `mario_ai_neat.lua` in the same FCEUX worker: they both control
 port 1.
 
+### Automatic health report
+
+The active Python trainer writes a health report when it starts and then every
+**15 minutes**. It verifies that every worker is still publishing observations,
+checks free disk space, and records whether the Lua NEAT log is fresh. Read the
+latest snapshot at:
+
+```text
+runs/world-1-1-rainbow/health/latest.json
+```
+
+`repair_required` is empty when the Python worker observations are healthy.
+If it lists a stale worker, inspect that FCEUX window before restarting the
+trainer. The check does not kill or alter any active game session.
+
 ## Benchmark it honestly
 
 Compare this path with the Lua NEAT trainer using the same ROM, same World 1-1

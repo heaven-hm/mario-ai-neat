@@ -47,6 +47,10 @@ has not yet demonstrated better gameplay than the mature Lua NEAT database.
 Read [Python Rainbow training for FCEUX](docs/python-rainbow.md) for setup,
 checkpoint recovery, current limitations, and the benchmark protocol.
 
+![Python Rainbow DQN worker running in FCEUX](docs/images/python-rainbow-fceux-worker.png)
+
+*A live Python worker: the left panel shows RAM and encoder activations; the right panel shows shared replay, update, episode, loss, and action-value telemetry.*
+
 ![Ten seconds of Mario AI NEAT training live in FCEUX](docs/images/mario-ai-neat-live.gif)
 
 *Ten seconds captured from a live FCEUX training session at Generation 111.*
