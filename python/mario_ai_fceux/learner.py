@@ -26,7 +26,7 @@ def learner_main(inbox: Queue, outbox: Queue, run_directory: str, config_dict: d
     if resume and checkpoint_path.exists():
         try:
             agent.load(checkpoint_path)
-        except (KeyError, RuntimeError, ValueError):
+        except (KeyError, RuntimeError, TypeError, ValueError):
             # A Rainbow-lite checkpoint has incompatible heads. Start a fresh
             # full-Rainbow run instead of silently mixing algorithm states.
             pass

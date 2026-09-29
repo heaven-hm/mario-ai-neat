@@ -193,7 +193,12 @@ class RainbowAgent:
         if "python_random" in payload:
             random.setstate(payload["python_random"])
             np.random.set_state(payload["numpy_random"])
-            torch.set_rng_state(payload["torch_random"])
+            torch_state = payload["torch_random"]
+            # Checkpoints created before the reproducibility format may carry
+            # a non-Tensor value here. Keep their trained weights, but do not
+            # crash a resume over an unusable old RNG record.
+            if isinstance(torch_state, torch.Tensor) and torch_state.dtype == torch.uint8:
+                torch.set_rng_state(torch_state)
 
 
 # Old import name remains available for external users; it now implements full Rainbow.
