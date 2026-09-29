@@ -198,7 +198,7 @@ class RainbowAgent:
             # a non-Tensor value here. Keep their trained weights, but do not
             # crash a resume over an unusable old RNG record.
             if isinstance(torch_state, torch.Tensor) and torch_state.dtype == torch.uint8:
-                torch.set_rng_state(torch_state)
+                torch.set_rng_state(torch_state.cpu())
 
 
 # Old import name remains available for external users; it now implements full Rainbow.

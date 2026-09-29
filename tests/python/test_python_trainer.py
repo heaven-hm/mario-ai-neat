@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -65,6 +66,32 @@ class PythonTrainerTests(unittest.TestCase):
             self.assertEqual(resumed.steps, agent.steps)
             self.assertEqual(resumed.select_actions(np.zeros((1, 4), dtype=np.float32), explore=False).shape, (1,))
             self.assertEqual(len(resumed_replay), len(replay))
+
+    @unittest.skipUnless(__import__("torch").backends.mps.is_available(),
+                         "This regression test exercises an MPS-mapped checkpoint")
+    def test_mps_resume_keeps_rng_state_on_cpu(self) -> None:
+        import torch
+
+        replay = PrioritizedReplayBuffer(observation_size=4, capacity=8, seed=3)
+        config = AgentConfig(observation_size=4, action_count=2, batch_size=2,
+                             learning_starts=2, atom_count=5, value_min=-2,
+                             value_max=2, seed=3)
+        source = RainbowAgent(replay, config=config, device="cpu")
+        payload = {
+            "online": source.online.state_dict(),
+            "target": source.target.state_dict(),
+            "optimizer": source.optimizer.state_dict(),
+            "steps": 17,
+            "optimizer_steps": 4,
+            "python_random": __import__("random").getstate(),
+            "numpy_random": np.random.get_state(),
+            "torch_random": torch.get_rng_state().to("mps"),
+        }
+        resumed = RainbowAgent(replay, config=config, device="cpu")
+        with patch("mario_ai_fceux.agent.torch.load", return_value=payload):
+            resumed.load("unused.pt")
+        self.assertEqual(resumed.steps, 17)
+        self.assertEqual(resumed.optimizer_steps, 4)
 
     def test_c51_distribution_and_noisynet_evaluation_are_well_formed(self) -> None:
         network = RainbowNetwork(observation_size=4, action_count=2, atom_count=11)
