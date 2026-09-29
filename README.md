@@ -8,7 +8,7 @@ An AI that learns to play **Super Mario Bros. 1 for NES in FCEUX**. It uses NEAT
 
 ![Mario AI NEAT playing Super Mario Bros. 1 in FCEUX, with a live neural network and mini NES controller](docs/images/mario-ai-neat-training.png)
 
-*Mario AI playing SMB1 in FCEUX. The compact overlay shows the active genome, nearby input grid, network connections, selected action, and a mini NES controller while the game remains visible.*
+*A World 1-1 training run in FCEUX. The compact overlay shows the active genome, nearby input grid, network connections, selected action, and mini NES controller while Mario remains visible.*
 
 Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super Mario World; this project targets SMB1 in FCEUX.
 
