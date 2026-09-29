@@ -1,5 +1,5 @@
 -- Run this test from a temporary directory containing mario_ai_neat.lua.
-local bytes={[0x0770]=1,[0x000E]=8,[0x006D]=4,[0x0086]=99,
+local bytes={[0x0770]=1,[0x000E]=8,[0x006D]=0,[0x0086]=99,
   [0x03AD]=99,[0x03B8]=176,[0x0057]=0x20}
 local frames,slotSaves,slotLoads,startPresses=0,0,0,0
 for column=0,15 do bytes[0x0500+10*16+column]=0x54 end

@@ -4,10 +4,8 @@
 
 local AI = {}
 
--- Testing-only aid. Set this to false before a real, timed evaluation.
--- SMB1 stores each timer digit separately; keeping all three at 9 prevents a
--- training attempt from ending solely because the in-game clock expires.
-local TESTING_FREEZE_TIMER = true
+-- Let SMB1's clock count down normally. The optional 999 timer aid is off.
+local TESTING_FREEZE_TIMER = false
 -- Testing-only aid. This keeps the SMB1 life counter replenished. It does not
 -- revive Mario or skip the normal death and respawn sequence.
 local TESTING_INFINITE_LIVES = true
@@ -15,6 +13,9 @@ local TESTING_INFINITE_LIVES = true
 -- reload safely without the persist() call that crashes some FCEUX builds.
 local USE_FIXED_TRAINING_STATE = true
 local TRAINING_SAVESTATE_SLOT = 9
+-- Save a training start only near the beginning of a level. If the script is
+-- loaded mid-level, wait for a manual reset or Mario's normal respawn.
+local TRAINING_START_MAX_X = 128
 -- Set true after training to replay the strongest saved genome only.
 local PLAY_CHAMPION_ONLY = false
 -- Click the small HUD tab in the upper-right corner to show/hide the live
@@ -85,6 +86,7 @@ function AI.observe(frameNumber)
   for tileAddressOffset = 0, 415 do
     state.tiles[tileAddressOffset] = readByte(RAM.tiles + tileAddressOffset)
   end
+  state.grounded = AI.isGrounded(state)
   for enemySlot = 0, 4 do
     if readByte(RAM.enemy_present + enemySlot) ~= 0 then
       local enemyId = readByte(RAM.enemy_id + enemySlot)
@@ -158,6 +160,13 @@ local function isSolidTileAtOffset(state, horizontalOffset, verticalOffset)
   local tileIndex = (math.floor(columnIndex/16)%2)*208 + rowIndex*16 + columnIndex%16
   local tileId = state.tiles[tileIndex]
   return tileId ~= nil and tileId ~= 0 and not NON_SOLID_TILES[tileId]
+end
+
+-- Ground support is inferred from the feet and vertical speed. This gives the
+-- network a real landing signal without writing to SMB1 RAM.
+function AI.isGrounded(state)
+  return state.verticalVelocity==0 and
+    (isSolidTileAtOffset(state,-6,16) or isSolidTileAtOffset(state,6,16))
 end
 
 local function hasGapAhead(state)
@@ -1266,12 +1275,17 @@ function AI.run()
   local aiState=AI.new(loaded or AI.newPopulation())
   local logPath=getLogPath()
   local stateAdapter,stateProblem
-  if USE_FIXED_TRAINING_STATE then
+  -- Champion play must be able to finish the flagpole sequence and enter the
+  -- next level; only training restores a fixed start after each attempt.
+  if USE_FIXED_TRAINING_STATE and not PLAY_CHAMPION_ONLY then
     stateAdapter,stateProblem=AI.createStateAdapter(savestate,TRAINING_SAVESTATE_SLOT)
   end
   local fixedTraining=stateAdapter~=nil
   local stateSaved=false
   local waitingForRespawn=false
+  local waitingForLevelStart=false
+  local awaitingNextLevel=false
+  local flagpoleWorldX=nil
   if PLAY_CHAMPION_ONLY and loaded then
     aiState.championMode=true
     aiState.genomeIndex=AI.bestGenomeIndex(aiState.populationState)
@@ -1305,11 +1319,34 @@ function AI.run()
   while true do
     local state=AI.observe(aiState.frames+1)
     AI.keepLivesForTesting()
+    local nextLevelReady=awaitingNextLevel and state.phase=="playing"
+      and state.worldX<=TRAINING_START_MAX_X
+      and state.worldX<(flagpoleWorldX or state.worldX)-128
+    local restoredAfterVictory=false
+    if nextLevelReady then
+      awaitingNextLevel=false
+      flagpoleWorldX=nil
+      if not aiState.championMode then
+        restoreTrainingState("victory")
+        restoredAfterVictory=true
+      end
+    end
     if waitingForRespawn and state.phase=="playing" then
       waitingForRespawn=false
       AI.appendLog("Mario respawned; finding a new training start",logPath)
     end
-    if state.phase=="playing" and not aiState.episodeActive then
+    local needsLevelStart=state.phase=="playing" and not aiState.championMode
+      and not aiState.episodeActive and not stateSaved and not awaitingNextLevel
+      and state.worldX>TRAINING_START_MAX_X
+    if needsLevelStart and not waitingForLevelStart then
+      waitingForLevelStart=true
+      AI.appendLog(string.format("waiting for level start | x=%d | reset or start SMB1 manually",
+        state.worldX),logPath)
+    elseif not needsLevelStart then
+      waitingForLevelStart=false
+    end
+    if state.phase=="playing" and not aiState.episodeActive
+      and not needsLevelStart and not awaitingNextLevel and not restoredAfterVictory then
       if fixedTraining and not stateSaved then
         if stateAdapter:save() then
           stateSaved=true
@@ -1323,7 +1360,9 @@ function AI.run()
       AI.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
         aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,state.worldX,state.power),logPath)
     end
-    if state.phase=="playing" then
+    if needsLevelStart or awaitingNextLevel or restoredAfterVictory then
+      joypad.set(1,{})
+    elseif state.phase=="playing" then
       AI.freezeTimerForTesting()
       local action=AI.decide(aiState,state)
       local buttons={}
@@ -1350,11 +1389,18 @@ function AI.run()
       waitingForRespawn=true
       joypad.set(1,{})
     elseif (state.phase=="death" or state.phase=="victory") and aiState.episodeActive then
+      joypad.set(1,{})
       local fitness=AI.finishEpisode(aiState,state)
       AI.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",
         state.phase,fitness or 0,aiState.furthestWorldX or state.worldX,aiState.episodeFrames),logPath)
       if not aiState.championMode then savePopulation("episode "..state.phase) end
-      restoreTrainingState(state.phase)
+      if state.phase=="victory" then
+        awaitingNextLevel=true
+        flagpoleWorldX=state.worldX
+        AI.appendLog("flagpole touched; waiting for SMB1 level transition",logPath)
+      else
+        if not aiState.championMode then restoreTrainingState(state.phase) end
+      end
     else
       local action=AI.decide(aiState,state)
       joypad.set(1,{})

@@ -2,7 +2,7 @@
 
 ## Training loop
 
-The Lua AI runs one genome at a time. Start SMB1 manually, then the AI saves the first active frame to FCEUX predefined slot 9. After a genome dies, reaches the flag, or stops making progress, the AI scores it, restores slot 9, and tests the next genome from the same point. Once all genomes have played, it forms the next generation and repeats. During death, title, and transition screens it releases every controller button; it never presses Start.
+The Lua AI runs one genome at a time. Start SMB1 manually near the beginning of a level, then the AI saves that active frame to FCEUX predefined slot 9. If loaded mid-level, it waits for a manual reset or normal respawn near the level start. After a genome dies or stops making progress, the AI scores it, restores slot 9, and tests the next genome. After flagpole contact, it scores the victory, releases the controller, lets SMB1 finish its timed level transition, and then restores slot 9 for the next genome. Once all genomes have played, it forms the next generation and repeats. During death, title, and transition screens it releases every controller button; it never presses Start.
 
 The AI uses a predefined slot because FCEUX keeps predefined states across loads. It selects the documented `savestate.object(slot)` API and falls back to the older `savestate.create(slot)` API when needed. It never calls `savestate.persist()`, which crashed in the Homebrew Apple Silicon FCEUX build. If neither API is available, training continues without resets and the log records the fallback. Episodes end after death, victory, 600 frames without new forward progress, or a 12,000-frame cap.
 
@@ -38,7 +38,7 @@ The database does not contain the ROM or a savestate. `mario_ai_neat.log` record
 
 ## Champion play
 
-Set `PLAY_CHAMPION_ONLY` to `true` after a trained database exists. The AI selects the highest-fitness genome, restores the fixed slot after each result, and does not modify the population. This mode is for observing a mature controller; set the option back to `false` to train again.
+Set `PLAY_CHAMPION_ONLY` to `true` after a trained database exists. The AI selects the highest-fitness genome, does not restore a training slot, and does not evolve the population. It releases the controller after flagpole contact and resumes play when SMB1 loads the next level. Set the option back to `false` to train again.
 
 To resume training, keep `mario_ai_neat.db` beside `mario_ai_neat.lua`, leave `PLAY_CHAMPION_ONLY` set to `false`, and reload the script in FCEUX. The loader restores the generation, all genomes, fitness values, mutation rates, weighted connections, and innovation IDs. To reset learning, stop FCEUX and delete the database before loading the script. The tracked starter database has valid NEAT data but has not played a real ROM session.
 

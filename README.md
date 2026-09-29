@@ -31,14 +31,16 @@ See [seven complete network diagrams from the included database](docs/best-netwo
 
 1. Open a compatible **Super Mario Bros. 1 NES ROM** in FCEUX. The ROM is not included.
 2. Keep `mario_ai_neat.lua` and `mario_ai_neat.db` together in one folder.
-3. Load `mario_ai_neat.lua` from FCEUX's Lua script menu. The script finds and loads the adjacent database automatically.
-4. Start the game manually. The AI will evaluate genomes and save progress as it trains.
+3. Start the level manually, then load `mario_ai_neat.lua` from FCEUX's Lua script menu while Mario is near the beginning. The script finds and loads the adjacent database automatically.
+4. The AI will evaluate genomes and save progress as it trains. If loaded mid-level, it waits for a manual reset or Mario's normal respawn near the level start.
 
 The `.db` file is a learning checkpoint, not a script. Do not load it through the Lua menu. To resume later, load the Lua script again with the same database beside it. Leave `PLAY_CHAMPION_ONLY = false` to continue training.
 
 ### Training loop
 
 Each genome plays from the same saved starting point. After all genomes have played, the AI uses their results to build the next generation.
+
+Training captures FCEUX slot 9 only while Mario is within the first 128 pixels of a level. To replace an old mid-level training start, stop the Lua script, reset SMB1 to the level beginning, start the game manually, and load the script again. Keep the same `.db` file to retain the learned population; the database does not contain the savestate.
 
 ```mermaid
 flowchart LR
@@ -67,7 +69,7 @@ Stop the script and move `mario_ai_neat.db` to a backup location. The next launc
 
 ### Play the best saved genome
 
-Set `PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_neat.lua`, then load the script. It plays the highest-fitness saved genome without evolving the population. Set it to `false` and reload to resume training.
+Set `PLAY_CHAMPION_ONLY = true` near the top of `mario_ai_neat.lua`, then load the script. It plays the highest-fitness saved genome without evolving the population or restoring slot 9. After touching the flagpole, it releases the controller while SMB1 finishes its normal level transition, then continues in the next level. Set it to `false` and reload to resume training.
 
 ## What you'll see and what to expect
 
@@ -163,7 +165,7 @@ This is a specialized NEAT-style implementation, not a byte-for-byte implementat
 - The Lua script uses FCEUX's embedded Lua runtime and FCEUX APIs. This project currently targets **FCEUX only**.
 - Training uses savestate slot 9 as a shared starting point. Reserve that slot for Mario AI.
 - The script supports `savestate.object()` and the older `savestate.create()` API. It does not call `savestate.persist()`.
-- Testing aids currently set the in-game timer to `999` and refresh lives to `9`. Disable `TESTING_FREEZE_TIMER` and `TESTING_INFINITE_LIVES` in the Lua file for evaluation without those aids.
+- The in-game timer counts down normally. The optional `TESTING_FREEZE_TIMER` aid is off by default. The remaining testing aid refreshes lives to `9`; set `TESTING_INFINITE_LIVES = false` for normal lives.
 - The AI never starts a game after death. Start the game manually in FCEUX.
 
 ### Technology stack

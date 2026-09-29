@@ -6,7 +6,7 @@ No full-game result is claimed until training and validation run against a real 
 
 Start the AI at the beginning of World 1-1. Let it evaluate full generations. Keep the generated `mario_ai_neat.db` so later sessions continue evolving the population. Record the FCEUX version, ROM label/hash locally, AI commit, generation, best fitness, best world position, completion count, and database backup. Do not publish ROM bytes or ROM-derived savestates.
 
-The training loop restores FCEUX slot 9 after every training episode, so genomes in a generation see the same training state. This is a training benchmark, not an independent clean-start completion trial. Use Champion Play with a manual clean title-screen start for validation.
+The training loop restores FCEUX slot 9 after death, a stalled attempt, or the level transition following flagpole contact, so genomes in a generation see the same training state. This is a training benchmark, not an independent clean-start completion trial. Use Champion Play with a manual clean title-screen start for validation.
 
 ## Validation
 

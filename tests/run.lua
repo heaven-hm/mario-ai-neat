@@ -30,6 +30,9 @@ input_state.enemies={{slot=0,id=6,name="goomba",status=0,worldX=input_state.worl
 local inputs=AI.buildObservationInputs(input_state)
 test("nearby enemy is encoded as a negative local sensor",inputs[AI.sensorIndex(16,0)]==-1)
 test("sensor input has fixed grid and player feature dimensions",#inputs==AI.inputCount()-1)
+test("ground support is detected under Mario's feet",AI.isGrounded(state())==true)
+local airborne=state();airborne.verticalVelocity=-2
+test("airborne Mario is not marked as grounded",AI.isGrounded(airborne)==false)
 
 -- The learned policy may choose among safe responses, but the safety shield
 -- removes forward-only actions when an unpowered Mario is about to hit an enemy.
@@ -130,8 +133,8 @@ test("runtime log includes its event text",log_text:find("test event",1,true)~=n
 
 local timer_writes={}
 memory={writebyte=function(address,value) timer_writes[address]=value end}
-test("testing timer writes all SMB1 timer digits",AI.freezeTimerForTesting()==true)
-test("testing timer is refreshed to 999",timer_writes[0x07F8]==9 and timer_writes[0x07F9]==9 and timer_writes[0x07FA]==9)
+test("normal timer is enabled",AI.freezeTimerForTesting()==false)
+test("timer digits are left to SMB1",timer_writes[0x07F8]==nil and timer_writes[0x07F9]==nil and timer_writes[0x07FA]==nil)
 test("testing lives counter is refreshed",AI.keepLivesForTesting()==true and timer_writes[0x075A]==9)
 memory=nil
 
