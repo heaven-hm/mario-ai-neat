@@ -53,7 +53,10 @@ def learner_main(inbox: Queue, outbox: Queue, run_directory: str, config_dict: d
                 state_array = np.asarray(states, dtype=np.float32)
                 values, hidden = agent.inspect(state_array)
                 actions = agent.select_actions(state_array, explore=bool(explore))
-                outbox.put(("act", request_id, actions, values, hidden))
+                outbox.put(("act", request_id, actions, values, hidden, {
+                    "steps": agent.steps, "optimizer_updates": agent.optimizer_steps,
+                    "replay_transitions": len(replay), "epsilon": 0.0, "latest_loss": last_loss,
+                }))
             elif kind == "status":
                 outbox.put(("status", {"steps": agent.steps, "optimizer_updates": agent.optimizer_steps,
                                         "replay_transitions": len(replay), "epsilon": 0.0,

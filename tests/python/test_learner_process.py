@@ -28,11 +28,12 @@ class LearnerProcessTests(unittest.TestCase):
             try:
                 states = np.zeros((2, 4), dtype=np.float32)
                 inbox.put(("act", 1, states, False))
-                kind, request_id, actions, values, hidden = outbox.get(timeout=20)
+                kind, request_id, actions, values, hidden, status = outbox.get(timeout=20)
                 self.assertEqual((kind, request_id), ("act", 1))
                 self.assertEqual(actions.shape, (2,))
                 self.assertEqual(values.shape, (2, 2))
                 self.assertEqual(hidden.shape, (2, 16))
+                self.assertEqual(status["steps"], 0)
                 inbox.put(("transition", "worker", states[0], 0, 1.0, states[0], False))
                 inbox.put(("transition", "worker", states[1], 1, -1.0, states[1], True))
                 inbox.put(("save",))

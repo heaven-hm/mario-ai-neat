@@ -301,7 +301,7 @@ def main() -> None:
                 states = np.stack([observation.state for _, observation in actionable])
                 request_id += 1
                 learner_inbox.put(("act", request_id, states, True))
-                kind, response_id, actions, action_matrix, encoder_matrix = learner_outbox.get(timeout=10)
+                kind, response_id, actions, action_matrix, encoder_matrix, learner_status = learner_outbox.get(timeout=10)
                 if kind != "act" or response_id != request_id:
                     raise RuntimeError("learner action response did not match collector request")
             else:
