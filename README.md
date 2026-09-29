@@ -31,8 +31,8 @@ See [seven complete network diagrams from the included database](docs/best-netwo
 
 1. Open a compatible **Super Mario Bros. 1 NES ROM** in FCEUX. The ROM is not included.
 2. Keep `mario_ai_neat.lua` and `mario_ai_neat.db` together in one folder.
-3. Start the level manually, then load `mario_ai_neat.lua` from FCEUX's Lua script menu while Mario is near the beginning. The script finds and loads the adjacent database automatically.
-4. The AI will evaluate genomes and save progress as it trains. If loaded mid-level, it waits for a manual reset or Mario's normal respawn near the level start.
+3. Start the level manually, then load `mario_ai_neat.lua` from FCEUX's Lua script menu. The script finds and loads the adjacent database automatically.
+4. The AI starts playing immediately from Mario's current position, evaluates genomes, and saves progress as it trains.
 
 The `.db` file is a learning checkpoint, not a script. Do not load it through the Lua menu. To resume later, load the Lua script again with the same database beside it. Leave `PLAY_CHAMPION_ONLY = false` to continue training.
 
@@ -40,7 +40,7 @@ The `.db` file is a learning checkpoint, not a script. Do not load it through th
 
 Each genome plays from the same saved starting point. After all genomes have played, the AI uses their results to build the next generation.
 
-Training captures FCEUX slot 9 only while Mario is within the first 128 pixels of a level. To replace an old mid-level training start, stop the Lua script, reset SMB1 to the level beginning, start the game manually, and load the script again. Keep the same `.db` file to retain the learned population; the database does not contain the savestate.
+Training captures FCEUX slot 9 at Mario's position when the script starts. For a full-level training start, stop the Lua script, reset SMB1 to the level beginning, start the game manually, and load the script again. Keep the same `.db` file to retain the learned population; the database does not contain the savestate.
 
 ```mermaid
 flowchart LR

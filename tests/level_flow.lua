@@ -22,7 +22,7 @@ joypad={set=function(_,buttons)
 end}
 savestate={
   object=function(slot) assert(slot==9);return {slot=slot} end,
-  save=function(handle) assert(handle.slot==9);slotSaves=slotSaves+1;assert(frame>=3) end,
+  save=function(handle) assert(handle.slot==9);slotSaves=slotSaves+1;assert(frame==0) end,
   load=function(handle)
     assert(handle.slot==9);slotLoads=slotLoads+1;assert(frame>=9)
     bytes[0x006D],bytes[0x0086]=0,40
@@ -45,16 +45,13 @@ end}
 
 local ok,errorMessage=pcall(dofile,"mario_ai_neat.lua")
 assert(not ok and tostring(errorMessage):find("level flow stop",1,true),tostring(errorMessage))
-for waitingFrame=0,2 do
-  assert(buttonsByFrame[waitingFrame] and next(buttonsByFrame[waitingFrame])==nil,
-    "mid-level launch must wait without moving Mario")
-end
-assert(slotSaves==1,"level start is captured once after Mario reaches the beginning")
+assert(buttonsByFrame[0],"mid-level launch must begin playing immediately")
+assert(slotSaves==1,"the current training position is captured immediately")
 assert(slotLoads==1,"training restores only after the level transition")
 assert(timerWrites==0,"normal SMB1 timer must not be overwritten")
 assert(startPresses==0,"the AI never presses Start")
 local log=assert(io.open("mario_ai_neat.log","r")):read("*a")
-assert(log:find("waiting for level start",1,true),"mid-level wait is logged")
+assert(log:find("episode start",1,true),"an episode starts immediately")
 assert(log:find("reason=victory",1,true),"flagpole contact is scored")
 assert(log:find("flagpole touched; waiting for SMB1 level transition",1,true),
   "the flagpole sequence is allowed to complete")

@@ -15,7 +15,7 @@ local USE_FIXED_TRAINING_STATE = true
 local TRAINING_SAVESTATE_SLOT = 9
 -- Save a training start only near the beginning of a level. If the script is
 -- loaded mid-level, wait for a manual reset or Mario's normal respawn.
-local TRAINING_START_MAX_X = 128
+local LEVEL_START_MAX_X = 128
 -- Set true after training to replay the strongest saved genome only.
 local PLAY_CHAMPION_ONLY = false
 -- Click the small HUD tab in the upper-right corner to show/hide the live
@@ -1283,7 +1283,6 @@ function AI.run()
   local fixedTraining=stateAdapter~=nil
   local stateSaved=false
   local waitingForRespawn=false
-  local waitingForLevelStart=false
   local awaitingNextLevel=false
   local flagpoleWorldX=nil
   if PLAY_CHAMPION_ONLY and loaded then
@@ -1320,7 +1319,7 @@ function AI.run()
     local state=AI.observe(aiState.frames+1)
     AI.keepLivesForTesting()
     local nextLevelReady=awaitingNextLevel and state.phase=="playing"
-      and state.worldX<=TRAINING_START_MAX_X
+      and state.worldX<=LEVEL_START_MAX_X
       and state.worldX<(flagpoleWorldX or state.worldX)-128
     local restoredAfterVictory=false
     if nextLevelReady then
@@ -1335,18 +1334,8 @@ function AI.run()
       waitingForRespawn=false
       AI.appendLog("Mario respawned; finding a new training start",logPath)
     end
-    local needsLevelStart=state.phase=="playing" and not aiState.championMode
-      and not aiState.episodeActive and not stateSaved and not awaitingNextLevel
-      and state.worldX>TRAINING_START_MAX_X
-    if needsLevelStart and not waitingForLevelStart then
-      waitingForLevelStart=true
-      AI.appendLog(string.format("waiting for level start | x=%d | reset or start SMB1 manually",
-        state.worldX),logPath)
-    elseif not needsLevelStart then
-      waitingForLevelStart=false
-    end
     if state.phase=="playing" and not aiState.episodeActive
-      and not needsLevelStart and not awaitingNextLevel and not restoredAfterVictory then
+      and not awaitingNextLevel and not restoredAfterVictory then
       if fixedTraining and not stateSaved then
         if stateAdapter:save() then
           stateSaved=true
@@ -1360,7 +1349,7 @@ function AI.run()
       AI.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
         aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,state.worldX,state.power),logPath)
     end
-    if needsLevelStart or awaitingNextLevel or restoredAfterVictory then
+    if awaitingNextLevel or restoredAfterVictory then
       joypad.set(1,{})
     elseif state.phase=="playing" then
       AI.freezeTimerForTesting()
