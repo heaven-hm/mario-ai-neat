@@ -1,4 +1,4 @@
-"""Greedy, no-learning FCEUX evaluation for a saved Rainbow checkpoint."""
+"""Greedy, no-learning FCEUX evaluation for Rainbow, DDQN, or PPO."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from .agent import AgentConfig, RainbowAgent
+from .baselines import load_baseline_policy
 from .environment import START_PROTOCOL, FileWorker, launch_fceux_workers
 from .replay import PrioritizedReplayBuffer
 
@@ -32,7 +33,7 @@ def write_episode_csv(path: Path, episodes: list[dict[str, object]]) -> None:
 
 
 def arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a Rainbow checkpoint without exploration or learning.")
+    parser = argparse.ArgumentParser(description="Evaluate a saved SMB1 policy without exploration or learning.")
     parser.add_argument("--rom", type=Path, required=True)
     parser.add_argument("--fceux", default="fceux")
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -56,10 +57,15 @@ def main() -> None:
     if not checkpoint.exists():
         raise FileNotFoundError(f"checkpoint not found: {checkpoint}")
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    configuration = AgentConfig(**payload["config"])
-    agent = RainbowAgent(PrioritizedReplayBuffer(configuration.observation_size, capacity=1, seed=configuration.seed),
-                         configuration, options.device)
-    agent.load(checkpoint, validate_replay=False, restore_rng=False)
+    algorithm = str(payload.get("algorithm", ""))
+    if algorithm.startswith("Rainbow") or algorithm.startswith("Ape-X Rainbow"):
+        configuration = AgentConfig(**payload["config"])
+        agent = RainbowAgent(
+            PrioritizedReplayBuffer(configuration.observation_size, capacity=1, seed=configuration.seed),
+            configuration, options.device)
+        agent.load(checkpoint, validate_replay=False, restore_rng=False)
+    else:
+        algorithm, agent = load_baseline_policy(checkpoint, options.device)
     repository_root = Path(__file__).resolve().parents[2]
     evaluation_directory = options.run_dir / "evaluations" / time.strftime("%Y%m%d-%H%M%S")
     evaluation_directory.mkdir(parents=True)
@@ -106,7 +112,13 @@ def main() -> None:
     rom_digest = hashlib.sha256(options.rom.read_bytes()).hexdigest()
     fceux_path = Path(shutil.which(options.fceux) or options.fceux).resolve()
     fceux_digest = hashlib.sha256(fceux_path.read_bytes()).hexdigest()
-    report = {"algorithm": payload.get("algorithm"), "checkpoint": str(checkpoint), "world": options.world,
+    try:
+        run_metadata = json.loads((options.run_dir / "run.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        run_metadata = {}
+    report = {"algorithm": algorithm, "checkpoint": str(checkpoint), "world": options.world, "level": 1,
+              "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+              "source_revision": run_metadata.get("source_revision"),
               "evaluation_mode": "greedy_no_learning",
               "evaluation_seed": options.evaluation_seed,
               "rom_sha256": rom_digest, "fceux_executable": str(fceux_path),

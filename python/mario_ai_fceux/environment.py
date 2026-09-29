@@ -15,7 +15,7 @@ from .protocol import atomic_write_json, read_json
 
 
 ACTION_NAMES = ("run", "jump_run", "retreat", "brake", "jump_place", "walk")
-START_PROTOCOL = "SMB1 title-screen world selection + FCEUX savestate slot 10"
+START_PROTOCOL = "SMB1 clean selected-world start with course-start retries"
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,11 @@ class FileWorker:
 
     def reset(self, observation: Observation) -> None:
         atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3, "reset": True})
+
+    def hold(self, observation: Observation) -> None:
+        """Keep an episode-boundary PPO actor on its saved start state."""
+        atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3,
+                                              "reset": False, "hold": True})
 
 
 def prepare_worker_directory(template: Path, worker_directory: Path, target_world: int) -> Path:

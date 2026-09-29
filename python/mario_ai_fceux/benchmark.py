@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 
 
-REQUIRED_CONDITIONS = ("rom_sha256", "fceux_sha256", "world", "action_repeat_frames",
+REQUIRED_CONDITIONS = ("rom_sha256", "fceux_sha256", "world", "level", "action_repeat_frames",
                        "start_protocol", "episodes_requested", "evaluation_mode",
                        "evaluation_seed")
 

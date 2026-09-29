@@ -17,6 +17,7 @@ class BenchmarkValidationTests(unittest.TestCase):
             "rom_sha256": "rom",
             "fceux_sha256": "fceux",
             "world": 1,
+            "level": 1,
             "action_repeat_frames": 12,
             "start_protocol": "clean-start-v1",
             "evaluation_mode": "greedy_no_learning",
@@ -35,6 +36,11 @@ class BenchmarkValidationTests(unittest.TestCase):
 
     def test_rejects_different_worlds(self) -> None:
         other = {**self.report, "world": 2}
+        with self.assertRaisesRegex(ValueError, "conditions differ"):
+            validate_reports([("NEAT", self.report), ("Rainbow", other)])
+
+    def test_rejects_different_levels(self) -> None:
+        other = {**self.report, "level": 2}
         with self.assertRaisesRegex(ValueError, "conditions differ"):
             validate_reports([("NEAT", self.report), ("Rainbow", other)])
 

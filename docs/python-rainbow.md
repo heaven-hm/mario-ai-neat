@@ -187,11 +187,45 @@ PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.benchmark \
   --output benchmark.md
 ```
 
-The evaluator in this branch currently loads Rainbow checkpoints only. The
-benchmark command validates and formats reports; it does not train or run the
-Lua NEAT, basic DDQN, or PPO policies for you. Those policy-specific evaluators
-and trained checkpoints are still needed before a real four-way comparison can
-be claimed.
+The evaluator accepts Rainbow, basic DDQN, and PPO checkpoints. Train either
+baseline through the same FCEUX bridge and six-action, 12-frame control
+contract, then evaluate its `model.pt` with the same command:
+
+```bash
+PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.baseline_train \
+  --algorithm ddqn --rom SuperMarioBros.nes --fceux fceux \
+  --workers 1 --worlds 1 --steps 100000 --run-dir runs/ddqn
+PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.evaluate \
+  --rom SuperMarioBros.nes --fceux fceux --run-dir runs/ddqn \
+  --world 1 --episodes 10 --evaluation-seed 2026
+```
+
+Replace `ddqn` with `ppo` for PPO. DDQN is Double DQN with a uniform bounded
+RAM replay deque and target network; it deliberately has no C51, NoisyNet,
+dueling head, or prioritized replay. PPO is clipped categorical policy
+optimization with worker-local GAE rollouts. Its updates wait until all workers
+finish an episode, then hold each emulator at the exact clean start while the
+policy updates. Use one worker for controlled policy comparisons; use the same
+worker count and transition budget when comparing training throughput.
+
+To benchmark the Lua NEAT Champion, reload `mario_ai_neat.lua` with
+`PLAY_CHAMPION_ONLY = true`. Champion now saves the first valid selected-world
+course start and restores it after each terminal episode. It uses the same
+12-frame action interval and logs world, level, decision count, and duration.
+After at least ten completed attempts, convert the latest Champion run:
+
+```bash
+PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.import_lua_evaluation \
+  --log mario_ai_neat.log --database mario_ai_neat.db \
+  --rom SuperMarioBros.nes --fceux fceux --world 1 --level 1 \
+  --episodes 10 --evaluation-seed 2026 --output runs/lua-neat/results.json
+```
+
+The importer rejects logs without a Champion session or ten matching complete
+episodes. Generate the final table only when every result has the same ROM,
+FCEUX binary, world/level, clean-start protocol, action repeat, seed, and episode
+count. Training, evaluation, and benchmarking remain distinct; no performance
+claim is made until these measured reports exist.
 
 The periodic Ape-X evaluator also writes benchmark-ready JSON and episode CSV
 files under `runs/full-rainbow/evaluations/eval-XXXXXX/`. Its JSON records the

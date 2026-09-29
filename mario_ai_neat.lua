@@ -31,6 +31,7 @@ local RAM = {
   player_screen_x=0x03AD, death_music=0x0712,
   flag_event=0x010E, flag_y=0x070F, tiles=0x0500,
   player_size=0x0754, power=0x0756, operation_mode=0x0770,
+  world_number=0x075F, level_number=0x075C,
   timer_hundreds=0x07F8, timer_tens=0x07F9, timer_ones=0x07FA,
   lives=0x075A,
 }
@@ -65,6 +66,7 @@ function AI.observe(frameNumber)
     screenX=readByte(RAM.player_screen_x),
     horizontalVelocity=toSignedByte(readByte(RAM.player_vx))/16,
     verticalVelocity=toSignedByte(readByte(RAM.player_vy)),playerState=playerState,
+    worldNumber=readByte(RAM.world_number),levelNumber=readByte(RAM.level_number),
     size=readByte(RAM.player_size),power=readByte(RAM.power),operationMode=operationMode,
     enemies={},items={},tiles={},phase="playing"}
 
@@ -1575,7 +1577,7 @@ function AI.new(populationState)
   populationState=populationState or AI.newPopulation()
   populationState.experienceMemory=populationState.experienceMemory or {}
   return {populationState=populationState,
-    genomeIndex=populationState.nextGenomeIndex or 1,episodeFrames=0,
+    genomeIndex=populationState.nextGenomeIndex or 1,episodeFrames=0,episodeDecisions=0,episodeStartTime=0,
     startWorldX=nil,furthestWorldX=nil,lastProgressFrame=0,episodeReward=0,totalEpisodes=0,
     lastAction=nil,frames=0,finished=false,episodeActive=false,championMode=false,
     recentGlobalInputs={},previousEpisodeState=nil,activeChallenge=nil,pendingExperience=nil,
@@ -1714,6 +1716,8 @@ end
 
 function AI.beginEpisode(aiState,state)
   aiState.episodeFrames=0;aiState.episodeReward=0;aiState.startWorldX=state.worldX;aiState.furthestWorldX=state.worldX
+  aiState.episodeDecisions=0
+  aiState.episodeStartTime=os and os.time and os.time() or 0
   aiState.lastProgressFrame=0;aiState.finished=false
   aiState.episodeActive=true
   aiState.bestForm=state.power==2 and 2 or (state.size==1 and 0 or 1)
@@ -1850,7 +1854,8 @@ function AI.decide(aiState,state)
   local immediateHazard=(urgentEnemy and urgentEnemy.worldX-state.worldX<56)
     or hasGapAhead(state)>0
   local cachedAction=aiState.cachedAction
-  if cachedAction and aiState.actionFramesRemaining>0 and not immediateHazard then
+  if cachedAction and aiState.actionFramesRemaining>0
+    and (not immediateHazard or aiState.championMode) then
     aiState.actionFramesRemaining=aiState.actionFramesRemaining-1
     aiState.lastState=state
     aiState.lastObservationInputs=observationInputs
@@ -1867,6 +1872,7 @@ function AI.decide(aiState,state)
     chooseAction(genome,state,memoryInputs,
       not aiState.championMode and aiState.populationState.experienceMemory or nil)
   action.name=ACTION_OPTIONS[actionIndex].name
+  aiState.episodeDecisions=(aiState.episodeDecisions or 0)+1
   action.reason=enemy and ("learned "..action.name.." | threat "..enemy.name)
     or ("learned "..action.name)
   aiState.lastAction=actionIndex
@@ -1874,7 +1880,9 @@ function AI.decide(aiState,state)
   aiState.lastNodeValues=nodeValues
   aiState.lastObservationInputs=observationInputs
   aiState.lastTemporalInputs=memoryInputs
-  aiState.actionFramesRemaining=holdFrames-1
+  -- Champion evaluation uses the Python bridge's fixed 12-frame action step;
+  -- training continues to evolve its own action horizon.
+  aiState.actionFramesRemaining=aiState.championMode and 11 or holdFrames-1
   aiState.cachedAction=action
   aiState.lastHoldFrames=holdFrames
   if not aiState.championMode then
@@ -2257,7 +2265,7 @@ function AI.run()
   local stateAdapter,stateProblem
   -- Champion play must be able to finish the flagpole sequence and enter the
   -- next level; only training restores a fixed start after each attempt.
-  if USE_FIXED_TRAINING_STATE and not PLAY_CHAMPION_ONLY then
+  if USE_FIXED_TRAINING_STATE then
     stateAdapter,stateProblem=AI.createStateAdapter(savestate,TRAINING_SAVESTATE_SLOT)
   end
   local fixedTraining=stateAdapter~=nil
@@ -2298,6 +2306,8 @@ function AI.run()
     if not fixedTraining then return end
     joypad.set(1,{})
     if stateAdapter:load() then
+      AI.keepLivesForTesting()
+      AI.setTimerTo999()
       AI.appendLog("restored training slot "..TRAINING_SAVESTATE_SLOT.." after "..reason,logPath)
     else
       fixedTraining=false
@@ -2328,11 +2338,11 @@ function AI.run()
     local waitingForLevelStart=false
     if state.phase=="playing" and not aiState.episodeActive
       and not awaitingNextLevel and not restoredAfterVictory then
-      if not aiState.championMode and not AI.isValidTrainingStart(state) then
+      if state.worldX>LEVEL_START_MAX_X or (not aiState.championMode and not AI.isValidTrainingStart(state)) then
         waitingForLevelStart=true
         if not waitingForLevelStartLogged then
           waitingForLevelStartLogged=true
-          AI.appendLog(string.format("waiting for level start | current_x=%d | reset SMB1 to World 1-1 and restart the Lua script",
+          AI.appendLog(string.format("waiting for level start | current_x=%d | reset SMB1 to the selected world's start and restart the Lua script",
             state.worldX),logPath)
         end
       else
@@ -2348,8 +2358,9 @@ function AI.run()
         end
         AI.beginEpisode(aiState,state)
         AI.setTimerTo999()
-        AI.appendLog(string.format("episode start | generation=%d | genome=%d/%d | x=%d | power=%d",
-          aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,state.worldX,state.power),logPath)
+        AI.appendLog(string.format("episode start | generation=%d | genome=%d/%d | world=%d | level=%d | x=%d | power=%d | action_repeat=12",
+          aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,
+          (state.worldNumber or 0)+1,(state.levelNumber or 0)+1,state.worldX,state.power),logPath)
       end
     end
     if waitingForLevelStart then
@@ -2368,10 +2379,11 @@ function AI.run()
       local reason=AI.episodeStopReason(aiState,state)
       if reason then
         local fitness=AI.finishEpisode(aiState,state,reason)
-        AI.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",
-          reason,fitness or 0,aiState.furthestWorldX or state.worldX,aiState.episodeFrames),logPath)
+        AI.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d | decisions=%d | elapsed_seconds=%d",
+          reason,fitness or 0,aiState.furthestWorldX or state.worldX,aiState.episodeFrames,
+          aiState.episodeDecisions or 0,os and os.difftime and os.difftime(os.time(),aiState.episodeStartTime or os.time()) or 0),logPath)
         if not aiState.championMode then savePopulation("episode "..reason) end
-        restoreTrainingState(reason)
+        if fixedTraining then restoreTrainingState(reason) end
       end
     elseif state.phase=="death" and fixedTraining and stateSaved
       and AI.isUnsafeTrainingStart(aiState,state) then
@@ -2384,15 +2396,21 @@ function AI.run()
     elseif (state.phase=="death" or state.phase=="victory") and aiState.episodeActive then
       joypad.set(1,{})
       local fitness=AI.finishEpisode(aiState,state)
-      AI.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",
-        state.phase,fitness or 0,aiState.furthestWorldX or state.worldX,aiState.episodeFrames),logPath)
+      AI.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d | decisions=%d | elapsed_seconds=%d",
+        state.phase,fitness or 0,aiState.furthestWorldX or state.worldX,aiState.episodeFrames,
+        aiState.episodeDecisions or 0,os and os.difftime and os.difftime(os.time(),aiState.episodeStartTime or os.time()) or 0),logPath)
       if not aiState.championMode then savePopulation("episode "..state.phase) end
       if state.phase=="victory" then
-        awaitingNextLevel=true
-        flagpoleWorldX=state.worldX
-        AI.appendLog("flagpole touched; waiting for SMB1 level transition",logPath)
+        if aiState.championMode and fixedTraining then
+          restoreTrainingState("victory")
+          AI.appendLog("champion evaluation restored clean level start after victory",logPath)
+        else
+          awaitingNextLevel=true
+          flagpoleWorldX=state.worldX
+          AI.appendLog("flagpole touched; waiting for SMB1 level transition",logPath)
+        end
       else
-        if not aiState.championMode then restoreTrainingState(state.phase) end
+        if fixedTraining then restoreTrainingState(state.phase) end
       end
     else
       local action=AI.decide(aiState,state)

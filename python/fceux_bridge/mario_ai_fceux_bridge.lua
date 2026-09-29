@@ -72,7 +72,7 @@ local function readCommand(sequence)
   if commandSequence~=sequence then return nil end
   local action=tonumber(text:match('"action"%s*:%s*(%d+)'))
   if not action or action<0 or action>=#ACTIONS then return nil end
-  return action,text:match('"reset"%s*:%s*true')~=nil
+  return action,text:match('"reset"%s*:%s*true')~=nil,text:match('"hold"%s*:%s*true')~=nil
 end
 
 local function phase()
@@ -337,15 +337,21 @@ while true do
     sequence=sequence+1
     local terminal=snapshot.phase=="death" or snapshot.phase=="victory"
     publish(sequence,snapshot,terminal)
-    local action,reset=nil,false
+    local action,reset,hold=nil,false,false
     for _=1,RESPONSE_TIMEOUT_FRAMES do
-      action,reset=readCommand(sequence)
+      action,reset,hold=readCommand(sequence)
       if action~=nil then break end
       joypad.set(1,{})
       drawPythonHud()
       emu.frameadvance()
     end
     if reset and stateHandle then
+      joypad.set(1,{})
+      savestate.load(stateHandle)
+      applyTestingAids()
+      drawPythonHud()
+      emu.frameadvance()
+    elseif hold and stateHandle then
       joypad.set(1,{})
       savestate.load(stateHandle)
       applyTestingAids()
