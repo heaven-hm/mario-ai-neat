@@ -1024,6 +1024,40 @@ local function makeHudNodePositions(genome)
   return positions,#hiddenNodes
 end
 
+-- A tiny NES-style controller mirrors the exact buttons sent to joypad.set.
+local function drawMiniController(guiApi,buttons)
+  buttons=buttons or {}
+  hudBox(guiApi,4,110,70,130,0xFFD1CEC5,0xFF20262D)
+
+  -- The four ends of the cross light up independently.
+  local idleDirection,activeDirection=0xFF252A30,0xFF3ED484
+  hudBox(guiApi,13,114,18,127,idleDirection,idleDirection)
+  hudBox(guiApi,8,118,23,124,idleDirection,idleDirection)
+  local directions={
+    {name="up",left=13,top=114,right=18,bottom=117},
+    {name="down",left=13,top=125,right=18,bottom=127},
+    {name="left",left=8,top=118,right=12,bottom=124},
+    {name="right",left=19,top=118,right=23,bottom=124},
+  }
+  for _,direction in ipairs(directions) do
+    if buttons[direction.name] then
+      hudBox(guiApi,direction.left,direction.top,direction.right,direction.bottom,
+        activeDirection,activeDirection)
+    end
+  end
+
+  -- Select and Start are shown for the controller shape; training never
+  -- presses Start automatically after Mario dies.
+  hudBox(guiApi,29,120,34,123,buttons.select and activeDirection or idleDirection,idleDirection)
+  hudBox(guiApi,37,120,42,123,buttons.start and activeDirection or idleDirection,idleDirection)
+  for _,button in ipairs({{name="B",left=47},{name="A",left=60}}) do
+    local pressed=buttons[button.name]
+    hudBox(guiApi,button.left,116,button.left+8,126,
+      pressed and 0xFFFF5A55 or 0xFF9B4445,pressed and 0xFFFFDF70 or 0xFF5A292E)
+    hudText(guiApi,button.left+1,117,button.name,pressed and "black" or "white","black")
+  end
+end
+
 -- Draw a compact live inspector in the upper-left, leaving the game view clear.
 function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
   if not guiApi or not (guiApi.text or guiApi.drawtext) then return false end
@@ -1038,7 +1072,6 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
   -- 256x240 game picture stays visible, including Mario near ground level.
   hudBox(guiApi,0,10,135,38,0xB0000000,0xB0000000)
   hudBox(guiApi,0,40,135,106,0x90000000,0x90000000)
-  hudBox(guiApi,0,108,135,125,0xB0000000,0xB0000000)
   hudText(guiApi,2,12,"MARIO AI  NEAT","cyan","black")
   hudText(guiApi,2,20,string.format("G%d #%d/%d S%d",
     aiState.populationState.generation,aiState.genomeIndex,#aiState.populationState.genomes,
@@ -1100,15 +1133,7 @@ function AI.drawNeuralInspector(guiApi,aiState,state,action,buttons)
       selected and "yellow" or "white","black")
   end
 
-  local buttonNames={"R","L","A","B","U","D"}
-  local buttonKeys={"right","left","A","B","up","down"}
-  hudText(guiApi,2,113,"PAD","white","black")
-  for buttonIndex,buttonName in ipairs(buttonNames) do
-    local x=25+(buttonIndex-1)*17
-    local pressed=buttons and buttons[buttonKeys[buttonIndex]]
-    if pressed then hudBox(guiApi,x-2,111,x+8,123,0xFF196A4C,0xFF65DAA5) end
-    hudText(guiApi,x,113,buttonName,pressed and "white" or "gray","black")
-  end
+  drawMiniController(guiApi,buttons)
   return true
 end
 
@@ -1150,6 +1175,22 @@ function AI.finishEpisode(aiState,state,forced_reason)
   return fitness
 end
 
+-- A checkpoint taken during the death animation can still look playable in
+-- RAM. Discard it when Mario dies almost immediately without making progress.
+function AI.isUnsafeTrainingStart(aiState,state)
+  local progress=math.max(0,(aiState.furthestWorldX or state.worldX)-(aiState.startWorldX or state.worldX))
+  return aiState.episodeActive and aiState.episodeFrames<=12 and progress<=16
+end
+
+function AI.abandonEpisode(aiState)
+  aiState.startWorldX=nil
+  aiState.furthestWorldX=nil
+  aiState.episodeFrames=0
+  aiState.episodeReward=0
+  aiState.episodeActive=false
+  aiState.finished=false
+end
+
 function AI.run()
   assert(memory and memory.readbyte and joypad and joypad.set and emu and emu.frameadvance
     and emu.registerexit,
@@ -1165,6 +1206,7 @@ function AI.run()
   end
   local fixedTraining=stateAdapter~=nil
   local stateSaved=false
+  local waitingForRespawn=false
   if PLAY_CHAMPION_ONLY and loaded then
     aiState.championMode=true
     aiState.genomeIndex=AI.bestGenomeIndex(aiState.populationState)
@@ -1198,6 +1240,10 @@ function AI.run()
   while true do
     local state=AI.observe(aiState.frames+1)
     AI.keepLivesForTesting()
+    if waitingForRespawn and state.phase=="playing" then
+      waitingForRespawn=false
+      AI.appendLog("Mario respawned; finding a new training start",logPath)
+    end
     if state.phase=="playing" and not aiState.episodeActive then
       if fixedTraining and not stateSaved then
         if stateAdapter:save() then
@@ -1230,6 +1276,14 @@ function AI.run()
         if not aiState.championMode then savePopulation("episode "..reason) end
         restoreTrainingState(reason)
       end
+    elseif state.phase=="death" and fixedTraining and stateSaved
+      and AI.isUnsafeTrainingStart(aiState,state) then
+      AI.appendLog(string.format("discarded unsafe training start | x=%d | frames=%d | waiting for respawn",
+        aiState.startWorldX or state.worldX,aiState.episodeFrames),logPath)
+      AI.abandonEpisode(aiState)
+      stateSaved=false
+      waitingForRespawn=true
+      joypad.set(1,{})
     elseif (state.phase=="death" or state.phase=="victory") and aiState.episodeActive then
       local fitness=AI.finishEpisode(aiState,state)
       AI.appendLog(string.format("episode end | reason=%s | fitness=%.2f | max_x=%d | frames=%d",

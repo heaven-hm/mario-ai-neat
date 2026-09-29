@@ -73,6 +73,22 @@ fitnessState.furthestWorldX=smallState.worldX+10
 local death=state();death.phase="death";death.power=0;death.size=1
 local fitness=AI.finishEpisode(fitnessState,death)
 test("death is penalized and no unearned powerup is added",fitness==-20)
+local unsafeEpisode=AI.new(AI.newPopulation(2))
+AI.beginEpisode(unsafeEpisode,state(1123))
+unsafeEpisode.episodeFrames=6
+unsafeEpisode.furthestWorldX=1125
+test("six-frame death at the training start is an unsafe checkpoint",
+  AI.isUnsafeTrainingStart(unsafeEpisode,death)==true)
+AI.abandonEpisode(unsafeEpisode)
+test("discarding an unsafe checkpoint preserves the current genome and population",
+  unsafeEpisode.genomeIndex==1 and unsafeEpisode.totalEpisodes==0
+    and unsafeEpisode.episodeActive==false and unsafeEpisode.startWorldX==nil)
+local normalEpisode=AI.new(AI.newPopulation(2))
+AI.beginEpisode(normalEpisode,state(40))
+normalEpisode.episodeFrames=147
+normalEpisode.furthestWorldX=310
+test("a normal death remains a scored training episode",
+  AI.isUnsafeTrainingStart(normalEpisode,death)==false)
 local victor=AI.new(AI.newPopulation(2))
 AI.beginEpisode(victor,smallState)
 local win=state();win.phase="victory"
@@ -146,8 +162,8 @@ local fakeHud={
 test("live NEAT inspector draws successfully from a game decision",
   AI.drawNeuralInspector(fakeHud,inspectorState,inspectorGameState,inspectorAction,{right=true,B=true})==true)
 local hudTextOutput=table.concat(hudCalls.texts," ")
-test("live inspector renders the sensor grid and controller in a small corner",
-  hudCalls.boxes>=169 and hudCalls.lines>0 and hudTextOutput:find("PAD",1,true)~=nil
-    and hudCalls.maxX<=135 and hudCalls.maxY<=125)
+test("live inspector renders one mini controller in a small corner",
+  hudCalls.boxes>169 and hudCalls.lines>0 and hudTextOutput:find("PAD",1,true)==nil
+    and hudCalls.maxX<=135 and hudCalls.maxY<=130)
 
 print(string.format("%d NEAT behavior checks passed",checks))
