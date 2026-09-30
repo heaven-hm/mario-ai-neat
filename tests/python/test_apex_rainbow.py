@@ -18,10 +18,10 @@ import queue
 import sys
 import threading
 import time
-import time
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -41,6 +41,7 @@ from mario_ai_fceux.apex_actor import (
     _shaped_reward,
 )
 from mario_ai_fceux.apex_learner import apex_learner_main, _serialize_weights
+from mario_ai_fceux.apex_train import parse_arguments
 from mario_ai_fceux.model import RainbowNetwork
 from mario_ai_fceux.replay import Transition
 from mario_ai_fceux.environment import Observation
@@ -225,6 +226,12 @@ class TestApexEpsilon(unittest.TestCase):
         eps = _apex_epsilon(7, 8)
         self.assertLess(eps, 0.01)
 
+    def test_default_experience_queue_capacity_is_ten_thousand_batches(self) -> None:
+        with patch("sys.argv", ["apex_train", "--rom", "SuperMarioBros.nes"]):
+            arguments = parse_arguments()
+        self.assertEqual(arguments.queue_capacity, 10_000)
+        self.assertEqual(arguments.actor_batch_size, 32)
+
 
 # ---------------------------------------------------------------------------
 # Action selection tests
@@ -260,6 +267,19 @@ class TestActionSelection(unittest.TestCase):
         self.assertEqual(hidden.shape, (16,))
         self.assertTrue(np.isfinite(q_values).all())
         self.assertTrue(np.isfinite(hidden).all())
+
+    def test_actor_action_values_do_not_change_when_noisy_weights_reset(self) -> None:
+        state = np.zeros(4, dtype=np.float32)
+        self.network.train()
+        _, initial_values, _ = _action_details(
+            self.network, self.support, state, 0.0, 2, self.device,
+        )
+        self.network.reset_noise()
+        _, reset_values, _ = _action_details(
+            self.network, self.support, state, 0.0, 2, self.device,
+        )
+        self.assertFalse(self.network.training)
+        np.testing.assert_array_equal(initial_values, reset_values)
 
 
 # ---------------------------------------------------------------------------

@@ -30,8 +30,9 @@ The learner implements the complete Rainbow DQN combination:
   and the advantage of each of the six controller actions.
 - C51 distributional values: each action predicts a 51-atom return
   distribution instead of only one expected value.
-- NoisyNet layers for learned exploration, so training does not depend on a
-  hand-written Mario action prior or epsilon-greedy random movement.
+- NoisyNet layers remain active in the learner's Rainbow updates. Actor action
+  selection is pure Ape-X epsilon-greedy: actors run in evaluation mode, so
+  NoisyLinear uses its learned mean weights.
 - Exact global proportional prioritized replay through an in-memory SumTree.
   It has no `ORDER BY RANDOM()` query and no per-transition SQLite commit.
 - Three-step returns, which move outcome feedback backward across short action
@@ -83,7 +84,7 @@ PYTHONPATH=python python3 -m mario_ai_fceux.apex_train \
   --fceux fceux \
   --workers 8 \
   --worlds 1,2,3,4,5,6,7,8 \
-  --run-dir runs/full-rainbow --resume
+  --run-dir runs/full-rainbow --resume --queue-capacity 10000
 ```
 
 ### World curriculum
@@ -115,18 +116,21 @@ determinism setting, and the replay snapshot ID. The prior model/replay pair is
 kept as `.bak`; resume validates IDs and falls back to that pair if the latest
 pair was interrupted or corrupted. Seeds and run conditions are in `run.json`.
 Asynchronous worker arrival order means resumed runs are seeded but not
-bit-for-bit deterministic. Live checkpoints stay out of Git.
+bit-for-bit deterministic. The published checkpoint pair is stored in
+`runs/full-rainbow/model.pt` and `runs/full-rainbow/replay.npz`; commit or push
+both files together after a clean checkpoint. A live run may advance the local
+pair beyond the latest published snapshot.
 
 `Ctrl+C` writes `model.pt` before processes are closed. Do not run the Python
 trainer and `mario_ai_neat.lua` in the same FCEUX worker: they both control
 port 1.
 
-This is full Rainbow as implemented here: C51 distributional values, NoisyNet,
-Double DQN, dueling heads, n-step returns, and proportional PER with a global
-SumTree and global minimum-probability importance-weight normalization. The
-eight actors send bounded batches; the learner applies backpressure rather
-than losing transitions when it falls behind. The default queue holds 512
-batches to limit memory use.
+This is Rainbow with C51 distributional values, learner-side NoisyNet, Double
+DQN, dueling heads, n-step returns, and proportional PER with a global SumTree
+and global minimum-probability importance-weight normalization. Actors use
+pure epsilon-greedy selection. The eight actors send bounded 32-transition
+batches through a 10,000-batch queue; the learner applies backpressure rather
+than losing transitions when it falls behind.
 
 ### Automatic health report
 

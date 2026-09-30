@@ -50,14 +50,14 @@ start, and FCEUX setup instead of assuming one approach is better.
 | Path | Runtime and framework | What is learned | Why it is here |
 | --- | --- | --- | --- |
 | **Lua NEAT + contextual Q-learning** | FCEUX Lua; custom NEAT implementation and a bounded Q-value memory in `mario_ai_neat.db` | NEAT evolves neural-network topology and connection weights. Its small Q-learning memory records action values for similar local situations. | FCEUX-native training, inspectable evolving networks, and a persistent population baseline. |
-| **Python Ape-X Rainbow DQN** | Python 3, PyTorch, NumPy, in-memory sum/min-tree PER, FCEUX Lua bridge | Full Rainbow: C51, NoisyNets, Double DQN, dueling heads, globally proportional PER with global importance-weight normalization, and n-step returns. | Eight asynchronous FCEUX actors feed one learner through bounded batches; replay and training run outside SQLite. |
+| **Python Ape-X Rainbow DQN** | Python 3, PyTorch, NumPy, in-memory sum/min-tree PER, FCEUX Lua bridge | C51, learner-side NoisyNet, Double DQN, dueling heads, globally proportional PER with global importance-weight normalization, and per-actor n-step returns. Actors use pure epsilon-greedy action selection. | Eight asynchronous FCEUX actors feed one learner in 32-transition batches through a bounded 10,000-batch queue; replay and training run outside SQLite. |
 | **Python basic DDQN** | Python 3, PyTorch, bounded in-memory uniform replay, same FCEUX bridge | Double DQN with target network and epsilon-greedy exploration. | A deliberately simpler value-based baseline for measuring Rainbow's added components. |
 | **Python PPO** | Python 3, PyTorch, worker-local episode rollouts, same FCEUX bridge | Clipped categorical policy optimization with generalized advantage estimation. | A policy-gradient baseline with the same observations, action set, emulator, and evaluation protocol. |
 
 Here, **Q-learning** means learning an action value: “from this game state,
 how useful is each action for future reward?” The Lua system stores a compact
 lookup-style Q memory for similar contexts. The Python system uses **Ape-X
-Rainbow DQN**: C51 value distributions, NoisyNet exploration, Double DQN,
+Rainbow DQN**: C51 value distributions, learner-side NoisyNet, epsilon-greedy actors, Double DQN,
 dueling heads, multi-step returns, and prioritized replay estimate action
 values for the 184-feature observation.
 

@@ -127,7 +127,9 @@ def _action_details(
     device: torch.device,
 ) -> tuple[int, np.ndarray, np.ndarray]:
     """Return action, Q values, and encoder summary for the live FCEUX HUD."""
-    network.reset_noise()
+    # Actor policy values use learned mean weights; exploration comes only
+    # from the Ape-X epsilon schedule. NoisyNet stays active in the learner.
+    network.eval()
     obs = torch.from_numpy(state.astype(np.float32)).unsqueeze(0).to(device)
     with torch.no_grad():
         encoded = network.encoder(obs)
@@ -227,7 +229,9 @@ def actor_main(
                              config.atom_count).to(device)
     # Train mode activates factorised NoisyNet exploration.  This network has
     # no dropout or batch-normalisation layers, so only NoisyLinear changes.
-    network.train()
+    # Pure epsilon-greedy actors: NoisyLinear uses learned mean weights in
+    # eval mode. The learner keeps its separate network in train mode.
+    network.eval()
 
     n_step_buf = NStepBuffer(config.gamma, config.n_step)
     batch: list[Transition] = []
@@ -260,7 +264,7 @@ def actor_main(
                 break
         if latest is not None:
             try:
-                _load_weights_from_bytes(network, latest, device)
+                _load_weights_from_bytes(network, latest, device, evaluation=True)
                 weights_ready = True
             except Exception as exc:
                 logger.warning("actor %d weight load failed: %s", actor_index, exc)

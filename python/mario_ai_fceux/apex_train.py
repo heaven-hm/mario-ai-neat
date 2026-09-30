@@ -15,8 +15,8 @@ Key design decisions vs. old train.py:
     - Learner owns ALL replay and optimizer state — no shared mutable objects.
     - SQLite is NOT touched in the training hot path.
     - Weights are broadcast every N optimizer steps, not every frame.
-    - Queue has a hard capacity limit for backpressure (default 512 batches).
-    - Exploration: actor-specific epsilon-greedy, without a Mario action prior.
+    - Queue has a hard capacity limit for backpressure (default 10,000 batches).
+    - Actors use actor-specific epsilon-greedy; NoisyNet is disabled in actors.
     - Separate eval worker runs greedy episodes every 2 minutes.
 
 Usage:
@@ -102,7 +102,7 @@ def parse_arguments() -> argparse.Namespace:
                         help="Broadcast weights every N learner optimizer steps.")
     parser.add_argument("--actor-weight-sync-every", type=int, default=400,
                         help="Actors reload weights every N collected steps.")
-    parser.add_argument("--queue-capacity", type=int, default=512,
+    parser.add_argument("--queue-capacity", type=int, default=10_000,
                         help="Max batches in experience queue (backpressure).")
     parser.add_argument("--n-step", type=int, default=3)
     parser.add_argument("--learn-per-batch", type=int, default=4,
@@ -251,9 +251,15 @@ def main() -> None:
         "eval_actor": 1,
         "worlds": requested_worlds,
         "replay_capacity": args.replay_capacity,
-        "exploration": "Ape-X actor epsilon-greedy plus NoisyNet; no Mario action prior",
+        "exploration": {
+            "actors": "Ape-X epsilon-greedy only; actor networks run in eval mode",
+            "learner": "NoisyNet remains active in Rainbow learner updates",
+            "action_priors": "none",
+        },
         "actor_epsilons": [round(_apex_epsilon(i, args.workers), 5) for i in range(args.workers)],
         "actor_seeds": [args.seed + i * 1000 for i in range(args.workers)],
+        "experience_queue_max_batches": args.queue_capacity,
+        "actor_batch_size": args.actor_batch_size,
         "weight_sync_every_optimizer_steps": args.weight_sync_every,
         "n_step": args.n_step,
         "batch_size": args.batch_size,
@@ -285,7 +291,8 @@ def main() -> None:
 
     context = multiprocessing.get_context("spawn")
 
-    # One shared experience queue with backpressure.
+    # One shared bounded experience queue; full queues pause actors instead
+    # of dropping transitions. The default capacity is 10,000 batches.
     experience_queue: multiprocessing.Queue = context.Queue(maxsize=args.queue_capacity)
 
     # One weight queue per actor (+ eval worker).
