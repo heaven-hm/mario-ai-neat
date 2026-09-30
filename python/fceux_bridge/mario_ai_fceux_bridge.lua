@@ -11,7 +11,7 @@ local TARGET_WORLD_INDEX = __TARGET_WORLD_INDEX__
 -- retain their established six-action, fixed-12-frame protocol.
 local ACTION_DURATIONS = ACTION_PROFILE=="rainbow" and {6,12,24} or {12}
 local RESPONSE_TIMEOUT_FRAMES = 600
-local TRAINING_SLOT = 10
+local CURRENT_LEVEL_SLOT = 10
 
 local RAM = {
   game_engine_subroutine=0x000E, enemy_present=0x000F, enemy_id=0x0016,
@@ -21,6 +21,10 @@ local RAM = {
   tiles=0x0500, player_size=0x0754, power=0x0756,
   operation_mode=0x0770,
   world_select_number=0x076B, world_select_enable=0x07FC,
+  -- SMB1 sets this after a completed 8-4.  It turns Goombas into Buzzy
+  -- Beetles, so the training bridge must keep it clear when using the title
+  -- world selector for independent world-start experiments.
+  hard_world_flag=0x076A,
   world_number=0x075F, level_number=0x075C, area_number=0x0760,
   offscreen_world_number=0x0766, offscreen_area_number=0x0767,
   timer_hundreds=0x07F8, timer_tens=0x07F9, timer_ones=0x07FA,
@@ -70,7 +74,9 @@ local function readCommand(sequence)
   local requestedDuration=tonumber(text:match('"duration_frames"%s*:%s*(%d+)'))
   if requestedDuration and requestedDuration~=durationFrames then return nil end
   return baseIndex+1,durationFrames,
-    text:match('"reset"%s*:%s*true')~=nil,text:match('"hold"%s*:%s*true')~=nil,action
+    text:match('"reset"%s*:%s*true')~=nil,text:match('"hold"%s*:%s*true')~=nil,
+    text:match('"advance"%s*:%s*true')~=nil,
+    text:match('"campaign_reset"%s*:%s*true')~=nil,action
 end
 
 local function phase()
@@ -137,7 +143,7 @@ local function observe()
     clamp(worldNumber/7*2-1,-1,1),clamp(levelNumber/3*2-1,-1,1),clamp(areaNumber/31*2-1,-1,1),0,
     gap,nearestEnemy and enemyDX>0 and enemyDX<0.25 and 1 or 0}
   for _,value in ipairs(globals) do features[#features+1]=value end
-  return {features=features,worldX=worldX,power=power,phase=phase(),
+  return {features=features,worldX=worldX,power=power,world=worldNumber,level=levelNumber,phase=phase(),
     operationMode=read(RAM.operation_mode),playerState=read(RAM.game_engine_subroutine)}
 end
 
@@ -150,8 +156,9 @@ end
 local function publish(sequence,snapshot,terminal,reasonOverride)
   local reason=terminal and (reasonOverride or snapshot.phase) or ""
   return writeAtomic("observation.json",string.format(
-    '{"sequence":%d,"features":%s,"world_x":%d,"power":%d,"terminal":%s,"reason":"%s"}',
-    sequence,jsonArray(snapshot.features),snapshot.worldX,snapshot.power,terminal and "true" or "false",reason))
+    '{"sequence":%d,"features":%s,"world_x":%d,"power":%d,"world":%d,"level":%d,"terminal":%s,"reason":"%s"}',
+    sequence,jsonArray(snapshot.features),snapshot.worldX,snapshot.power,snapshot.world,snapshot.level,
+    terminal and "true" or "false",reason))
 end
 
 -- Written only while waiting for the initial playable frame.  It makes ROM or
@@ -309,8 +316,14 @@ local function drawPythonHud()
   end
 end
 
-local stateHandle=nil
-if savestate and savestate.object then stateHandle=savestate.object(TRAINING_SLOT) end
+local currentLevelHandle=nil
+local worldStartHandle=nil
+if savestate and savestate.object then
+  currentLevelHandle=savestate.object(CURRENT_LEVEL_SLOT)
+  -- FCEUX exposes predefined slots only through 1..10.  The campaign root
+  -- therefore uses an anonymous in-memory state instead of invalid slot 11.
+  if savestate.create then worldStartHandle=savestate.create() end
+end
 writeAtomic("bridge_started.json", '{"bridge":"started"}')
 local initialStateSaved=false
 local initialStartAttempts=0
@@ -319,6 +332,7 @@ local waitingFrames=0
 local groundedStartFrames=0
 local groundedStartX=nil
 local initialWorldX=nil
+local advancingToLevel=nil
 
 while true do
   local snapshot=observe()
@@ -334,9 +348,13 @@ while true do
         groundedStartX=snapshot.worldX
         groundedStartFrames=1
       end
-      if groundedStartFrames>=8 and stateHandle then
+      if groundedStartFrames>=8 and currentLevelHandle then
+        -- World select is only a start mechanism.  Clear second-quest mode
+        -- before preserving the reusable level-start state.
+        memory.writebyte(RAM.hard_world_flag,0)
         joypad.set(1,{})
-        savestate.save(stateHandle)
+        savestate.save(currentLevelHandle)
+        if snapshot.level==0 and worldStartHandle then savestate.save(worldStartHandle) end
         initialStateSaved=true
         initialWorldX=snapshot.worldX
       end
@@ -355,6 +373,7 @@ while true do
         -- WorldSelectEnableFlag=$07fc, WorldNumber=$075f, LevelNumber=$075c,
         -- and AreaNumber=$0760.  SMB1's selector starts the selected world at
         -- level 1, so this never pretends to select a later level directly.
+        memory.writebyte(RAM.hard_world_flag,0)
         memory.writebyte(RAM.world_select_enable,1)
         memory.writebyte(RAM.world_select_number,TARGET_WORLD_INDEX)
         memory.writebyte(RAM.world_number,TARGET_WORLD_INDEX)
@@ -371,6 +390,34 @@ while true do
       emu.frameadvance()
       -- FCEUX now advances until World 1-1 reaches a controllable state.
     end
+  elseif advancingToLevel~=nil then
+    -- A level win is a campaign transition, not a reset.  Let SMB1 run its
+    -- own flagpole/castle sequence, then capture the next level once Mario is
+    -- settled at its start.  This avoids guessing later-level RAM areas.
+    local isExpectedStart=snapshot.phase=="playing" and snapshot.world==TARGET_WORLD_INDEX
+      and snapshot.level==advancingToLevel and snapshot.worldX<=128 and snapshot.features[172]==1
+    if isExpectedStart then
+      if groundedStartX==snapshot.worldX then
+        groundedStartFrames=groundedStartFrames+1
+      else
+        groundedStartX=snapshot.worldX
+        groundedStartFrames=1
+      end
+      if groundedStartFrames>=8 and currentLevelHandle then
+        memory.writebyte(RAM.hard_world_flag,0)
+        joypad.set(1,{})
+        savestate.save(currentLevelHandle)
+        initialWorldX=snapshot.worldX
+        advancingToLevel=nil
+        groundedStartFrames=0
+      end
+    else
+      groundedStartFrames=0
+      groundedStartX=nil
+    end
+    joypad.set(1,{})
+    drawPythonHud()
+    emu.frameadvance()
   else
     -- Never ask the policy to act on a transition/title/death frame. Some
     -- SMB1 death states skip the explicit death marker between observations;
@@ -385,22 +432,36 @@ while true do
       sequence=sequence+1
       local terminal=snapshot.phase=="death" or snapshot.phase=="victory" or deathReset
       publish(sequence,snapshot,terminal,deathReset and "death" or nil)
-      local action,durationFrames,reset,hold=nil,nil,false,false
+      local action,durationFrames,reset,hold,advance,campaignReset=nil,nil,false,false,false,false
       for _=1,RESPONSE_TIMEOUT_FRAMES do
-        action,durationFrames,reset,hold=readCommand(sequence)
+        action,durationFrames,reset,hold,advance,campaignReset=readCommand(sequence)
         if action~=nil then break end
         joypad.set(1,{})
         drawPythonHud()
         emu.frameadvance()
       end
-      if reset and stateHandle then
+      if campaignReset and worldStartHandle then
         joypad.set(1,{})
-        savestate.load(stateHandle)
+        savestate.load(worldStartHandle)
+        initialWorldX=nil
         drawPythonHud()
         emu.frameadvance()
-      elseif hold and stateHandle then
+      elseif advance and snapshot.level<3 then
+        -- The actor only sends advance after a verified flagpole victory.
+        advancingToLevel=snapshot.level+1
+        groundedStartFrames=0
+        groundedStartX=nil
         joypad.set(1,{})
-        savestate.load(stateHandle)
+        drawPythonHud()
+        emu.frameadvance()
+      elseif reset and currentLevelHandle then
+        joypad.set(1,{})
+        savestate.load(currentLevelHandle)
+        drawPythonHud()
+        emu.frameadvance()
+      elseif hold and currentLevelHandle then
+        joypad.set(1,{})
+        savestate.load(currentLevelHandle)
         drawPythonHud()
         emu.frameadvance()
       else

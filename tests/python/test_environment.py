@@ -10,7 +10,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
 
-from mario_ai_fceux.environment import NoProgressTracker, prepare_worker_directory
+from mario_ai_fceux.environment import FileWorker, NoProgressTracker, Observation, prepare_worker_directory
+from mario_ai_fceux.protocol import read_json
+import numpy as np
 
 
 class NoProgressTrackerTests(unittest.TestCase):
@@ -33,6 +35,18 @@ class NoProgressTrackerTests(unittest.TestCase):
 
 
 class WorkerDirectoryTests(unittest.TestCase):
+    def test_campaign_commands_are_sequence_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            worker = FileWorker("worker-00", directory, action_profile="rainbow")
+            observation = Observation(23, np.zeros(184, dtype=np.float32), 40, 0, False, "",
+                                      world=0, level=1)
+            worker.advance_level(observation)
+            self.assertEqual(read_json(worker.command_path),
+                             {"sequence": 23, "action": 3, "advance": True})
+            worker.restart_world(observation)
+            self.assertEqual(read_json(worker.command_path),
+                             {"sequence": 23, "action": 3, "campaign_reset": True})
+
     def test_prepare_clears_stale_protocol_status_before_bridge_start(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

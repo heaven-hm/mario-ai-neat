@@ -65,8 +65,10 @@ python3 -m pip install -r python/requirements.txt
 
 Start FCEUX workers from the project root. On first launch, the bridge uses the
 verified SMB1 title-screen world selector, starts its assigned world once, and
-captures a fixed state near the course start. Every later training reset
-restores that state. It never presses Start after a death or game-over screen.
+captures both a current-level state and that world's level-1 state. Deaths and
+stalls retry the current level. A verified flagpole win progresses through the
+world naturally; after level 4, the worker restores its saved level-1 state.
+It never presses Start after a death or game-over screen.
 
 ```sh
 PYTHONPATH=python python3 -m mario_ai_fceux.apex_train \
@@ -88,11 +90,11 @@ PYTHONPATH=python python3 -m mario_ai_fceux.apex_train \
   --run-dir runs/full-rainbow --resume --queue-capacity 10000
 ```
 
-### World curriculum
+### World campaign cycle
 
 The supplied SMB1 disassembly exposes the title-screen world selector. Pass one
-world number per worker to train a shared model across the first level of
-several worlds:
+world number per worker to train one shared model across eight repeating,
+independent world campaigns:
 
 ```bash
 PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.apex_train \
@@ -100,10 +102,22 @@ PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.apex_train \
   --worlds 1,2,3,4,5,6,7,8 --run-dir runs/full-rainbow --resume
 ```
 
-This starts one worker in every first course: **1-1 through 8-1**. SMB1's
-selector starts a world at level 1; later courses such as 1-2 or 4-3 require
-verified FCEUX course-start states. The bridge records world, level, and area
-values in the model observation so a shared network can distinguish courses.
+| Worker | Repeating campaign |
+| --- | --- |
+| 0 | 1-1 → 1-2 → 1-3 → 1-4 → 1-1 |
+| 1 | 2-1 → 2-2 → 2-3 → 2-4 → 2-1 |
+| 2 | 3-1 → 3-2 → 3-3 → 3-4 → 3-1 |
+| 3 | 4-1 → 4-2 → 4-3 → 4-4 → 4-1 |
+| 4 | 5-1 → 5-2 → 5-3 → 5-4 → 5-1 |
+| 5 | 6-1 → 6-2 → 6-3 → 6-4 → 6-1 |
+| 6 | 7-1 → 7-2 → 7-3 → 7-4 → 7-1 |
+| 7 | 8-1 → 8-2 → 8-3 → 8-4 → 8-1 |
+
+The bridge saves the level-start checkpoint only after Mario is stable at the
+new level's start. The shared network receives world, level, and area values in
+its observation, so it can distinguish the 32 SMB1 courses. A worker restart
+begins its campaign from that worker's World-N-1; model and replay checkpoints
+remain reusable across restarts.
 
 ### Checkpoints and storage
 

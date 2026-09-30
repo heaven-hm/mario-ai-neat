@@ -29,6 +29,10 @@ class Observation:
     power: int
     terminal: bool
     reason: str
+    # Zero-based SMB1 identifiers; defaults keep older fixed-level callers
+    # compatible while campaign-aware actors use the bridge values.
+    world: int = 0
+    level: int = 0
 
 
 class NoProgressTracker:
@@ -83,6 +87,10 @@ class FileWorker:
             state=np.asarray(features, dtype=np.float32),
             world_x=int(message.get("world_x", 0)),
             power=int(message.get("power", 0)),
+            # SMB1 stores both values zero-based.  Keep that representation in
+            # the protocol so campaign routing can identify levels 0..3.
+            world=int(message.get("world", 0)),
+            level=int(message.get("level", 0)),
             terminal=bool(message.get("terminal", False)),
             reason=str(message.get("reason", "")),
         )
@@ -103,6 +111,16 @@ class FileWorker:
 
     def reset(self, observation: Observation) -> None:
         atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3, "reset": True})
+
+    def advance_level(self, observation: Observation) -> None:
+        """Let SMB1 load the next level and save its new start checkpoint."""
+        atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3,
+                                              "advance": True})
+
+    def restart_world(self, observation: Observation) -> None:
+        """Restore this worker's saved World-N-1 state after World-N-4."""
+        atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3,
+                                              "campaign_reset": True})
 
     def hold(self, observation: Observation) -> None:
         """Keep an episode-boundary PPO actor on its saved start state."""

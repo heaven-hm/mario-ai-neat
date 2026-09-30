@@ -255,6 +255,8 @@ def actor_main(
     best_episode_x = 0
     episodes = 0
     victories = 0
+    levels_completed = 0
+    campaigns_completed = 0
 
     metrics_path = Path(run_directory) / f"actor_{actor_index:02d}_metrics.json"
 
@@ -318,11 +320,23 @@ def actor_main(
             episodes += 1
             if observation.reason == "victory":
                 victories += 1
+                levels_completed += 1
             # Flush n-step buffer at episode boundary.
             for t in n_step_buf.flush():
                 batch.append(t)
             _flush_batch()
-            worker.reset(observation)
+            if observation.reason == "victory":
+                # Each actor owns one SMB1 world campaign.  The bridge keeps
+                # its current-level checkpoint after 1-1/1-2/1-3 wins, then
+                # restores that world's 1-1 state after 1-4.
+                if observation.level >= 3:
+                    campaigns_completed += 1
+                    worker.restart_world(observation)
+                else:
+                    worker.advance_level(observation)
+            else:
+                # Death and no-progress retries stay on the current level.
+                worker.reset(observation)
             worker.previous = None
             worker.previous_action = 0  # type: ignore[attr-defined]
             worker.previous_action_duration = LEGACY_DURATION_FRAMES  # type: ignore[attr-defined]
@@ -335,6 +349,10 @@ def actor_main(
                     "steps": steps,
                     "episodes": episodes,
                     "victories": victories,
+                    "levels_completed": levels_completed,
+                    "campaigns_completed": campaigns_completed,
+                    "world": observation.world + 1,
+                    "level": observation.level + 1,
                     "episode_max_x": episode_max_x,
                     "best_episode_x": best_episode_x,
                 },

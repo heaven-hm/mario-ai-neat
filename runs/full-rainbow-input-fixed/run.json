@@ -13,6 +13,13 @@
     7,
     8
   ],
+  "cheats_enabled_workers": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "window_layout": "config/fceux-window-layout.ini",
   "replay_capacity": 500000,
   "exploration": {
     "actors": "Ape-X epsilon-greedy only; actor networks run in eval mode",
@@ -60,7 +67,7 @@
   "torch_version": "2.13.0",
   "numpy_version": "2.4.6",
   "python_version": "3.12.1",
-  "source_revision": "84a3b07d429f54b5f2521b2f555907de4c6ffc42",
+  "source_revision": "c7aebcf47e3eac978e414a9d4eb683b733002ce7",
   "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
   "fceux_executable": "/opt/homebrew/Cellar/fceux/2.6.6_12/bin/fceux",
   "fceux_sha256": "2d84a8310d530745263cfeadf00de9a631162a8dd76c71e1bed659c73753f2f6"
