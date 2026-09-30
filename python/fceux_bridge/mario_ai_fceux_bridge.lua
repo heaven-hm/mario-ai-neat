@@ -3,12 +3,13 @@
 -- FCEUX owns only emulation, real controller input, and a fixed training state.
 
 local WORKER_DIRECTORY = "__WORKER_DIRECTORY__"
+local ACTION_PROFILE = "__ACTION_PROFILE__"
 -- Zero-based SMB1 world.  Python injects one verified title-screen target for
 -- every worker before FCEUX starts it.
 local TARGET_WORLD_INDEX = __TARGET_WORLD_INDEX__
--- SMB1 needs a held A press for a full jump.  Four frames cut jumps short;
--- twelve keeps the same action long enough to clear the first enemy and pipe.
-local ACTION_REPEAT_FRAMES = 12
+-- Rainbow learns a duration with each movement action. The DDQN/PPO baselines
+-- retain their established six-action, fixed-12-frame protocol.
+local ACTION_DURATIONS = ACTION_PROFILE=="rainbow" and {6,12,24} or {12}
 local RESPONSE_TIMEOUT_FRAMES = 600
 local TRAINING_SLOT = 10
 local TEST_TIMER_DIGIT = 0x09
@@ -35,7 +36,10 @@ local INACTIVE_ENEMY = {[0x02]=true,[0x03]=true,[0x04]=true,[0x20]=true,[0x22]=t
   [0x23]=true,[0x83]=true,[0x84]=true,[0xC4]=true}
 local ACTIONS = {
   {right=true,B=true}, {right=true,B=true,A=true}, {left=true,B=true}, {}, {A=true}, {right=true},
+  {left=true,B=true,A=true},
 }
+local ACTION_BASE_COUNT = ACTION_PROFILE=="rainbow" and #ACTIONS or (#ACTIONS-1)
+local ACTION_COUNT = ACTION_BASE_COUNT * #ACTION_DURATIONS
 
 local function clamp(value,low,high) return math.max(low,math.min(high,value)) end
 local function signed(value) return value>=128 and value-256 or value end
@@ -71,8 +75,14 @@ local function readCommand(sequence)
   local commandSequence=tonumber(text:match('"sequence"%s*:%s*(%d+)'))
   if commandSequence~=sequence then return nil end
   local action=tonumber(text:match('"action"%s*:%s*(%d+)'))
-  if not action or action<0 or action>=#ACTIONS then return nil end
-  return action,text:match('"reset"%s*:%s*true')~=nil,text:match('"hold"%s*:%s*true')~=nil
+  if not action or action<0 or action>=ACTION_COUNT then return nil end
+  local baseIndex=math.floor(action/#ACTION_DURATIONS)
+  local durationIndex=(action%#ACTION_DURATIONS)+1
+  local durationFrames=ACTION_DURATIONS[durationIndex]
+  local requestedDuration=tonumber(text:match('"duration_frames"%s*:%s*(%d+)'))
+  if requestedDuration and requestedDuration~=durationFrames then return nil end
+  return baseIndex+1,durationFrames,
+    text:match('"reset"%s*:%s*true')~=nil,text:match('"hold"%s*:%s*true')~=nil,action
 end
 
 local function phase()
@@ -160,10 +170,11 @@ end
 
 -- Python writes a small telemetry message beside command.json.  The HUD stays
 -- inside FCEUX so training can be inspected without opening a terminal.
-local ACTION_NAMES={"RUN","JUMP","BACK","STOP","HOP","WALK"}
+local ACTION_NAMES={"RUN","JUMP+RUN","BACK","STOP","HOP","WALK","JUMP BACK"}
 local hudCache={sequence=0,steps=0,replay=0,epsilon=1,action=3,
   updates=0,episodes=0,deaths=0,victories=0,bestX=0,loss=0,
   values={0,0,0,0,0,0},grid={},globals={},hidden={}}
+if ACTION_PROFILE=="rainbow" then hudCache.action=10 end
 
 local function parseNumberArray(text,key,target)
   local encoded=text:match('"'..key..'"%s*:%s*%[([^%]]*)%]')
@@ -229,7 +240,7 @@ end
 
 -- The fixed Rainbow network is too dense to draw every 184x512 link.  This
 -- shows the actual 13x13 sensor grid, 15 RAM features, and a 4x4 summary of
--- its 256 live encoder activations, with paths to the six Q-value outputs.
+-- its 256 live encoder activations, with paths to the action-duration values.
 local function drawNetworkInspector(hud)
   local left,top,right,bottom=2,5,123,114
   hudBox(left,top,right,bottom,0xFF102D4A,0xFF4A90E2)
@@ -266,7 +277,7 @@ local function drawNetworkInspector(hud)
     end
   end
   hudText(left+4,top+96,"N184>512>256",0xFFB8C7E0)
-  hudText(left+77,top+96,"DQN>6",0xFFFFFF00)
+  hudText(left+77,top+96,string.format("DQN>%d",ACTION_COUNT),0xFFFFFF00)
 end
 
 local function drawPythonHud()
@@ -280,13 +291,25 @@ local function drawPythonHud()
   hudText(panelLeft+4,panelTop+23,string.format("M%d E%.2f",hud.replay,hud.epsilon),0xFFB8C7E0)
   hudText(panelLeft+4,panelTop+33,string.format("EP%d D%d V%d",hud.episodes,hud.deaths,hud.victories),0xFFFFFFFF)
   hudText(panelLeft+4,panelTop+43,string.format("X%d L%.3f",hud.bestX,hud.loss),0xFFB8C7E0)
-  for index,name in ipairs(ACTION_NAMES) do
-    local rowTop=panelTop+54+(index-1)*9
-    local selected=hud.action==index-1
-    local value=hud.values[index] or 0
+  local selectedBase=math.floor(hud.action/#ACTION_DURATIONS)
+  local selectedDuration=ACTION_DURATIONS[(hud.action%#ACTION_DURATIONS)+1]
+  if ACTION_PROFILE=="rainbow" then
+    hudText(panelLeft+4,panelTop+51,string.format("CHOICE %df",selectedDuration),0xFFFFFF00)
+  end
+  for baseIndex=1,ACTION_BASE_COUNT do
+    local name=ACTION_NAMES[baseIndex]
+    local rowTop=panelTop+(ACTION_PROFILE=="rainbow" and 60 or 54)
+      +(baseIndex-1)*(ACTION_PROFILE=="rainbow" and 7 or 9)
+    local selected=selectedBase==baseIndex-1
+    local value=-math.huge
+    for durationIndex=1,#ACTION_DURATIONS do
+      local valueIndex=(baseIndex-1)*#ACTION_DURATIONS+durationIndex
+      value=math.max(value,hud.values[valueIndex] or 0)
+    end
     if selected then hudBox(panelLeft+3,rowTop,panelRight-3,rowTop+6,0xFF174D38,0xFF42FF70) end
     hudText(panelLeft+6,rowTop,(selected and ">" or " ")..name,selected and 0xFFFFFF00 or 0xFFFFFFFF)
-    hudText(panelLeft+73,rowTop,string.format("%+.2f",value),selected and 0xFFFFFF00 or 0xFFB8C7E0)
+    hudText(panelLeft+(ACTION_PROFILE=="rainbow" and 90 or 73),rowTop,
+      string.format("%+.1f",value),selected and 0xFFFFFF00 or 0xFFB8C7E0)
   end
 end
 
@@ -337,9 +360,9 @@ while true do
     sequence=sequence+1
     local terminal=snapshot.phase=="death" or snapshot.phase=="victory"
     publish(sequence,snapshot,terminal)
-    local action,reset,hold=nil,false,false
+    local action,durationFrames,reset,hold=nil,nil,false,false
     for _=1,RESPONSE_TIMEOUT_FRAMES do
-      action,reset,hold=readCommand(sequence)
+      action,durationFrames,reset,hold=readCommand(sequence)
       if action~=nil then break end
       joypad.set(1,{})
       drawPythonHud()
@@ -358,8 +381,8 @@ while true do
       drawPythonHud()
       emu.frameadvance()
     else
-      joypad.set(1,ACTIONS[(action or 3)+1])
-      for _=1,ACTION_REPEAT_FRAMES do
+      joypad.set(1,ACTIONS[action or 4])
+      for _=1,(durationFrames or 12) do
         drawPythonHud()
         emu.frameadvance()
       end

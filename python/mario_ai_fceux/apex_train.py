@@ -48,6 +48,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from .actions import ACTION_COUNT, ACTION_DURATIONS
 from .agent import AgentConfig
 from .apex_actor import ActorConfig, actor_main, _apex_epsilon
 from .apex_eval import eval_worker_main
@@ -267,7 +268,9 @@ def main() -> None:
         "evaluation_seed": args.seed,
         "eval_world": args.eval_world,
         "eval_episodes": args.eval_episodes,
-        "action_repeat_frames": 12,
+        "action_repeat_frames": list(ACTION_DURATIONS),
+        "action_count": ACTION_COUNT,
+        "action_policy": "learned movement x 6/12/24-frame horizon; includes backward jump",
         "start_protocol": START_PROTOCOL,
         "determinism": "seeded components; asynchronous queue interleaving is not bitwise reproducible",
         "torch_version": torch.__version__,
@@ -309,7 +312,7 @@ def main() -> None:
     # ---- Build AgentConfig (learner-side).
     agent_config = AgentConfig(
         observation_size=184,
-        action_count=6,
+        action_count=ACTION_COUNT,
         gamma=0.99,
         learning_rate=6.25e-5,
         batch_size=args.batch_size,
@@ -328,7 +331,7 @@ def main() -> None:
     # ---- Build ActorConfig (shared template; index injected at launch).
     actor_config = ActorConfig(
         observation_size=184,
-        action_count=6,
+        action_count=ACTION_COUNT,
         gamma=0.99,
         n_step=args.n_step,
         batch_size=args.actor_batch_size,
@@ -360,10 +363,11 @@ def main() -> None:
     # ---- Launch FCEUX processes (training actors).
     fceux_processes.extend(launch_fceux_workers(
         args.fceux, args.rom, bridge_template,
-        args.run_dir, args.workers, requested_worlds,
+        args.run_dir, args.workers, requested_worlds, action_profile="rainbow",
     ))
     training_workers = [
-        FileWorker(f"actor-{i:02d}", args.run_dir / f"worker-{i:02d}")
+        FileWorker(f"actor-{i:02d}", args.run_dir / f"worker-{i:02d}",
+                   action_profile="rainbow")
         for i in range(args.workers)
     ]
 
@@ -372,9 +376,10 @@ def main() -> None:
     eval_run_dir.mkdir(parents=True, exist_ok=True)
     eval_fceux.extend(launch_fceux_workers(
         args.fceux, args.rom, bridge_template,
-        eval_run_dir, 1, (args.eval_world,),
+        eval_run_dir, 1, (args.eval_world,), action_profile="rainbow",
     ))
-    eval_file_worker = FileWorker("eval", eval_run_dir / "worker-00")
+    eval_file_worker = FileWorker("eval", eval_run_dir / "worker-00",
+                                  action_profile="rainbow")
 
     # ---- Launch learner process.
     learner_process = context.Process(
@@ -405,7 +410,7 @@ def main() -> None:
     eval_process = context.Process(
         target=eval_worker_main,
         args=(eval_file_worker, eval_weight_queue, str(args.run_dir),
-              184, 6, 51, -100.0, 100.0,
+              184, ACTION_COUNT, 51, -100.0, 100.0,
               args.eval_every, args.eval_episodes, 300.0, args.device),
         daemon=True,
     )

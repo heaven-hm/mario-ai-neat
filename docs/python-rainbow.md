@@ -27,7 +27,8 @@ The learner implements the complete Rainbow DQN combination:
 
 - Double DQN target selection to reduce action-value overestimation.
 - Dueling value/advantage heads so the model can separately learn state value
-  and the advantage of each of the six controller actions.
+  and the advantage of each movement-and-duration choice: walk, run, jump-run,
+  retreat, brake, jump in place, or jump backward, held for 6, 12, or 24 frames.
 - C51 distributional values: each action predicts a 51-atom return
   distribution instead of only one expected value.
 - NoisyNet layers remain active in the learner's Rainbow updates. Actor action
@@ -36,7 +37,7 @@ The learner implements the complete Rainbow DQN combination:
 - Exact global proportional prioritized replay through an in-memory SumTree.
   It has no `ORDER BY RANDOM()` query and no per-transition SQLite commit.
 - Three-step returns, which move outcome feedback backward across short action
-  sequences.
+  sequences. Discounts are adjusted to each action's frame duration.
 - A `model.pt` checkpoint containing the PyTorch network, target network,
   optimizer, configuration, and Python/NumPy/PyTorch RNG state, plus a
   `replay.npz` snapshot containing the full replay and its sampling RNG state.
@@ -192,8 +193,9 @@ PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.benchmark \
 ```
 
 The evaluator accepts Rainbow, basic DDQN, and PPO checkpoints. Train either
-baseline through the same FCEUX bridge and six-action, 12-frame control
-contract, then evaluate its `model.pt` with the same command:
+baseline through the same FCEUX bridge using its legacy six-action, 12-frame
+profile, then evaluate its `model.pt` with the same command. Rainbow uses the
+separate 21-choice variable-duration profile:
 
 ```bash
 PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.baseline_train \
@@ -215,7 +217,7 @@ worker count and transition budget when comparing training throughput.
 To benchmark the Lua NEAT Champion, reload `mario_ai_neat.lua` with
 `PLAY_CHAMPION_ONLY = true`. Champion now saves the first valid selected-world
 course start and restores it after each terminal episode. It uses the same
-12-frame action interval and logs world, level, decision count, and duration.
+1/2/4/6-frame action holds and logs world, level, decision count, and duration.
 After at least ten completed attempts, convert the latest Champion run:
 
 ```bash

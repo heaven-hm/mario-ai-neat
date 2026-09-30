@@ -106,7 +106,9 @@ Click the video thumbnail to watch SethBling's MarI/O video. MarI/O plays Super 
 ## What it does
 
 - Reads Mario, nearby tiles, enemies, and items from SMB1 memory.
-- Chooses among six SMB1 actions and evolves how long to hold each choice.
+- Lua NEAT chooses among six SMB1 actions and evolves how long to hold each
+  choice. Python Rainbow chooses among walk/run/jump/retreat actions at learned
+  6, 12, or 24-frame horizons, including a backward jump.
 - Uses short observation history and event feedback for landings, passing
   enemies, power-ups, and new progress landmarks.
 - Keeps a bounded novelty archive so selection preserves some different

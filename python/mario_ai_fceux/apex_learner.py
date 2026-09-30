@@ -99,6 +99,12 @@ def apex_learner_main(
             raise RuntimeError(
                 f"Could not safely resume {checkpoint_path}; refusing to discard learned state: {exc}"
             ) from exc
+        if agent.action_space_migrated:
+            # Persist the expanded action heads and remapped 12-frame replay
+            # IDs immediately. A restart then loads the new schema directly.
+            agent.save(checkpoint_path, replay_path)
+            logger.info("Migrated legacy six-action checkpoint to %d movement-duration actions",
+                        config.action_count)
 
     last_loss: float | None = None
     last_weight_sync = 0

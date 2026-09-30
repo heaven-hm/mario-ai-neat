@@ -14,6 +14,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from .actions import (ACTION_COUNT, ACTION_DURATIONS,
+                      LEGACY_ACTION_COUNT, greedy_action)
 from .model import RainbowNetwork
 from .replay import PrioritizedReplayBuffer, Transition
 
@@ -21,7 +23,7 @@ from .replay import PrioritizedReplayBuffer, Transition
 @dataclass
 class AgentConfig:
     observation_size: int = 184
-    action_count: int = 6
+    action_count: int = ACTION_COUNT
     gamma: float = 0.99
     learning_rate: float = 6.25e-5
     batch_size: int = 128
@@ -59,6 +61,7 @@ class RainbowAgent:
         self.steps = 0
         self.optimizer_steps = 0
         self.pending: dict[str, Deque[Transition]] = {}
+        self.action_space_migrated = False
 
     @staticmethod
     def _set_seeds(seed: int) -> None:
@@ -80,8 +83,10 @@ class RainbowAgent:
         if explore:
             self.online.reset_noise()
         with torch.no_grad():
-            actions = self.online(torch.from_numpy(states).to(self.device), self.support).argmax(dim=1)
-        return actions.cpu().numpy().astype(np.int64)
+            values = self.online(torch.from_numpy(states).to(self.device), self.support).cpu().numpy()
+        if self.config.action_count == ACTION_COUNT:
+            return np.asarray([greedy_action(row) for row in values], dtype=np.int64)
+        return values.argmax(axis=1).astype(np.int64)
 
     def inspect(self, states: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return expected Q-values and a small encoder summary for the FCEUX HUD."""
@@ -109,7 +114,7 @@ class RainbowAgent:
             next_state = pending[0].next_state
             for transition in list(pending)[:self.config.n_step]:
                 reward += discount * transition.reward
-                discount *= self.config.gamma
+                discount *= transition.discount
                 next_state, terminal = transition.next_state, transition.terminated
                 if terminal:
                     break
@@ -234,22 +239,77 @@ class RainbowAgent:
             return checkpoint_path, PrioritizedReplayBuffer.load(replay_path, seed)
         return checkpoint_path, PrioritizedReplayBuffer(observation_size, capacity=capacity, seed=seed)
 
+    @staticmethod
+    def _expand_legacy_action_head(old_state: dict[str, torch.Tensor],
+                                   new_state: dict[str, torch.Tensor],
+                                   atom_count: int) -> dict[str, torch.Tensor]:
+        """Copy six trained SMB1 action heads into the 12-frame choices."""
+        migrated = {key: value.clone() for key, value in new_state.items()}
+        for key, old_value in old_state.items():
+            if key not in migrated:
+                continue
+            new_value = migrated[key]
+            if old_value.shape == new_value.shape:
+                migrated[key] = old_value
+                continue
+            if not key.startswith("advantage_output.") or old_value.ndim < 1:
+                raise ValueError(f"unsupported legacy checkpoint tensor shape: {key}")
+            if old_value.shape[0] != LEGACY_ACTION_COUNT * atom_count:
+                raise ValueError(f"unexpected legacy action-head shape for {key}")
+            if new_value.shape[0] != ACTION_COUNT * atom_count:
+                raise ValueError(f"unexpected new action-head shape for {key}")
+            for new_action in range(ACTION_COUNT):
+                base_index = new_action // len(ACTION_DURATIONS)
+                old_action = base_index if base_index < LEGACY_ACTION_COUNT else 1
+                source_start = old_action * atom_count
+                target_start = new_action * atom_count
+                migrated[key][target_start:target_start + atom_count] = \
+                    old_value[source_start:source_start + atom_count]
+        return migrated
+
+    def _migrate_legacy_replay(self) -> None:
+        """Map old fixed-duration actions to their equivalent 12-frame IDs."""
+        old_actions = self.replay.actions[:self.replay.size].astype(np.int64)
+        if np.any(old_actions < 0) or np.any(old_actions >= LEGACY_ACTION_COUNT):
+            raise ValueError("legacy replay contains an action outside the old 0..5 range")
+        normal_duration = ACTION_DURATIONS.index(12)
+        self.replay.actions[:self.replay.size] = (
+            old_actions * len(ACTION_DURATIONS) + normal_duration
+        ).astype(self.replay.actions.dtype)
+
     def load(self, path: str | Path, *, validate_replay: bool = True,
              restore_rng: bool = True) -> None:
         payload = torch.load(path, map_location=self.device, weights_only=False)
         saved_config = payload.get("config")
+        legacy_action_migration = False
         if saved_config is not None:
             normalized_saved_config = asdict(AgentConfig(**saved_config))
-            if normalized_saved_config != asdict(self.config):
-                differences = [name for name, value in asdict(self.config).items()
-                               if normalized_saved_config.get(name) != value]
+            current_config = asdict(self.config)
+            differences = [name for name, value in current_config.items()
+                           if normalized_saved_config.get(name) != value]
+            if differences == ["action_count"] and normalized_saved_config["action_count"] == LEGACY_ACTION_COUNT \
+                    and self.config.action_count == ACTION_COUNT:
+                legacy_action_migration = True
+            elif differences:
                 raise ValueError("checkpoint AgentConfig differs in: " + ", ".join(differences))
         snapshot_id = payload.get("replay_snapshot_id")
         if validate_replay and snapshot_id is not None and self.replay.snapshot_id != snapshot_id:
             raise ValueError("checkpoint model and replay snapshot do not match")
-        self.online.load_state_dict(payload["online"])
-        self.target.load_state_dict(payload["target"])
-        self.optimizer.load_state_dict(payload["optimizer"])
+        if legacy_action_migration:
+            self.online.load_state_dict(self._expand_legacy_action_head(
+                payload["online"], self.online.state_dict(), self.config.atom_count
+            ))
+            self.target.load_state_dict(self._expand_legacy_action_head(
+                payload["target"], self.target.state_dict(), self.config.atom_count
+            ))
+            self._migrate_legacy_replay()
+            self.action_space_migrated = True
+            # Adam moments have the old output-head shape; reset optimizer
+            # moments while retaining network weights, replay, and step count.
+        else:
+            self.online.load_state_dict(payload["online"])
+            self.target.load_state_dict(payload["target"])
+            self.optimizer.load_state_dict(payload["optimizer"])
         self.steps, self.optimizer_steps = int(payload.get("steps", 0)), int(payload.get("optimizer_steps", 0))
         if restore_rng and "python_random" in payload:
             random.setstate(payload["python_random"])

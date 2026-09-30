@@ -11,10 +11,10 @@ from typing import Sequence
 
 import numpy as np
 
+from .actions import ACTION_NAMES, LEGACY_DURATION_FRAMES, decode_action
 from .protocol import atomic_write_json, read_json
 
 
-ACTION_NAMES = ("run", "jump_run", "retreat", "brake", "jump_place", "walk")
 START_PROTOCOL = "SMB1 clean selected-world start with course-start retries"
 
 
@@ -31,12 +31,16 @@ class Observation:
 class FileWorker:
     """One FCEUX Lua bridge worker. It does no training in Lua."""
 
-    def __init__(self, worker_id: str, directory: str | Path, observation_size: int = 184):
+    def __init__(self, worker_id: str, directory: str | Path, observation_size: int = 184,
+                 action_profile: str = "legacy"):
         self.worker_id = worker_id
         self.directory = Path(directory)
         self.observation_path = self.directory / "observation.json"
         self.command_path = self.directory / "command.json"
         self.observation_size = observation_size
+        if action_profile not in ("legacy", "rainbow"):
+            raise ValueError("action_profile must be 'legacy' or 'rainbow'")
+        self.action_profile = action_profile
         self.last_sequence = -1
         self.previous: Observation | None = None
 
@@ -62,9 +66,16 @@ class FileWorker:
         return observation
 
     def send_action(self, observation: Observation, action: int) -> None:
-        if action < 0 or action >= len(ACTION_NAMES):
-            raise ValueError(f"invalid SMB1 action: {action}")
-        atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": int(action), "reset": False})
+        if self.action_profile == "rainbow":
+            _, duration_frames = decode_action(action)
+        else:
+            if action < 0 or action >= 6:
+                raise ValueError(f"invalid legacy SMB1 action: {action}")
+            duration_frames = LEGACY_DURATION_FRAMES
+        atomic_write_json(self.command_path, {"sequence": observation.sequence,
+                                              "action": int(action),
+                                              "duration_frames": duration_frames,
+                                              "reset": False})
 
     def reset(self, observation: Observation) -> None:
         atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3, "reset": True})
@@ -75,10 +86,13 @@ class FileWorker:
                                               "reset": False, "hold": True})
 
 
-def prepare_worker_directory(template: Path, worker_directory: Path, target_world: int) -> Path:
+def prepare_worker_directory(template: Path, worker_directory: Path, target_world: int,
+                             action_profile: str = "legacy") -> Path:
     """Create an isolated bridge file and protocol directory for one emulator."""
     if not 1 <= target_world <= 8:
         raise ValueError("SMB1 target worlds must be in the range 1..8")
+    if action_profile not in ("legacy", "rainbow"):
+        raise ValueError("action_profile must be 'legacy' or 'rainbow'")
     worker_directory.mkdir(parents=True, exist_ok=True)
     for name in ("observation.json", "command.json"):
         try:
@@ -89,14 +103,16 @@ def prepare_worker_directory(template: Path, worker_directory: Path, target_worl
     worker_literal = str(worker_directory.resolve()).replace("\\", "\\\\").replace('"', '\\"')
     bridge_source = (template.read_text(encoding="utf-8")
                      .replace("__WORKER_DIRECTORY__", worker_literal)
-                     .replace("__TARGET_WORLD_INDEX__", str(target_world - 1)))
+                     .replace("__TARGET_WORLD_INDEX__", str(target_world - 1))
+                     .replace("__ACTION_PROFILE__", action_profile))
     bridge_path.write_text(bridge_source, encoding="utf-8")
     return bridge_path
 
 
 def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_directory: Path,
                          count: int, target_worlds: Sequence[int] | None = None,
-                         extra_args: Sequence[str] = ()) -> list[subprocess.Popen[bytes]]:
+                         extra_args: Sequence[str] = (),
+                         action_profile: str = "legacy") -> list[subprocess.Popen[bytes]]:
     """Launch isolated FCEUX processes. FCEUX officially supports `-lua` and `-nothrottle`."""
     executable = shutil.which(fceux) or fceux
     if not Path(rom).is_file():
@@ -118,7 +134,7 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
     processes: list[subprocess.Popen[bytes]] = []
     for index in range(count):
         bridge = prepare_worker_directory(bridge_template, run_directory / f"worker-{index:02d}",
-                                          assigned_worlds[index])
+                                          assigned_worlds[index], action_profile)
         # FCEUX is launched from the worker directory, so the bridge must be
         # absolute; otherwise a relative run directory is resolved twice.
         fceux_arguments = [lua_option, str(bridge.resolve()), *extra_args, str(rom.resolve())]

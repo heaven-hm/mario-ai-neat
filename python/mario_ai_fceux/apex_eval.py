@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from .actions import ACTION_COUNT, greedy_action
 from .environment import FileWorker, Observation
 from .model import RainbowNetwork
 from .protocol import atomic_write_json
@@ -88,7 +89,7 @@ def eval_worker_main(
     weight_queue: Queue,         # receives ("weights", bytes) from learner
     run_directory: str,
     observation_size: int = 184,
-    action_count: int = 6,
+    action_count: int = ACTION_COUNT,
     atom_count: int = 51,
     value_min: float = -20.0,
     value_max: float = 20.0,
@@ -143,7 +144,7 @@ def eval_worker_main(
         obs = torch.from_numpy(state.astype(np.float32)).unsqueeze(0).to(device)
         with torch.no_grad():
             q_values = network(obs, support)
-        return int(q_values.argmax(dim=1).item())
+        return greedy_action(q_values[0].cpu().numpy())
 
     def _run_eval_episode() -> dict:
         """Run one full greedy episode; return episode stats."""

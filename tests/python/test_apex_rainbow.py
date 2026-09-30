@@ -40,8 +40,11 @@ from mario_ai_fceux.apex_actor import (
     _terminal_transition,
     _shaped_reward,
 )
+from mario_ai_fceux.actions import (ACTION_COUNT, ACTION_NAMES, decode_action,
+                                    encode_action, greedy_action, migrate_legacy_action)
 from mario_ai_fceux.apex_learner import apex_learner_main, _serialize_weights
 from mario_ai_fceux.apex_train import parse_arguments
+from mario_ai_fceux.agent import RainbowAgent
 from mario_ai_fceux.model import RainbowNetwork
 from mario_ai_fceux.replay import Transition
 from mario_ai_fceux.environment import Observation
@@ -133,6 +136,46 @@ class TestNStepBuffer(unittest.TestCase):
         ready_b = buf_b.push(t_b)
         # Actor A's reward must be higher than actor B's.
         self.assertGreater(ready_a[0].reward, ready_b[0].reward)
+
+    def test_n_step_discount_uses_each_action_horizon(self) -> None:
+        buf = NStepBuffer(gamma=0.99, n_step=2)
+        self.assertEqual(buf.push(_make_transition(gamma=0.99 ** 0.5)), [])
+        result = buf.push(_make_transition(gamma=0.99 ** 2.0))[0]
+        self.assertAlmostEqual(result.discount, (0.99 ** 0.5) * (0.99 ** 2.0), places=6)
+
+
+class TestSMB1Actions(unittest.TestCase):
+
+    def test_action_space_has_directional_jumps_and_variable_horizons(self) -> None:
+        self.assertEqual(ACTION_COUNT, 21)
+        self.assertEqual(len(ACTION_NAMES), ACTION_COUNT)
+        self.assertEqual(decode_action(encode_action(1, 2)), ("jump_run", 24))
+        self.assertEqual(decode_action(encode_action(6, 1)), ("jump_back", 12))
+
+    def test_legacy_actions_map_to_their_12_frame_equivalents(self) -> None:
+        self.assertEqual([migrate_legacy_action(index) for index in range(6)], [1, 4, 7, 10, 13, 16])
+
+    def test_migrated_jump_ties_prefer_full_jump_horizon(self) -> None:
+        values = np.zeros(ACTION_COUNT, dtype=np.float32)
+        self.assertEqual(greedy_action(values), 1)  # stable 12-frame run tie-break
+        values[3:6] = 1.0
+        self.assertEqual(greedy_action(values), 5)
+
+    def test_legacy_network_heads_expand_and_preserve_medium_action_heads(self) -> None:
+        old_network = RainbowNetwork(observation_size=4, action_count=6, atom_count=5)
+        new_network = RainbowNetwork(observation_size=4, action_count=ACTION_COUNT, atom_count=5)
+        expanded = RainbowAgent._expand_legacy_action_head(
+            old_network.state_dict(), new_network.state_dict(), atom_count=5
+        )
+        self.assertEqual(expanded["advantage_output.weight_mu"].shape,
+                         new_network.state_dict()["advantage_output.weight_mu"].shape)
+        old_weights = old_network.state_dict()["advantage_output.weight_mu"]
+        new_weights = expanded["advantage_output.weight_mu"]
+        for legacy_action in range(6):
+            old_slice = old_weights[legacy_action * 5:(legacy_action + 1) * 5]
+            medium_action = legacy_action * 3 + 1
+            new_slice = new_weights[medium_action * 5:(medium_action + 1) * 5]
+            self.assertTrue(torch.equal(old_slice, new_slice))
 
 
 class TestReplayCorrectness(unittest.TestCase):
@@ -353,7 +396,7 @@ class TestActorConfig(unittest.TestCase):
     def test_default_config_is_sane(self) -> None:
         cfg = ActorConfig()
         self.assertEqual(cfg.observation_size, 184)
-        self.assertEqual(cfg.action_count, 6)
+        self.assertEqual(cfg.action_count, ACTION_COUNT)
         self.assertEqual(cfg.n_step, 3)
         self.assertGreater(cfg.batch_size, 0)
 

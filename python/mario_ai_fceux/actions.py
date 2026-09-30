@@ -1,0 +1,60 @@
+"""SMB1 high-level actions and their semi-Markov frame durations."""
+
+from __future__ import annotations
+
+
+# Each base action has short, normal, and committed horizons.  The normal
+# 12-frame choices preserve the meaning of actions in older checkpoints.
+ACTION_BASES = ("run", "jump_run", "retreat", "brake", "jump_place", "walk", "jump_back")
+ACTION_DURATIONS = (6, 12, 24)
+ACTION_COUNT = len(ACTION_BASES) * len(ACTION_DURATIONS)
+LEGACY_ACTION_COUNT = 6
+LEGACY_DURATION_FRAMES = 12
+
+
+def encode_action(base_index: int, duration_index: int) -> int:
+    if not 0 <= base_index < len(ACTION_BASES):
+        raise ValueError("invalid SMB1 action base")
+    if not 0 <= duration_index < len(ACTION_DURATIONS):
+        raise ValueError("invalid SMB1 action duration")
+    return base_index * len(ACTION_DURATIONS) + duration_index
+
+
+def decode_action(action: int) -> tuple[str, int]:
+    if not 0 <= action < ACTION_COUNT:
+        raise ValueError(f"invalid SMB1 action: {action}")
+    base_index, duration_index = divmod(action, len(ACTION_DURATIONS))
+    return ACTION_BASES[base_index], ACTION_DURATIONS[duration_index]
+
+
+ACTION_NAMES = tuple(
+    f"{base.replace('_', '+')}@{duration}"
+    for base in ACTION_BASES
+    for duration in ACTION_DURATIONS
+)
+
+
+def migrate_legacy_action(action: int) -> int:
+    """Map a legacy fixed 12-frame action to its equivalent new action."""
+    if not 0 <= action < LEGACY_ACTION_COUNT:
+        raise ValueError(f"invalid legacy SMB1 action: {action}")
+    return encode_action(action, ACTION_DURATIONS.index(LEGACY_DURATION_FRAMES))
+
+
+def greedy_action(q_values) -> int:
+    """Break exact migrated-head ties toward a useful jump horizon.
+
+    Old six-action checkpoints expand each learned value into three duration
+    variants. Until training separates those values, ties favor the normal
+    horizon for locomotion and the full horizon for jump actions.
+    """
+    values = [float(value) for value in q_values]
+    if len(values) != ACTION_COUNT:
+        raise ValueError(f"expected {ACTION_COUNT} Q values, got {len(values)}")
+    best = max(values)
+    tied = [index for index, value in enumerate(values) if best - value <= 1e-6]
+    priorities = {}
+    for base_index in range(len(ACTION_BASES)):
+        preferred_duration = 2 if base_index in (1, 4, 6) else 1
+        priorities[encode_action(base_index, preferred_duration)] = 1
+    return max(tied, key=lambda index: (priorities.get(index, 0), -index))

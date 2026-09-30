@@ -22,6 +22,7 @@ from typing import Deque
 import numpy as np
 import torch
 
+from .actions import ACTION_COUNT, LEGACY_DURATION_FRAMES, decode_action, greedy_action
 from .environment import FileWorker, Observation
 from .model import RainbowNetwork
 from .protocol import atomic_write_json, read_json
@@ -48,7 +49,7 @@ def _apex_epsilon(actor_index: int, total_actors: int) -> float:
 @dataclass
 class ActorConfig:
     observation_size: int = 184
-    action_count: int = 6
+    action_count: int = ACTION_COUNT
     gamma: float = 0.99
     n_step: int = 3
     batch_size: int = 32          # transitions per queue push
@@ -83,7 +84,8 @@ class NStepBuffer:
             next_state = self.pending[0].next_state
             for step in list(self.pending)[: self.n_step]:
                 reward += discount * step.reward
-                discount *= self.gamma
+                # Each decision carries its own duration-adjusted discount.
+                discount *= step.discount
                 next_state, terminal = step.next_state, step.terminated
                 if terminal:
                     break
@@ -134,11 +136,13 @@ def _action_details(
     with torch.no_grad():
         encoded = network.encoder(obs)
         q_values = network(obs, support)
-    greedy_action = int(q_values.argmax(dim=1).item())
+    greedy_index = (greedy_action(q_values[0].cpu().numpy())
+                    if action_count == ACTION_COUNT
+                    else int(q_values.argmax(dim=1).item()))
     if np.random.random() < epsilon:
         action = int(np.random.randint(action_count))
     else:
-        action = greedy_action
+        action = greedy_index
     hidden_summary = encoded.reshape(-1, 16, 16).mean(dim=2)
     return action, q_values[0].cpu().numpy(), hidden_summary[0].cpu().numpy()
 
@@ -307,6 +311,7 @@ def actor_main(
             worker.reset(observation)
             worker.previous = None
             worker.previous_action = 0  # type: ignore[attr-defined]
+            worker.previous_action_duration = LEGACY_DURATION_FRAMES  # type: ignore[attr-defined]
             atomic_write_json(
                 metrics_path,
                 {
@@ -343,7 +348,10 @@ def actor_main(
                 reward=raw_reward,
                 next_state=observation.state,
                 terminated=False,
-                discount=config.gamma,
+                discount=config.gamma ** (
+                    getattr(worker, "previous_action_duration", LEGACY_DURATION_FRAMES)
+                    / LEGACY_DURATION_FRAMES
+                ),
             )
             for ready in n_step_buf.push(t):
                 batch.append(ready)
@@ -354,6 +362,7 @@ def actor_main(
 
         worker.previous = observation
         worker.previous_action = action  # type: ignore[attr-defined]
+        worker.previous_action_duration = decode_action(action)[1]  # type: ignore[attr-defined]
 
         # Periodic weight sync.
         if steps - last_sync >= config.weight_sync_every:
