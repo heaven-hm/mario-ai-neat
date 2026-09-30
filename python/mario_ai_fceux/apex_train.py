@@ -54,7 +54,7 @@ from .apex_actor import ActorConfig, actor_main, _apex_epsilon
 from .apex_eval import eval_worker_main
 from .apex_learner import apex_learner_main
 from .environment import START_PROTOCOL, FileWorker, launch_fceux_workers
-from .protocol import atomic_write_json
+from .protocol import atomic_write_json, read_json
 from .train import read_lua_neat_summary
 
 logging.basicConfig(
@@ -123,6 +123,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Zero-based worker indexes that load the ROM .cht file.")
     parser.add_argument("--cheat-file", type=Path, default=None,
                         help="Optional FCEUX .cht file copied into enabled workers.")
+    parser.add_argument("--alternate-cheat-campaigns", action="store_true",
+                        help="For initially powered workers, alternate cheat mode after each World-N-4 win.")
 
     return parser.parse_args()
 
@@ -263,6 +265,7 @@ def main() -> None:
         "eval_actor": 1,
         "worlds": requested_worlds,
         "cheats_enabled_workers": [index for index, enabled in enumerate(worker_cheats) if enabled],
+        "alternate_cheat_campaigns": bool(args.alternate_cheat_campaigns),
         "window_layout": str(args.window_layout),
         "replay_capacity": args.replay_capacity,
         "exploration": {
@@ -413,10 +416,13 @@ def main() -> None:
     # ---- Launch actor processes.
     actor_processes = []
     for i, worker in enumerate(training_workers):
+        actor_config_dict = {**vars(actor_config), "alternate_cheat_campaigns": bool(
+            args.alternate_cheat_campaigns and worker_cheats[i]
+        )}
         p = context.Process(
             target=actor_main,
             args=(i, args.workers, worker, experience_queue, weight_queues[i],
-                  str(args.run_dir), vars(actor_config), args.device),
+                  str(args.run_dir), actor_config_dict, args.device),
             daemon=True,
         )
         p.start()
@@ -465,10 +471,39 @@ def main() -> None:
     next_heartbeat_at = time.monotonic() + 5.0
     learner_status: dict = {"steps": 0, "optimizer_updates": 0,
                             "replay_transitions": 0, "epsilon": 0.0, "latest_loss": None}
+    active_cheat_modes = list(worker_cheats)
+
+    def restart_requested_worker(index: int, cheats_enabled: bool) -> None:
+        """Restart one campaign worker so FCEUX reloads its private cheat config."""
+        previous = fceux_processes[index]
+        if previous.poll() is None:
+            previous.terminate()
+            try:
+                previous.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                previous.kill()
+        replacement = launch_fceux_workers(
+            args.fceux, args.rom, bridge_template, args.run_dir, 1,
+            (requested_worlds[index],), action_profile="rainbow",
+            cheats_enabled=(cheats_enabled,), window_layout=args.window_layout,
+            cheat_file=args.cheat_file, worker_indexes=(index,),
+        )[0]
+        fceux_processes[index] = replacement
+        active_cheat_modes[index] = cheats_enabled
+        logger.info("Worker %d restarted for campaign cheat mode: %s", index,
+                    "enabled" if cheats_enabled else "disabled")
 
     try:
         while active:
             now = time.monotonic()
+            if args.alternate_cheat_campaigns:
+                for index in range(args.workers):
+                    request = read_json(args.run_dir / f"worker-{index:02d}" / "mode_request.json")
+                    if not isinstance(request, dict) or "cheats_enabled" not in request:
+                        continue
+                    requested_mode = bool(request["cheats_enabled"])
+                    if requested_mode != active_cheat_modes[index]:
+                        restart_requested_worker(index, requested_mode)
             if now >= next_heartbeat_at:
                 write_supervisor_heartbeat(True)
                 next_heartbeat_at = now + 5.0

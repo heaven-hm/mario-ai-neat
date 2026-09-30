@@ -76,7 +76,8 @@ local function readCommand(sequence)
   return baseIndex+1,durationFrames,
     text:match('"reset"%s*:%s*true')~=nil,text:match('"hold"%s*:%s*true')~=nil,
     text:match('"advance"%s*:%s*true')~=nil,
-    text:match('"campaign_reset"%s*:%s*true')~=nil,action
+    text:match('"campaign_reset"%s*:%s*true')~=nil,
+    text:match('"restart_with_cheats"%s*:%s*(%a+)'),action
 end
 
 local function phase()
@@ -432,15 +433,24 @@ while true do
       sequence=sequence+1
       local terminal=snapshot.phase=="death" or snapshot.phase=="victory" or deathReset
       publish(sequence,snapshot,terminal,deathReset and "death" or nil)
-      local action,durationFrames,reset,hold,advance,campaignReset=nil,nil,false,false,false,false
+      local action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats=nil,nil,false,false,false,false,nil
       for _=1,RESPONSE_TIMEOUT_FRAMES do
-        action,durationFrames,reset,hold,advance,campaignReset=readCommand(sequence)
+        action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats=readCommand(sequence)
         if action~=nil then break end
         joypad.set(1,{})
         drawPythonHud()
         emu.frameadvance()
       end
-      if campaignReset and worldStartHandle then
+      if campaignReset and restartWithCheats~=nil then
+        -- FCEUX loads its cheat file only at process startup. Ask the Python
+        -- supervisor to restart only this worker with the other mode; the
+        -- new bridge selects this world's level 1 and makes fresh states.
+        writeAtomic("mode_request.json",string.format(
+          '{"sequence":%d,"cheats_enabled":%s}',sequence,restartWithCheats))
+        joypad.set(1,{})
+        drawPythonHud()
+        emu.frameadvance()
+      elseif campaignReset and worldStartHandle then
         joypad.set(1,{})
         savestate.load(worldStartHandle)
         initialWorldX=nil

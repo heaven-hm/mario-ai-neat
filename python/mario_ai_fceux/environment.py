@@ -71,6 +71,7 @@ class FileWorker:
         self.action_profile = action_profile
         self.last_sequence = -1
         self.previous: Observation | None = None
+        self._bridge_restarted = False
 
     def next_observation(self) -> Observation | None:
         message = read_json(self.observation_path)
@@ -78,7 +79,15 @@ class FileWorker:
             return None
         sequence = int(message["sequence"])
         if sequence <= self.last_sequence:
-            return None
+            # A campaign boundary can restart only this worker's FCEUX process
+            # to switch its private cheat configuration.  Its Lua sequence
+            # then restarts at 1; accept that as a new episode source.
+            if sequence < self.last_sequence:
+                self.last_sequence = -1
+                self.previous = None
+                self._bridge_restarted = True
+            else:
+                return None
         features = message.get("features")
         if not isinstance(features, list) or len(features) != self.observation_size:
             raise ValueError(f"worker {self.worker_id} emitted an invalid feature vector")
@@ -122,6 +131,18 @@ class FileWorker:
         atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3,
                                               "campaign_reset": True})
 
+    def restart_world_with_cheat_mode(self, observation: Observation, cheats_enabled: bool) -> None:
+        """Request an FCEUX restart with the supplied private cheat mode."""
+        atomic_write_json(self.command_path, {
+            "sequence": observation.sequence, "action": 3, "campaign_reset": True,
+            "restart_with_cheats": bool(cheats_enabled),
+        })
+
+    def consume_bridge_restart(self) -> bool:
+        restarted = self._bridge_restarted
+        self._bridge_restarted = False
+        return restarted
+
     def hold(self, observation: Observation) -> None:
         """Keep an episode-boundary PPO actor on its saved start state."""
         atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3,
@@ -139,7 +160,7 @@ def prepare_worker_directory(template: Path, worker_directory: Path, target_worl
     # Remove protocol state from a previous process. In particular, stale
     # bridge_started/status files can falsely make a new emulator look ready.
     for name in ("observation.json", "command.json", "bridge_started.json",
-                 "status.json", "hud.json"):
+                 "status.json", "hud.json", "mode_request.json"):
         try:
             (worker_directory / name).unlink()
         except FileNotFoundError:
@@ -160,7 +181,8 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
                          action_profile: str = "legacy",
                          cheats_enabled: Sequence[bool] | None = None,
                          window_layout: Path | None = None,
-                         cheat_file: Path | None = None) -> list[subprocess.Popen[bytes]]:
+                         cheat_file: Path | None = None,
+                         worker_indexes: Sequence[int] | None = None) -> list[subprocess.Popen[bytes]]:
     """Launch isolated FCEUX processes. FCEUX officially supports `-lua` and `-nothrottle`."""
     executable = shutil.which(fceux) or fceux
     if not Path(rom).is_file():
@@ -170,6 +192,9 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
     assigned_worlds = tuple(target_worlds or (1,) * count)
     if len(assigned_worlds) != count:
         raise ValueError("target_worlds must contain one world for each worker")
+    indexes = tuple(worker_indexes or range(count))
+    if len(indexes) != count or len(set(indexes)) != count or any(index < 0 for index in indexes):
+        raise ValueError("worker_indexes must contain unique non-negative worker indexes")
     if cheats_enabled is None:
         assigned_cheats = (False,) * count
     else:
@@ -190,15 +215,15 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
         help_output = ""
     lua_option = "--loadlua" if "--loadlua" in help_output else "-lua"
     processes: list[subprocess.Popen[bytes]] = []
-    for index in range(count):
+    for local_index, index in enumerate(indexes):
         bridge = prepare_worker_directory(bridge_template, run_directory / f"worker-{index:02d}",
-                                          assigned_worlds[index], action_profile)
+                                          assigned_worlds[local_index], action_profile)
         # FCEUX otherwise auto-loads ~/.fceux/cheats/SuperMarioBros.cht even
         # with --gamegenie 0. Give each process its own empty cheat directory
         # and explicitly disable the cheat engine in its private config.
         config_directory = bridge.parent / "fceux-config"
         config_directory.mkdir(exist_ok=True)
-        cheats_on = assigned_cheats[index]
+        cheats_on = assigned_cheats[local_index]
         (config_directory / "fceux.cfg").write_text(
             "SDL.CheatsDisableAutoLS = %d\nSDL.CheatsDisabled = %d\nSDL.GameGenie = 0\n"
             % (0 if cheats_on else 1, 0 if cheats_on else 1), encoding="utf-8")

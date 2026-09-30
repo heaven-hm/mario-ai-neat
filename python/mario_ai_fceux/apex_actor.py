@@ -65,6 +65,7 @@ class ActorConfig:
     value_max: float = 100.0
     weight_sync_every: int = 400  # steps between weight pulls
     seed: int = 7
+    alternate_cheat_campaigns: bool = False
 
 
 class NStepBuffer:
@@ -300,6 +301,12 @@ def actor_main(
             if not weights_ready or steps - last_sync >= config.weight_sync_every:
                 _sync_weights()
             continue
+        if worker.consume_bridge_restart():
+            # The terminal win was already flushed before the supervisor
+            # restarted FCEUX. Do not create a transition across cheat modes.
+            worker.previous = None
+            n_step_buf.flush()
+            progress_tracker.reset()
 
         episode_max_x = max(episode_max_x, observation.world_x)
         best_episode_x = max(best_episode_x, episode_max_x)
@@ -331,7 +338,13 @@ def actor_main(
                 # restores that world's 1-1 state after 1-4.
                 if observation.level >= 3:
                     campaigns_completed += 1
-                    worker.restart_world(observation)
+                    if config.alternate_cheat_campaigns:
+                        # First campaign is powered; each later completed
+                        # World-N-1..N-4 cycle flips to normal, then powered.
+                        next_cheat_mode = campaigns_completed % 2 == 0
+                        worker.restart_world_with_cheat_mode(observation, next_cheat_mode)
+                    else:
+                        worker.restart_world(observation)
                 else:
                     worker.advance_level(observation)
             else:

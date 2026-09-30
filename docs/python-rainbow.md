@@ -119,6 +119,16 @@ its observation, so it can distinguish the 32 SMB1 courses. A worker restart
 begins its campaign from that worker's World-N-1; model and replay checkpoints
 remain reusable across restarts.
 
+### Alternating powered and normal campaigns
+
+With `--cheats-enabled-workers 0,1,2,3 --alternate-cheat-campaigns`, workers
+0–3 begin powered. After each completes all four levels in its world, FCEUX
+restarts only that worker with cheats disabled for the next four-level campaign.
+After the normal campaign completes, it restarts powered again. Workers 4–7 and
+the greedy evaluator remain normal Mario throughout. FCEUX reloads its private
+cheat configuration on this controlled restart; the bridge does not pretend to
+toggle power by writing RAM.
+
 ### Checkpoints and storage
 
 `model.pt` and `replay.npz` are written every 10,000 learner updates and when
