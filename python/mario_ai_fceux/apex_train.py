@@ -37,6 +37,7 @@ import hashlib
 import json
 import logging
 import multiprocessing
+import os
 import shutil
 import signal
 import subprocess
@@ -404,6 +405,21 @@ def main() -> None:
     eval_process.start()
     logger.info("Eval worker started (PID %d)", eval_process.pid)
 
+    monitor_path = args.run_dir / "supervisor.json"
+
+    def write_supervisor_heartbeat(running: bool) -> None:
+        atomic_write_json(monitor_path, {
+            "running": running,
+            "heartbeat_unix": time.time(),
+            "trainer_pid": os.getpid(),
+            "actor_pids": [process.pid for process in actor_processes],
+            "emulator_pids": [process.pid for process in fceux_processes],
+            "eval_pid": eval_process.pid,
+            "eval_emulator_pids": [process.pid for process in eval_fceux],
+        })
+
+    write_supervisor_heartbeat(True)
+
     # ---- Coordinator loop (health monitoring only — no training logic here).
     active = True
 
@@ -416,12 +432,16 @@ def main() -> None:
 
     next_health_at = time.monotonic()
     next_status_at = time.monotonic()
+    next_heartbeat_at = time.monotonic() + 5.0
     learner_status: dict = {"steps": 0, "optimizer_updates": 0,
                             "replay_transitions": 0, "epsilon": 0.0, "latest_loss": None}
 
     try:
         while active:
             now = time.monotonic()
+            if now >= next_heartbeat_at:
+                write_supervisor_heartbeat(True)
+                next_heartbeat_at = now + 5.0
             if now >= next_status_at:
                 if not learner_process.is_alive():
                     raise RuntimeError("Rainbow learner exited; see the learner log before resuming")
@@ -503,6 +523,7 @@ def main() -> None:
                 proc.wait(timeout=5)
             except Exception:
                 proc.kill()
+        write_supervisor_heartbeat(False)
         logger.info("All processes stopped.")
 
 

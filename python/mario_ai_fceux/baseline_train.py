@@ -39,8 +39,6 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--worlds", default="1")
     parser.add_argument("--steps", type=int, default=1_000_000)
     parser.add_argument("--checkpoint-every", type=int, default=10_000)
-    parser.add_argument("--ppo-rollout-steps", type=int, default=2_048,
-                        help="PPO applies updates only after every worker completed an episode.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default=None)
     parser.add_argument("--resume", action="store_true")

@@ -49,6 +49,26 @@ class BaselineAlgorithmTests(unittest.TestCase):
         self.assertEqual(agent.rollout, {})
         self.assertEqual(agent.updates, 1)
 
+    def test_ppo_learns_the_rewarded_action_in_a_contextual_bandit(self) -> None:
+        configuration = self.config()
+        configuration.learning_rate = 0.01
+        configuration.ppo_epochs = 4
+        configuration.ppo_minibatch_size = 16
+        agent = PPOAgent(configuration, device="cpu")
+        state = np.zeros(8, dtype=np.float32)
+        for _ in range(12):
+            for _ in range(64):
+                action, old_log_probability, old_value = agent.act_with_statistics(state)
+                reward = float(action == 1)
+                agent.observe("worker", state, action, reward, old_log_probability,
+                              old_value, terminated=True)
+            agent.learn()
+        with torch.no_grad():
+            logits, _ = agent.policy(torch.zeros((1, 8)))
+            probability_of_rewarded_action = torch.softmax(logits, dim=-1)[0, 1].item()
+        self.assertGreater(probability_of_rewarded_action, 0.9)
+        self.assertEqual(agent.updates, 12)
+
     def test_both_baseline_checkpoints_load_as_deterministic_policies(self) -> None:
         sample_states = np.zeros((2, 8), dtype=np.float32)
         for agent_class in (DDQNAgent, PPOAgent):

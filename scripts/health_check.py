@@ -4,22 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import shutil
-import subprocess
+import sys
 import time
 from pathlib import Path
 
 
-MARKER = "mario_ai_fceux.apex_train"
 HUD_STALE_SECONDS = 180
 MINIMUM_FREE_BYTES = 5 * 1024**3
 
-
-def process_commands() -> list[str]:
-    result = subprocess.run(["ps", "-ax", "-o", "command="], check=True,
-                          capture_output=True, text=True)
-    return result.stdout.splitlines()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "python"))
+from mario_ai_fceux.monitor import read_run_monitor
 
 
 def file_age_seconds(path: Path) -> float | None:
@@ -35,34 +31,18 @@ def main() -> int:
     options = parser.parse_args()
     run_directory = options.run_dir.resolve()
     health_directory = run_directory / "health"
-    repository_root = Path(__file__).resolve().parents[1]
+    repository_root = PROJECT_ROOT
     try:
         metadata = json.loads((run_directory / "run.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         metadata = {}
     expected_workers = int(metadata.get("training_actors", 8))
-    commands = process_commands()
-    def belongs_to_run(command: str) -> bool:
-        if MARKER not in command:
-            return False
-        # Training is often launched with a repository-relative --run-dir,
-        # while FCEUX bridge paths are absolute. Normalize both forms.
-        if str(run_directory) in command:
-            return True
-        try:
-            tokens = shlex.split(command)
-            run_index = tokens.index("--run-dir")
-            process_run = Path(tokens[run_index + 1])
-            if not process_run.is_absolute():
-                process_run = repository_root / process_run
-            return process_run.resolve() == run_directory
-        except (ValueError, IndexError):
-            return False
-
-    trainers = sum(belongs_to_run(command) for command in commands)
-    worker_prefix = str(run_directory / "worker-")
-    worker_commands = [command for command in commands
-                       if "mario_ai_fceux_bridge.lua" in command and worker_prefix in command]
+    monitor = read_run_monitor(run_directory)
+    trainers = int(bool(monitor["running"]))
+    worker_processes = int(monitor["actor_alive"])
+    emulator_processes = int(monitor["emulator_alive"])
+    eval_processes = int(bool(monitor["eval_alive"]))
+    eval_emulator_processes = int(monitor["eval_emulator_alive"])
     observation_ages = [file_age_seconds(run_directory / f"worker-{index:02d}" / "observation.json")
                         for index in range(expected_workers)]
     fresh_workers = sum(age is not None and age <= HUD_STALE_SECONDS for age in observation_ages)
@@ -70,8 +50,12 @@ def main() -> int:
     repairs: list[str] = []
     if trainers != 1:
         repairs.append(f"expected one Ape-X trainer for this run; found {trainers}")
-    if len(worker_commands) != expected_workers:
-        repairs.append(f"expected {expected_workers} FCEUX actors; found {len(worker_commands)}")
+    if worker_processes != expected_workers:
+        repairs.append(f"expected {expected_workers} learner actors; found {worker_processes}")
+    if emulator_processes != expected_workers:
+        repairs.append(f"expected {expected_workers} FCEUX actors; found {emulator_processes}")
+    if eval_processes != 1 or eval_emulator_processes != 1:
+        repairs.append("greedy evaluator or its FCEUX process is not alive")
     if fresh_workers != expected_workers:
         repairs.append(f"expected {expected_workers} fresh observations; found {fresh_workers}")
     if disk.free < MINIMUM_FREE_BYTES:
@@ -148,7 +132,11 @@ def main() -> int:
         "trainer_report_age_seconds": None if trainer_age is None else round(trainer_age, 1),
         "python_rainbow": {
             "trainer_count": trainers,
-            "worker_count": len(worker_commands),
+            "worker_count": worker_processes,
+            "emulator_count": emulator_processes,
+            "eval_process_count": eval_processes,
+            "eval_emulator_count": eval_emulator_processes,
+            "heartbeat_age_seconds": monitor["heartbeat_age_seconds"],
             "fresh_observation_count": fresh_workers,
             "observation_ages_seconds": observation_ages,
         },
