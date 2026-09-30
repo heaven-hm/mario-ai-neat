@@ -22,13 +22,39 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .actions import ACTION_COUNT, ACTION_NAMES, decode_action, greedy_action
+from .actions import ACTION_COUNT, ACTION_NAMES, decode_action
 from .environment import FileWorker, NoProgressTracker, Observation
 from .model import RainbowNetwork
-from .protocol import atomic_write_json
-from .apex_actor import _load_weights_from_bytes
+from .protocol import atomic_write_json, read_json
+from .apex_actor import _action_details, _load_weights_from_bytes
 
 logger = logging.getLogger(__name__)
+
+
+def publish_eval_hud(worker: FileWorker, run_directory: Path, observation: Observation,
+                     action: int, q_values: np.ndarray, hidden: np.ndarray,
+                     decisions: int, episodes: int, deaths: int, victories: int,
+                     best_x: int) -> None:
+    """Show real greedy evaluation activity instead of the bridge's zero defaults."""
+    learner = read_json(run_directory / "learner_status.json") or {}
+    atomic_write_json(worker.directory / "hud.json", {
+        "mode": "eval",
+        "sequence": observation.sequence,
+        "steps": decisions,
+        "updates": int(learner.get("optimizer_updates", 0)),
+        "replay": int(learner.get("replay_transitions", 0)),
+        "epsilon": 0.0,
+        "episodes": episodes,
+        "deaths": deaths,
+        "victories": victories,
+        "best_x": best_x,
+        "loss": float(learner.get("latest_loss") or 0.0),
+        "action": action,
+        "values": [float(value) for value in q_values],
+        "grid": [float(value) for value in observation.state[:169]],
+        "globals": [float(value) for value in observation.state[169:184]],
+        "hidden": [float(value) for value in hidden],
+    })
 
 
 def build_benchmark_report(episodes: list[dict], run_metadata: dict,
@@ -170,6 +196,11 @@ def eval_worker_main(
     prior_evaluations = [path for path in (run_dir / "evaluations").glob("eval-*")
                          if path.is_dir() and path.name.removeprefix("eval-").isdigit()]
     eval_count = max((int(path.name.removeprefix("eval-")) for path in prior_evaluations), default=0)
+    total_decisions = 0
+    completed_episodes = 0
+    total_deaths = 0
+    total_victories = 0
+    best_world_x = 0
 
     def _load_latest_weights() -> bool:
         nonlocal weights_loaded, loaded_weight_bytes
@@ -189,15 +220,9 @@ def eval_worker_main(
                 logger.warning("Eval weight load failed: %s", exc)
         return weights_loaded
 
-    def _greedy_action(state: np.ndarray) -> tuple[int, np.ndarray]:
-        obs = torch.from_numpy(state.astype(np.float32)).unsqueeze(0).to(device)
-        with torch.no_grad():
-            q_values = network(obs, support)
-        values = q_values[0].cpu().numpy()
-        return greedy_action(values), values
-
     def _run_eval_episode() -> dict:
         """Run one full greedy episode; return episode stats."""
+        nonlocal total_decisions, completed_episodes, total_deaths, total_victories, best_world_x
         episode_start = time.monotonic()
         max_x = 0
         decisions = 0
@@ -215,6 +240,7 @@ def eval_worker_main(
                 continue
             last_observation = obs
             max_x = max(max_x, obs.world_x)
+            best_world_x = max(best_world_x, obs.world_x)
             if not obs.terminal and progress_tracker.update(obs.world_x, previous_action_frames):
                 obs = replace(obs, terminal=True, reason="stuck")
             if obs.terminal:
@@ -227,8 +253,16 @@ def eval_worker_main(
                     "action_trace": action_trace,
                 }
                 worker.reset(obs)
+                completed_episodes += 1
+                total_deaths += obs.reason == "death"
+                total_victories += obs.reason == "victory"
                 return result
-            action, q_values = _greedy_action(obs.state)
+            action, q_values, hidden = _action_details(
+                network, support, obs.state, 0.0, action_count, device,
+            )
+            publish_eval_hud(worker, run_dir, obs, action, q_values, hidden,
+                             total_decisions + 1, completed_episodes,
+                             total_deaths, total_victories, best_world_x)
             action_base, duration_frames = decode_action(action)
             action_trace.append({
                 "decision": decisions,
@@ -252,12 +286,14 @@ def eval_worker_main(
             worker.send_action(obs, action)
             previous_action_frames = duration_frames
             decisions += 1
+            total_decisions += 1
         # A timed-out evaluation must not contaminate the next episode.
         if last_observation is not None:
             worker.reset(last_observation)
         result.update({"max_x": max_x, "terminal_x": max_x, "action_decisions": decisions,
                        "elapsed_seconds": round(time.monotonic() - episode_start, 3),
                        "action_trace": action_trace})
+        completed_episodes += 1
         return result
 
     logger.info("Eval worker started")

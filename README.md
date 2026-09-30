@@ -14,9 +14,20 @@ An AI that learns to play **Super Mario Bros. 1 for NES in FCEUX**. It uses NEAT
 
 The original Lua NEAT system remains the FCEUX-native player and
 neuroevolution baseline. This branch also has a **Python + PyTorch
-**Ape-X Rainbow DQN trainer** for faster data collection. It runs eight
+Ape-X Rainbow DQN trainer** for faster data collection. It runs eight
 isolated FCEUX actors plus a separate evaluation emulator and trains one shared
 neural network from their combined experience.
+
+[![Eight Python Rainbow training workers and one evaluation window running in FCEUX](docs/images/python-rainbow-eight-workers.png)](docs/images/python-rainbow-eight-workers.mp4)
+
+*Live desktop capture: eight FCEUX training workers play Worlds 1-1 through 8-1 in parallel. The larger **PYTHON EVAL** window at the upper right tests the shared model without random exploration or learning. [Watch the 10-second screen recording](docs/images/python-rainbow-eight-workers.mp4).*
+
+Each training window shows its own **S** (action decisions), **EP** (completed
+attempts), **D** (deaths), **V** (wins), **X** (best world position), and **E**
+(exploration chance). **U** (model updates) and **M** (stored experiences) come
+from the one shared learner. The evaluation window says **PYTHON EVAL** and
+shows its own greedy attempts; its **E** is zero. These counters show activity,
+while evaluation distance and wins measure whether play improves.
 
 ```mermaid
 flowchart LR
@@ -31,6 +42,8 @@ flowchart LR
     Learner --> Replay["RAM replay + SumTree\nreplay.npz snapshot"]
     Learner --> Model["Reproducible model.pt checkpoint"]
     Model --> W1 & W2 & W3 & W8
+    Model --> Eval["Separate FCEUX evaluation\ngreedy play; no training"]
+    Eval --> Results["Average X + level wins"]
 ```
 
 The Lua bridge only reads SMB1 RAM, draws the FCEUX HUD, and presses NES

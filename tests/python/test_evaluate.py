@@ -6,18 +6,43 @@ import tempfile
 import unittest
 from pathlib import Path
 import json
+import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
 
 from mario_ai_fceux.evaluate import write_episode_csv
 from mario_ai_fceux.apex_eval import (build_benchmark_report, write_action_traces,
-                                      evaluation_rank, save_best_policy,
+                                      evaluation_rank, publish_eval_hud, save_best_policy,
                                       write_benchmark_report)
 from mario_ai_fceux.benchmark import validate_reports
+from mario_ai_fceux.environment import FileWorker, Observation
 
 
 class EvaluationOutputTests(unittest.TestCase):
+    def test_evaluation_window_shows_real_progress_instead_of_zeros(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_directory = Path(directory)
+            worker = FileWorker("eval", run_directory / "worker", action_profile="rainbow")
+            worker.directory.mkdir()
+            (run_directory / "learner_status.json").write_text(
+                json.dumps({"optimizer_updates": 800, "replay_transitions": 12000}),
+                encoding="utf-8",
+            )
+            observation = Observation(42, np.zeros(184, dtype=np.float32),
+                                      546, 0, False, "")
+            publish_eval_hud(worker, run_directory, observation, 4,
+                             np.zeros(21), np.zeros(16), 271, 3, 2, 1, 546)
+            hud = json.loads((worker.directory / "hud.json").read_text())
+            self.assertEqual(hud["mode"], "eval")
+            self.assertEqual((hud["steps"], hud["updates"], hud["replay"]),
+                             (271, 800, 12000))
+            self.assertEqual((hud["episodes"], hud["deaths"], hud["victories"]),
+                             (3, 2, 1))
+            self.assertEqual(hud["epsilon"], 0.0)
+            self.assertEqual((len(hud["grid"]), len(hud["globals"]), len(hud["hidden"])),
+                             (169, 15, 16))
+
     def test_best_policy_keeps_only_a_stronger_measured_greedy_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             run_directory = Path(directory)

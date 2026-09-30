@@ -171,7 +171,7 @@ end
 -- Python writes a small telemetry message beside command.json.  The HUD stays
 -- inside FCEUX so training can be inspected without opening a terminal.
 local ACTION_NAMES={"RUN","JUMP+RUN","BACK","STOP","HOP","WALK","JUMP BACK"}
-local hudCache={sequence=0,steps=0,replay=0,epsilon=1,action=3,
+local hudCache={mode="train",sequence=0,steps=0,replay=0,epsilon=1,action=3,
   updates=0,episodes=0,deaths=0,victories=0,bestX=0,loss=0,
   values={0,0,0,0,0,0},grid={},globals={},hidden={}}
 if ACTION_PROFILE=="rainbow" then hudCache.action=10 end
@@ -192,6 +192,7 @@ local function readHud()
   local text=handle:read("*a");handle:close()
   local sequence=tonumber(text:match('"sequence"%s*:%s*(%d+)'))
   if not sequence then return hudCache end
+  hudCache.mode=text:match('"mode"%s*:%s*"([%w_]+)"') or "train"
   hudCache.sequence=sequence
   hudCache.steps=tonumber(text:match('"steps"%s*:%s*(%d+)')) or hudCache.steps
   hudCache.updates=tonumber(text:match('"updates"%s*:%s*(%d+)')) or hudCache.updates
@@ -286,7 +287,8 @@ local function drawPythonHud()
   drawNetworkInspector(hud)
   local panelLeft,panelTop,panelRight,panelBottom=126,5,255,114
   hudBox(panelLeft,panelTop,panelRight,panelBottom,0xFF102D4A,0xFF4A90E2)
-  hudText(panelLeft+4,panelTop+3,"PYTHON RAINBOW",0xFF00FFFF)
+  hudText(panelLeft+4,panelTop+3,
+    hud.mode=="eval" and "PYTHON EVAL" or "PYTHON RAINBOW",0xFF00FFFF)
   hudText(panelLeft+4,panelTop+13,string.format("S%d U%d",hud.steps,hud.updates),0xFFFFFFFF)
   hudText(panelLeft+4,panelTop+23,string.format("M%d E%.2f",hud.replay,hud.epsilon),0xFFB8C7E0)
   hudText(panelLeft+4,panelTop+33,string.format("EP%d D%d V%d",hud.episodes,hud.deaths,hud.victories),0xFFFFFFFF)
