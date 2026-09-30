@@ -1,7 +1,7 @@
 {
   "algorithm": "Ape-X Rainbow (C51 + NoisyNet + Double DQN + Dueling + PER + N-step)",
-  "evaluation_number": 2,
-  "timestamp": "2026-09-30T22:14:09+0530",
+  "evaluation_number": 27,
+  "timestamp": "2026-09-30T23:20:17+0530",
   "world": 1,
   "level": 1,
   "evaluation_mode": "greedy_no_learning",
@@ -22,44 +22,44 @@
   "episodes": [
     {
       "episode": 1,
-      "reason": "death",
-      "max_x": 282,
-      "terminal_x": 282,
-      "action_decisions": 15,
-      "elapsed_seconds": 3.284
+      "reason": "stuck",
+      "max_x": 2244,
+      "terminal_x": 2242,
+      "action_decisions": 152,
+      "elapsed_seconds": 31.578
     },
     {
       "episode": 2,
-      "reason": "death",
-      "max_x": 282,
-      "terminal_x": 282,
-      "action_decisions": 15,
-      "elapsed_seconds": 3.276
+      "reason": "stuck",
+      "max_x": 2244,
+      "terminal_x": 2242,
+      "action_decisions": 152,
+      "elapsed_seconds": 31.614
     },
     {
       "episode": 3,
       "reason": "death",
-      "max_x": 282,
-      "terminal_x": 282,
-      "action_decisions": 15,
-      "elapsed_seconds": 3.277
+      "max_x": 1763,
+      "terminal_x": 1763,
+      "action_decisions": 99,
+      "elapsed_seconds": 19.467
     },
     {
       "episode": 4,
-      "reason": "death",
-      "max_x": 282,
-      "terminal_x": 282,
-      "action_decisions": 15,
-      "elapsed_seconds": 3.277
+      "reason": "stuck",
+      "max_x": 2244,
+      "terminal_x": 2242,
+      "action_decisions": 152,
+      "elapsed_seconds": 31.614
     },
     {
       "episode": 5,
       "reason": "death",
-      "max_x": 282,
-      "terminal_x": 282,
-      "action_decisions": 15,
-      "elapsed_seconds": 3.277
+      "max_x": 2496,
+      "terminal_x": 2496,
+      "action_decisions": 162,
+      "elapsed_seconds": 33.775
     }
   ],
-  "source_revision": "56776762742932cfc2d9d5740ce82f1c2292e4dc"
+  "source_revision": "84a3b07d429f54b5f2521b2f555907de4c6ffc42"
 }
