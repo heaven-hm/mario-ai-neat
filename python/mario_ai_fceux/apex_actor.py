@@ -14,7 +14,7 @@ import os
 import signal
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from multiprocessing.queues import Queue
 from pathlib import Path
 from typing import Deque
@@ -23,12 +23,19 @@ import numpy as np
 import torch
 
 from .actions import ACTION_COUNT, LEGACY_DURATION_FRAMES, decode_action, greedy_action
-from .environment import FileWorker, Observation
+from .environment import FileWorker, NoProgressTracker, Observation
 from .model import RainbowNetwork
 from .protocol import atomic_write_json, read_json
 from .replay import Transition
 
 logger = logging.getLogger(__name__)
+
+# A death must outweigh several ordinary progress rewards.  The old -5
+# terminal penalty was only a few maximum-sized (+2) progress decisions, so
+# replay taught the policy that repeatedly reaching a dangerous state was
+# still worthwhile.  Keep victory separate and strongly positive.
+DEATH_REWARD_PENALTY = 20.0
+VICTORY_REWARD_BONUS = 20.0
 
 # Ape-X exploration schedule: actor 0 explores most, actor 7 exploits most.
 # Matches the Ape-X paper's per-actor epsilon annealing philosophy.
@@ -238,6 +245,7 @@ def actor_main(
     network.eval()
 
     n_step_buf = NStepBuffer(config.gamma, config.n_step)
+    progress_tracker = NoProgressTracker()
     batch: list[Transition] = []
 
     steps = 0
@@ -294,6 +302,12 @@ def actor_main(
         episode_max_x = max(episode_max_x, observation.world_x)
         best_episode_x = max(best_episode_x, episode_max_x)
 
+        previous_duration = getattr(worker, "previous_action_duration", LEGACY_DURATION_FRAMES)
+        if not observation.terminal and progress_tracker.update(
+            observation.world_x, previous_duration if worker.previous is not None else 0
+        ):
+            observation = replace(observation, terminal=True, reason="stuck")
+
         if observation.terminal:
             # Replay must contain terminal outcomes, not just episode metrics.
             if worker.previous is not None:
@@ -312,6 +326,7 @@ def actor_main(
             worker.previous = None
             worker.previous_action = 0  # type: ignore[attr-defined]
             worker.previous_action_duration = LEGACY_DURATION_FRAMES  # type: ignore[attr-defined]
+            progress_tracker.reset()
             atomic_write_json(
                 metrics_path,
                 {
@@ -341,7 +356,7 @@ def actor_main(
         if worker.previous is not None:
             prev = worker.previous
             prev_action = getattr(worker, "previous_action", 0)
-            raw_reward = _shaped_reward(prev, observation)
+            raw_reward = _shaped_reward(prev, observation, previous_duration)
             t = Transition(
                 state=prev.state,
                 action=prev_action,
@@ -349,7 +364,7 @@ def actor_main(
                 next_state=observation.state,
                 terminated=False,
                 discount=config.gamma ** (
-                    getattr(worker, "previous_action_duration", LEGACY_DURATION_FRAMES)
+                    previous_duration
                     / LEGACY_DURATION_FRAMES
                 ),
             )
@@ -373,10 +388,13 @@ def actor_main(
 # Reward shaping (same formula as the old train.py, kept actor-local)
 # ---------------------------------------------------------------------------
 
-def _shaped_reward(previous: Observation, current: Observation) -> float:
-    """Forward-progress reward; bounded so large jumps don't dominate PER."""
+def _shaped_reward(previous: Observation, current: Observation,
+                   duration_frames: int = LEGACY_DURATION_FRAMES) -> float:
+    """Reward progress and charge game time so standing still loses value."""
     reward = max(-2.0, min(2.0, (current.world_x - previous.world_x) / 16.0))
     reward += max(-0.2, min(0.2, (current.power - previous.power) * 0.1))
     if current.terminal:
-        reward += 20.0 if current.reason == "victory" else -5.0
+        reward += VICTORY_REWARD_BONUS if current.reason == "victory" else -DEATH_REWARD_PENALTY
+    else:
+        reward -= 0.04 * duration_frames / LEGACY_DURATION_FRAMES
     return reward

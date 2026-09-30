@@ -16,6 +16,7 @@ from .protocol import atomic_write_json, read_json
 
 
 START_PROTOCOL = "SMB1 clean selected-world start with course-start retries"
+NO_PROGRESS_LIMIT_FRAMES = 240
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,27 @@ class Observation:
     power: int
     terminal: bool
     reason: str
+
+
+class NoProgressTracker:
+    """End attempts that spend four game seconds without gaining ground."""
+
+    def __init__(self, limit_frames: int = NO_PROGRESS_LIMIT_FRAMES) -> None:
+        self.limit_frames = limit_frames
+        self.best_world_x: int | None = None
+        self.frames_without_progress = 0
+
+    def reset(self) -> None:
+        self.best_world_x = None
+        self.frames_without_progress = 0
+
+    def update(self, world_x: int, action_frames: int = 0) -> bool:
+        if self.best_world_x is None or world_x > self.best_world_x:
+            self.best_world_x = world_x
+            self.frames_without_progress = 0
+        else:
+            self.frames_without_progress += max(0, action_frames)
+        return self.frames_without_progress >= self.limit_frames
 
 
 class FileWorker:
@@ -94,7 +116,10 @@ def prepare_worker_directory(template: Path, worker_directory: Path, target_worl
     if action_profile not in ("legacy", "rainbow"):
         raise ValueError("action_profile must be 'legacy' or 'rainbow'")
     worker_directory.mkdir(parents=True, exist_ok=True)
-    for name in ("observation.json", "command.json"):
+    # Remove protocol state from a previous process. In particular, stale
+    # bridge_started/status files can falsely make a new emulator look ready.
+    for name in ("observation.json", "command.json", "bridge_started.json",
+                 "status.json", "hud.json"):
         try:
             (worker_directory / name).unlink()
         except FileNotFoundError:
@@ -144,6 +169,10 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
         command = [executable, *fceux_arguments]
         try:
             processes.append(subprocess.Popen(command, cwd=bridge.parent))
+            # Let each Qt/SDL process finish attaching to the desktop before
+            # the next window starts; simultaneous FCEUX initialization can
+            # leave an instance without a live Lua bridge on macOS.
+            time.sleep(0.2)
         except BaseException:
             for process in processes:
                 if process.poll() is None:

@@ -20,7 +20,7 @@ local LEVEL_START_MAX_X = 128
 local PLAY_CHAMPION_ONLY = false
 -- Click the small HUD tab in the upper-right corner to show/hide the live
 -- network inspector. Drawing can be disabled here to maximize training speed.
-local SHOW_NEURAL_INSPECTOR = true
+local SHOW_NEURAL_INSPECTOR = os.getenv("MARIO_AI_HIDE_HUD")~="1"
 local HUD_CLICK_COOLDOWN = 0
 
 local RAM = {
@@ -83,10 +83,14 @@ function AI.observe(frameNumber)
     state.phase = "victory"
   end
 
-  -- The game keeps two 16-column pages of 16x16 metatiles in the tile buffer.
-  -- This mapping must match the disassembly/ROM revision named in docs/ram-map.md.
-  for tileAddressOffset = 0, 415 do
-    state.tiles[tileAddressOffset] = readByte(RAM.tiles + tileAddressOffset)
+  -- Read both metatile pages in one FCEUX call. Keep zero-based tile indices
+  -- because the observation and collision code use the SMB1 RAM layout.
+  local tileBytes=memory.readbyterange and memory.readbyterange(RAM.tiles,416)
+  if type(tileBytes)=="string" and #tileBytes==416 then
+    local tileValues={string.byte(tileBytes,1,416)}
+    for tileIndex=0,415 do state.tiles[tileIndex]=tileValues[tileIndex+1] end
+  else
+    for tileIndex=0,415 do state.tiles[tileIndex]=readByte(RAM.tiles+tileIndex) end
   end
   state.grounded = AI.isGrounded(state)
   for enemySlot = 0, 4 do
@@ -1230,30 +1234,38 @@ end
 -- Parse the compact sensor context into comparable features. Exact string
 -- matching wasted useful experience whenever a Goomba was one distance band
 -- closer on a later attempt, so memory now uses a small, class-aware kernel.
+local experienceFeatureCache={}
 local function experienceContextFeatures(contextKey)
+  local cached=experienceFeatureCache[contextKey]
+  if cached~=nil then return cached or nil end
+  local features
   local enemyClass,vertical,distance,grounded,speed,power=contextKey:match(
     "^enemy:([^:]+):([^:]+):(%d+):([^:]+):v(%d+):p(%d+)$")
   if enemyClass then
-    return {kind="enemy",class=enemyClass,vertical=vertical,distance=tonumber(distance),
+    features={kind="enemy",class=enemyClass,vertical=vertical,distance=tonumber(distance),
       grounded=grounded,speed=tonumber(speed),power=tonumber(power)}
-  end
+  else
   local width,distance,grounded,speed,power=contextKey:match(
     "^gap:w(%d+):d(%d+):([^:]+):v(%d+):p(%d+)$")
   if width then
-    return {kind="gap",width=tonumber(width),distance=tonumber(distance),grounded=grounded,
+    features={kind="gap",width=tonumber(width),distance=tonumber(distance),grounded=grounded,
       speed=tonumber(speed),power=tonumber(power)}
-  end
+  else
   local height,distance,grounded,speed,power=contextKey:match(
     "^obstacle:h(%d+):d(%d+):([^:]+):v(%d+):p(%d+)$")
   if height then
-    return {kind="obstacle",height=tonumber(height),distance=tonumber(distance),grounded=grounded,
+    features={kind="obstacle",height=tonumber(height),distance=tonumber(distance),grounded=grounded,
       speed=tonumber(speed),power=tonumber(power)}
-  end
+  else
   grounded,speed,power=contextKey:match("^clear:([^:]+):v(%d+):p(%d+)$")
   if grounded then
-    return {kind="clear",grounded=grounded,speed=tonumber(speed),power=tonumber(power)}
+    features={kind="clear",grounded=grounded,speed=tonumber(speed),power=tonumber(power)}
   end
-  return nil
+  end
+  end
+  end
+  experienceFeatureCache[contextKey]=features or false
+  return features
 end
 
 local function experienceContextSimilarity(firstKey,secondKey)
@@ -1325,16 +1337,28 @@ function AI.updateExperienceMemory(populationState,contextKey,choice,succeeded)
   return true
 end
 
-local function experienceBiasFromMemory(memory,contextKey,actionIndex,durationIndex)
+-- A decision evaluates 24 action and duration pairs against the same context.
+-- Calculate the matching contexts once, then reuse their weights for every pair.
+local function similarExperienceContexts(memory,contextKey)
+  local similar={}
+  for rememberedContext,choices in pairs(memory or {}) do
+    local similarity=experienceContextSimilarity(contextKey,rememberedContext)
+    if similarity>0 then
+      similar[#similar+1]={choices=choices,weight=similarity*similarity}
+    end
+  end
+  return similar
+end
+
+local function experienceBiasFromMemory(memory,contextKey,actionIndex,durationIndex,similarContexts)
   if not memory then return 0 end
   local choice=experienceChoice(actionIndex,durationIndex)
   local weightedSuccesses,weightedFailures,totalWeight=0,0,0
   local weightedQ,totalQWeight=0,0
-  for rememberedContext,choices in pairs(memory) do
-    local similarity=experienceContextSimilarity(contextKey,rememberedContext)
-    local record=choices[choice]
-    if similarity>0 and record then
-      local evidenceWeight=similarity*similarity
+  for _,similarContext in ipairs(similarContexts or similarExperienceContexts(memory,contextKey)) do
+    local record=similarContext.choices[choice]
+    if record then
+      local evidenceWeight=similarContext.weight
       if (record.attempts or 0)>0 then
         weightedSuccesses=weightedSuccesses+(record.successes or 0)*evidenceWeight
         weightedFailures=weightedFailures+(record.failures or 0)*evidenceWeight
@@ -1362,18 +1386,24 @@ local function experienceBiasFromMemory(memory,contextKey,actionIndex,durationIn
   return clamp(outcomeBias*0.5+qBias*0.5,-0.8,0.8)
 end
 
-local function experienceQValue(memory,contextKey,choice)
-  local weightedValue,totalWeight=0,0
-  for rememberedContext,choices in pairs(memory or {}) do
-    local similarity=experienceContextSimilarity(contextKey,rememberedContext)
-    local record=choices[choice]
-    if similarity>0 and record and (record.qVisits or 0)>0 then
-      local weight=similarity*similarity*math.min(record.qVisits,12)
-      weightedValue=weightedValue+(record.qValue or 0)*weight
-      totalWeight=totalWeight+weight
+local function bestExperienceQValue(memory,contextKey)
+  local weightedValues,totalWeights={},{}
+  for _,similarContext in ipairs(similarExperienceContexts(memory,contextKey)) do
+    for choice,record in pairs(similarContext.choices) do
+      if (record.qVisits or 0)>0 then
+        local weight=similarContext.weight*math.min(record.qVisits,12)
+        weightedValues[choice]=(weightedValues[choice] or 0)+(record.qValue or 0)*weight
+        totalWeights[choice]=(totalWeights[choice] or 0)+weight
+      end
     end
   end
-  return totalWeight>0 and weightedValue/totalWeight or 0
+  local best=0
+  for choice=1,ACTION_COUNT*DURATION_OUTPUT_COUNT do
+    if (totalWeights[choice] or 0)>0 then
+      best=math.max(best,weightedValues[choice]/totalWeights[choice])
+    end
+  end
+  return best
 end
 
 -- Online contextual Q-learning lets an attempt improve the shared memory
@@ -1390,12 +1420,7 @@ function AI.updateExperienceQ(populationState,contextKey,choice,reward,nextConte
   end
   local record=choices[choice] or {attempts=0,successes=0,failures=0,rewardMean=0,qValue=0,qVisits=0}
   local bootstrap=not terminal and nextContextKey
-    and math.max(0,experienceQValue(memory,nextContextKey,1)) or 0
-  if not terminal and nextContextKey then
-    for nextChoice=2,ACTION_COUNT*DURATION_OUTPUT_COUNT do
-      bootstrap=math.max(bootstrap,experienceQValue(memory,nextContextKey,nextChoice))
-    end
-  end
+    and bestExperienceQValue(memory,nextContextKey) or 0
   local target=clamp((reward or 0)+(discount or 0.9)*bootstrap,-1,1)
   local learningRate=0.25
   record.qValue=clamp((record.qValue or 0)+learningRate*(target-(record.qValue or 0)),-1,1)
@@ -1510,18 +1535,18 @@ local function calculateAllowedActions(state,enemy)
   return allowed
 end
 
-local function chooseAction(genome,state,memoryInputs,experienceMemory)
+local function chooseAction(genome,state,observationInputs,memoryInputs,experienceMemory)
   local enemy=findClosestThreat(state)
   local allowed=calculateAllowedActions(state,enemy)
-  local observationInputs=AI.buildObservationInputs(state)
   local actionScores,nodeValues,durationScores=AI.evaluateGenome(genome,observationInputs,memoryInputs)
   if state.power==2 and enemy and enemy.worldX-state.worldX>36 then actionScores[1]=actionScores[1]+0.3 end
   local contextKey=describeExperienceContext(state)
+  local similarContexts=experienceMemory and similarExperienceContexts(experienceMemory,contextKey)
   local selectedActionIndex,selectedDurationIndex,highestPairScore
   for actionIndex=1,ACTION_COUNT do
     if allowed[actionIndex] then
       for durationIndex=1,DURATION_OUTPUT_COUNT do
-        local memoryBias=experienceBiasFromMemory(experienceMemory,contextKey,actionIndex,durationIndex)
+        local memoryBias=experienceBiasFromMemory(experienceMemory,contextKey,actionIndex,durationIndex,similarContexts)
         local durationPrior=durationScores[durationIndex]
         if durationScores[1]==0 and durationScores[2]==0
           and durationScores[3]==0 and durationScores[4]==0 and durationIndex==2 then
@@ -1869,7 +1894,7 @@ function AI.decide(aiState,state)
   -- https://github.com/juvester/mari-o-fceux/blob/master/neatevolve.lua
   if not aiState.championMode then finishPendingExperience(aiState,state,nil) end
   local action,actionIndex,enemy,actionScores,nodeValues,_,holdFrames,durationIndex,selectedContext=
-    chooseAction(genome,state,memoryInputs,
+    chooseAction(genome,state,observationInputs,memoryInputs,
       not aiState.championMode and aiState.populationState.experienceMemory or nil)
   action.name=ACTION_OPTIONS[actionIndex].name
   aiState.episodeDecisions=(aiState.episodeDecisions or 0)+1
@@ -1906,12 +1931,17 @@ end
 
 -- FCEUX uses ARGB colors for gui.drawbox/drawline. MarI/O's port converts to
 -- the byte order expected by FCEUX; keep that conversion local to the HUD.
+local HUD_COLOR_CACHE={}
 local function hudColor(argb)
+  local cached=HUD_COLOR_CACHE[argb]
+  if cached then return cached end
   local alpha=math.floor(argb/0x1000000)%256
   local red=math.floor(argb/0x10000)%256
   local green=math.floor(argb/0x100)%256
   local blue=argb%256
-  return alpha+blue*0x100+green*0x10000+red*0x1000000
+  local converted=alpha+blue*0x100+green*0x10000+red*0x1000000
+  HUD_COLOR_CACHE[argb]=converted
+  return converted
 end
 
 local function hudText(guiApi,x,y,value,foreground,background)
@@ -1935,7 +1965,12 @@ local function hudLine(guiApi,x1,y1,x2,y2,color)
   if draw then draw(x1,y1,x2,y2,hudColor(color)) end
 end
 
+local HUD_NODE_POSITION_CACHE=setmetatable({}, {__mode="k"})
 local function makeHudNodePositions(genome)
+  local cached=HUD_NODE_POSITION_CACHE[genome]
+  if cached and cached.geneCount==#(genome.genes or {}) then
+    return cached.positions,cached.hiddenCount
+  end
   local positions={}
   local gridStartX,gridStartY,gridStep=4,50,2
   for inputIndex=1,GRID_INPUT_COUNT do
@@ -1978,6 +2013,8 @@ local function makeHudNodePositions(genome)
   for actionIndex=1,ACTION_COUNT do
     positions[OUTPUT_NODE_OFFSET+actionIndex]={x=145,y=50+(actionIndex-1)*8}
   end
+  HUD_NODE_POSITION_CACHE[genome]={positions=positions,hiddenCount=#hiddenNodes,
+    geneCount=#(genome.genes or {})}
   return positions,#hiddenNodes
 end
 
@@ -2046,23 +2083,94 @@ local SMALL_GLYPHS={
   Z={"111","001","010","100","111"}, ["?"]={"110","001","010","000","010"},
 }
 
+local SMALL_GLYPH_RUNS={}
+for character,glyph in pairs(SMALL_GLYPHS) do
+  local runs={}
+  for row=1,5 do
+    local column=1
+    while column<=3 do
+      if glyph[row]:sub(column,column)=="1" then
+        local runStart=column
+        repeat column=column+1 until column>3 or glyph[row]:sub(column,column)~="1"
+        runs[#runs+1]={runStart-1,row-1,column-2}
+      else
+        column=column+1
+      end
+    end
+  end
+  SMALL_GLYPH_RUNS[character]=runs
+end
+
 local function drawSmallText(guiApi,x,y,value,color)
   for characterIndex=1,#value do
-    local glyph=SMALL_GLYPHS[value:sub(characterIndex,characterIndex)]
-    if glyph then
-      for row=1,5 do
-        for column=1,3 do
-          if glyph[row]:sub(column,column)=="1" then
-            local pixelX=x+(characterIndex-1)*4+column-1
-            hudBox(guiApi,pixelX,y+row-1,pixelX,y+row-1,color,color)
-          end
-        end
+    local runs=SMALL_GLYPH_RUNS[value:sub(characterIndex,characterIndex)]
+    if runs then
+      local characterX=x+(characterIndex-1)*4
+      for _,run in ipairs(runs) do
+        hudBox(guiApi,characterX+run[1],y+run[2],
+          characterX+run[3],y+run[2],color,color)
       end
     end
   end
 end
 
+-- Rasterize the fixed sensor names once. FCEUX can draw a truecolor GD image
+-- in one call, avoiding hundreds of tiny drawbox calls on every game frame.
+local function buildSensorLabelImage()
+  local imageX,imageY,imageWidth,imageHeight=39,46,77,57
+  local transparent=string.char(127,0,0,0)
+  local backing=string.char(24,0x10,0x2D,0x4A)
+  local white=string.char(0,255,255,255)
+  local yellow=string.char(0,255,255,0)
+  local pixels={}
+  for pixelIndex=1,imageWidth*imageHeight do pixels[pixelIndex]=transparent end
+  local function setPixel(screenX,screenY,color)
+    local column,row=screenX-imageX,screenY-imageY
+    if column>=0 and column<imageWidth and row>=0 and row<imageHeight then
+      pixels[row*imageWidth+column+1]=color
+    end
+  end
+  for sensorIndex,sensorLabel in ipairs(SENSOR_LABELS) do
+    local column=math.floor((sensorIndex-1)/8)
+    local row=(sensorIndex-1)%8
+    local labelX,labelY=40+column*41,47+row*7
+    local labelWidth=#sensorLabel*4-1
+    for backgroundY=labelY-1,labelY+5 do
+      for backgroundX=labelX-1,labelX+labelWidth do
+        setPixel(backgroundX,backgroundY,backing)
+      end
+    end
+    local textColor=sensorIndex==16 and yellow or white
+    for characterIndex=1,#sensorLabel do
+      local runs=SMALL_GLYPH_RUNS[sensorLabel:sub(characterIndex,characterIndex)]
+      if runs then
+        local characterX=labelX+(characterIndex-1)*4
+        for _,run in ipairs(runs) do
+          for pixelX=characterX+run[1],characterX+run[3] do
+            setPixel(pixelX,labelY+run[2],textColor)
+          end
+        end
+      end
+    end
+  end
+  -- GD 2.x truecolor header: signature, width, height, truecolor, transparent.
+  local header=string.char(255,254,0,imageWidth,0,imageHeight,1,255,255,255,255)
+  return imageX,imageY,header..table.concat(pixels)
+end
+
+local SENSOR_LABEL_IMAGE_X,SENSOR_LABEL_IMAGE_Y,SENSOR_LABEL_IMAGE=buildSensorLabelImage()
+local SENSOR_LABEL_IMAGE_SUPPORTED=nil
 local function drawSensorLabels(guiApi)
+  if guiApi.drawimage and SENSOR_LABEL_IMAGE_SUPPORTED~=false then
+    if SENSOR_LABEL_IMAGE_SUPPORTED then
+      guiApi.drawimage(SENSOR_LABEL_IMAGE_X,SENSOR_LABEL_IMAGE_Y,SENSOR_LABEL_IMAGE)
+      return
+    end
+    local success=pcall(guiApi.drawimage,
+      SENSOR_LABEL_IMAGE_X,SENSOR_LABEL_IMAGE_Y,SENSOR_LABEL_IMAGE)
+    SENSOR_LABEL_IMAGE_SUPPORTED=success
+    if success then return end
+  end
   for sensorIndex,sensorLabel in ipairs(SENSOR_LABELS) do
     local column=math.floor((sensorIndex-1)/8)
     local row=(sensorIndex-1)%8
@@ -2248,10 +2356,49 @@ function AI.abandonEpisode(aiState)
   aiState.previousEpisodeState=nil
 end
 
+-- FCEUX frameadvance must run in the top-level script coroutine. Selecting a
+-- world here avoids loading this file through dofile(), which cannot yield.
+local function startAtSelectedWorld(worldNumber)
+  assert(worldNumber>=1 and worldNumber<=8 and worldNumber%1==0,
+    "MARIO_AI_START_WORLD must be an integer from 1 to 8")
+  local selectedWorld=worldNumber-1
+  local startAttempts=0
+  for waitFrame=1,900 do
+    local operationMode=readByte(RAM.operation_mode)
+    local playerWorldX=readByte(RAM.player_page)*256+readByte(RAM.player_x)
+    if operationMode==1 and readByte(RAM.world_number)==selectedWorld
+      and readByte(RAM.level_number)==0 and readByte(RAM.player_state)==0x08
+      and playerWorldX<=LEVEL_START_MAX_X then
+      joypad.set(1,{})
+      memory.writebyte(0x076A,0) -- title world select otherwise enables hard mode
+      return
+    end
+    if operationMode==0 and startAttempts<3 and waitFrame%120==0 then
+      memory.writebyte(0x07FC,1) -- allow a selected world at the title screen
+      memory.writebyte(0x076B,selectedWorld)
+      memory.writebyte(RAM.world_number,selectedWorld)
+      memory.writebyte(RAM.level_number,0)
+      memory.writebyte(0x0760,0) -- first area in the selected world
+      memory.writebyte(0x0766,selectedWorld)
+      memory.writebyte(0x0767,0)
+      joypad.set(1,{start=true})
+      startAttempts=startAttempts+1
+    else
+      joypad.set(1,{})
+    end
+    emu.frameadvance()
+  end
+  error("Timed out waiting for SMB1 World "..worldNumber.."-1 to become playable")
+end
+
 function AI.run()
   assert(memory and memory.readbyte and joypad and joypad.set and emu and emu.frameadvance
     and emu.registerexit,
     "Load Mario AI NEAT in FCEUX with an NES SMB1 ROM open")
+  local selectedWorld=os.getenv("MARIO_AI_START_WORLD")
+  if selectedWorld and selectedWorld~="" then
+    startAtSelectedWorld(tonumber(selectedWorld) or -1)
+  end
   math.randomseed(os.time())
   local databasePath=getDatabasePath()
   local loaded=AI.load(databasePath)

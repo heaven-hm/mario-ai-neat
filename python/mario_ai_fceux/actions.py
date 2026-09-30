@@ -10,6 +10,9 @@ ACTION_DURATIONS = (6, 12, 24)
 ACTION_COUNT = len(ACTION_BASES) * len(ACTION_DURATIONS)
 LEGACY_ACTION_COUNT = 6
 LEGACY_DURATION_FRAMES = 12
+# If the network values two jump horizons almost equally, use the longer
+# learned macro. A six-frame tap often cannot clear SMB1 obstacles reliably.
+JUMP_HORIZON_TIE_TOLERANCE = 0.05
 
 
 def encode_action(base_index: int, duration_index: int) -> int:
@@ -42,7 +45,7 @@ def migrate_legacy_action(action: int) -> int:
 
 
 def greedy_action(q_values) -> int:
-    """Break exact migrated-head ties toward a useful jump horizon.
+    """Break near-ties toward a longer learned jump horizon.
 
     Old six-action checkpoints expand each learned value into three duration
     variants. Until training separates those values, ties favor the normal
@@ -57,4 +60,13 @@ def greedy_action(q_values) -> int:
     for base_index in range(len(ACTION_BASES)):
         preferred_duration = 2 if base_index in (1, 4, 6) else 1
         priorities[encode_action(base_index, preferred_duration)] = 1
-    return max(tied, key=lambda index: (priorities.get(index, 0), -index))
+    selected = max(tied, key=lambda index: (priorities.get(index, 0), -index))
+    selected_base = selected // len(ACTION_DURATIONS)
+    if selected_base in (1, 4, 6):
+        candidates = [encode_action(selected_base, duration_index)
+                      for duration_index in range(len(ACTION_DURATIONS))]
+        near_tied = [index for index in candidates
+                     if best - values[index] <= JUMP_HORIZON_TIE_TOLERANCE]
+        if near_tied:
+            selected = max(near_tied, key=lambda index: index % len(ACTION_DURATIONS))
+    return selected

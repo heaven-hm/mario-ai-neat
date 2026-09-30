@@ -522,6 +522,24 @@ test("timer digits are initialized to 999",
 test("testing lives counter is refreshed",AI.keepLivesForTesting()==true and timer_writes[0x075A]==9)
 memory=nil
 
+local tileRangeReads,tileSingleReads=0,0
+memory={
+  readbyte=function(address)
+    if address>=0x0500 and address<=0x069F then tileSingleReads=tileSingleReads+1 end
+    return address==0x000E and 0x08 or 0
+  end,
+  readbyterange=function(address,length)
+    tileRangeReads=tileRangeReads+1
+    assert(address==0x0500 and length==416)
+    return string.char(0x54)..string.rep("\0",414)..string.char(0xAB)
+  end,
+}
+local batchedObservation=AI.observe(1)
+test("tile observation uses one RAM block read with unchanged zero-based indices",
+  tileRangeReads==1 and tileSingleReads==0
+    and batchedObservation.tiles[0]==0x54 and batchedObservation.tiles[415]==0xAB)
+memory=nil
+
 local paused=state();paused.phase="death"
 test("AI never presses Start after death",AI.decide(AI.new(AI.newPopulation(1)),paused).start==nil)
 paused.phase="title"
@@ -561,6 +579,15 @@ test("live inspector renders one mini controller at the lower right",
     and hudCalls.maxX==255 and hudCalls.maxY==231)
 test("small sensor labels stay inside the existing graph panel",
   hudCalls.boxes>500 and hudCalls.graphMaxX==180)
+local sensorImage
+local imageHud=setmetatable({drawimage=function(imageX,imageY,imageData)
+  sensorImage={x=imageX,y=imageY,data=imageData}
+end},{__index=fakeHud})
+AI.drawNeuralInspector(imageHud,inspectorState,inspectorGameState,inspectorAction,{right=true,B=true})
+test("sensor labels use one prebuilt image when FCEUX supports it",
+  sensorImage and sensorImage.x==39 and sensorImage.y==46
+    and sensorImage.data:sub(1,2)==string.char(255,254)
+    and #sensorImage.data==11+77*57*4)
 test("network heading says ACTIONS",hudTextOutput:find("ACTIONS",1,true)~=nil
   and hudTextOutput:find("INPUTS",1,true)==nil)
 

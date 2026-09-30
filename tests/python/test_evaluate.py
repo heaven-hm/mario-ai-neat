@@ -11,11 +11,40 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
 
 from mario_ai_fceux.evaluate import write_episode_csv
-from mario_ai_fceux.apex_eval import build_benchmark_report, write_benchmark_report
+from mario_ai_fceux.apex_eval import (build_benchmark_report, write_action_traces,
+                                      evaluation_rank, save_best_policy,
+                                      write_benchmark_report)
 from mario_ai_fceux.benchmark import validate_reports
 
 
 class EvaluationOutputTests(unittest.TestCase):
+    def test_best_policy_keeps_only_a_stronger_measured_greedy_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_directory = Path(directory)
+            initial = {"victories": 0, "avg_max_x": 120.0,
+                       "episodes": [{"max_x": 100}, {"max_x": 140}]}
+            improved = {"victories": 0, "avg_max_x": 130.0,
+                        "episodes": [{"max_x": 110}, {"max_x": 150}]}
+            self.assertTrue(save_best_policy(run_directory, b"first", initial))
+            self.assertTrue(save_best_policy(run_directory, b"better", improved))
+            self.assertFalse(save_best_policy(run_directory, b"worse", initial))
+            self.assertEqual((run_directory / "best_policy_weights.pt").read_bytes(), b"better")
+            saved = json.loads((run_directory / "best_policy_eval.json").read_text())
+            self.assertEqual(evaluation_rank(saved), evaluation_rank(improved))
+
+    def test_apex_evaluation_persists_compact_action_trace(self) -> None:
+        episodes = [{"action_trace": [
+            {"decision": 0, "world_x": 430, "action": "jump+run@24",
+             "duration_frames": 24, "enemy_dx": 0.2, "gap_ahead": True},
+        ]}]
+        with tempfile.TemporaryDirectory() as directory:
+            trace_path = write_action_traces(Path(directory), 4, episodes)
+            record = json.loads(trace_path.read_text(encoding="utf-8").strip())
+        self.assertEqual(trace_path.name, "action-trace.jsonl")
+        self.assertEqual(record["episode"], 1)
+        self.assertEqual(record["world_x"], 430)
+        self.assertTrue(record["gap_ahead"])
+
     def test_csv_persists_full_episode_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "episodes.csv"

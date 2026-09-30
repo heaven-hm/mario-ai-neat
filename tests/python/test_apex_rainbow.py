@@ -161,6 +161,13 @@ class TestSMB1Actions(unittest.TestCase):
         values[3:6] = 1.0
         self.assertEqual(greedy_action(values), 5)
 
+    def test_near_tied_jump_prefers_longer_learned_horizon(self) -> None:
+        values = np.full(ACTION_COUNT, -10.0, dtype=np.float32)
+        values[3:6] = [1.0, 0.98, 0.96]
+        self.assertEqual(greedy_action(values), 5)
+        values[5] = 0.90
+        self.assertEqual(greedy_action(values), 4)
+
     def test_legacy_network_heads_expand_and_preserve_medium_action_heads(self) -> None:
         old_network = RainbowNetwork(observation_size=4, action_count=6, atom_count=5)
         new_network = RainbowNetwork(observation_size=4, action_count=ACTION_COUNT, atom_count=5)
@@ -362,6 +369,17 @@ class TestWeightBroadcast(unittest.TestCase):
 
 class TestShapedReward(unittest.TestCase):
 
+    def test_standing_still_loses_value_and_longer_waste_costs_more(self) -> None:
+        observation = _make_observation(world_x=40)
+        self.assertLess(_shaped_reward(observation, observation, 6), 0.0)
+        self.assertLess(_shaped_reward(observation, observation, 24),
+                        _shaped_reward(observation, observation, 6))
+
+    def test_stuck_episode_has_terminal_failure_penalty(self) -> None:
+        previous = _make_observation(world_x=40)
+        stuck = _make_observation(world_x=40, terminal=True, reason="stuck")
+        self.assertEqual(_terminal_transition(previous, stuck, action=13).reward, -20.0)
+
     def test_forward_progress_gives_positive_reward(self) -> None:
         prev = _make_observation(world_x=100)
         curr = _make_observation(world_x=116)  # +1 tile
@@ -378,7 +396,12 @@ class TestShapedReward(unittest.TestCase):
         prev = _make_observation(world_x=200)
         curr = _make_observation(world_x=200, terminal=True, reason="death")
         reward = _shaped_reward(prev, curr)
-        self.assertLess(reward, 0.0)
+        self.assertEqual(reward, -20.0)
+
+    def test_death_penalty_still_dominates_maximum_progress(self) -> None:
+        prev = _make_observation(world_x=200)
+        curr = _make_observation(world_x=232, terminal=True, reason="death")
+        self.assertEqual(_shaped_reward(prev, curr), -18.0)
 
     def test_reward_is_bounded(self) -> None:
         prev = _make_observation(world_x=0)

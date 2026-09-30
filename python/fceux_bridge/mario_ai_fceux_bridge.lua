@@ -153,8 +153,8 @@ local function jsonArray(values)
   return "["..table.concat(result,",").."]"
 end
 
-local function publish(sequence,snapshot,terminal)
-  local reason=terminal and snapshot.phase or ""
+local function publish(sequence,snapshot,terminal,reasonOverride)
+  local reason=terminal and (reasonOverride or snapshot.phase) or ""
   return writeAtomic("observation.json",string.format(
     '{"sequence":%d,"features":%s,"world_x":%d,"power":%d,"terminal":%s,"reason":"%s"}',
     sequence,jsonArray(snapshot.features),snapshot.worldX,snapshot.power,terminal and "true" or "false",reason))
@@ -320,16 +320,36 @@ local initialStateSaved=false
 local initialStartAttempts=0
 local sequence=0
 local waitingFrames=0
+local groundedStartFrames=0
+local groundedStartX=nil
+local initialWorldX=nil
 
 while true do
   local snapshot=observe()
   drawPythonHud()
   if not initialStateSaved then
-    if snapshot.phase=="playing" and snapshot.worldX<=128 and stateHandle then
-      savestate.save(stateHandle)
-      applyTestingAids()
-      initialStateSaved=true
+    if snapshot.phase=="playing" and snapshot.worldX<=128 and snapshot.features[172]==1 then
+      -- Save only after Mario has settled on the ground at the level start.
+      -- A merely controllable frame can still be part of the entry/fall
+      -- animation; reusing that as the reset point creates inconsistent runs.
+      if groundedStartX==snapshot.worldX then
+        groundedStartFrames=groundedStartFrames+1
+      else
+        groundedStartX=snapshot.worldX
+        groundedStartFrames=1
+      end
+      if groundedStartFrames>=8 and stateHandle then
+        joypad.set(1,{})
+        savestate.save(stateHandle)
+        applyTestingAids()
+        initialStateSaved=true
+        initialWorldX=snapshot.worldX
+      end
     else
+      groundedStartFrames=0
+      groundedStartX=nil
+    end
+    if not initialStateSaved then
       waitingFrames=waitingFrames+1
       if waitingFrames%30==0 then publishWaitingStatus(snapshot) end
       -- Make at most three title-screen Start attempts before the first saved
@@ -357,34 +377,48 @@ while true do
       -- FCEUX now advances until World 1-1 reaches a controllable state.
     end
   else
-    sequence=sequence+1
-    local terminal=snapshot.phase=="death" or snapshot.phase=="victory"
-    publish(sequence,snapshot,terminal)
-    local action,durationFrames,reset,hold=nil,nil,false,false
-    for _=1,RESPONSE_TIMEOUT_FRAMES do
-      action,durationFrames,reset,hold=readCommand(sequence)
-      if action~=nil then break end
+    -- Never ask the policy to act on a transition/title/death frame. Some
+    -- SMB1 death states skip the explicit death marker between observations;
+    -- the player being returned before the saved spawn is a reliable fallback.
+    local deathReset=snapshot.phase=="waiting" and initialWorldX~=nil
+      and snapshot.worldX<initialWorldX-8
+    if snapshot.phase=="waiting" and not deathReset then
       joypad.set(1,{})
-      drawPythonHud()
-      emu.frameadvance()
-    end
-    if reset and stateHandle then
-      joypad.set(1,{})
-      savestate.load(stateHandle)
-      applyTestingAids()
-      drawPythonHud()
-      emu.frameadvance()
-    elseif hold and stateHandle then
-      joypad.set(1,{})
-      savestate.load(stateHandle)
-      applyTestingAids()
       drawPythonHud()
       emu.frameadvance()
     else
-      joypad.set(1,ACTIONS[action or 4])
-      for _=1,(durationFrames or 12) do
+      sequence=sequence+1
+      local terminal=snapshot.phase=="death" or snapshot.phase=="victory" or deathReset
+      publish(sequence,snapshot,terminal,deathReset and "death" or nil)
+      local action,durationFrames,reset,hold=nil,nil,false,false
+      for _=1,RESPONSE_TIMEOUT_FRAMES do
+        action,durationFrames,reset,hold=readCommand(sequence)
+        if action~=nil then break end
+        joypad.set(1,{})
         drawPythonHud()
         emu.frameadvance()
+      end
+      if reset and stateHandle then
+        joypad.set(1,{})
+        savestate.load(stateHandle)
+        applyTestingAids()
+        drawPythonHud()
+        emu.frameadvance()
+      elseif hold and stateHandle then
+        joypad.set(1,{})
+        savestate.load(stateHandle)
+        applyTestingAids()
+        drawPythonHud()
+        emu.frameadvance()
+      else
+        for _=1,(durationFrames or 12) do
+          -- FCEUX consumes joypad.set at each frame boundary. Reapply the
+          -- action every frame, just as the Lua NEAT loop does, so a 24-frame
+          -- run or jump is held for 24 frames rather than tapped once.
+          joypad.set(1,ACTIONS[action or 4])
+          drawPythonHud()
+          emu.frameadvance()
+        end
       end
     end
   end
