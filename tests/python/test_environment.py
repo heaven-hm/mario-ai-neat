@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import shutil
+import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -56,6 +58,28 @@ class WorkerDirectoryTests(unittest.TestCase):
             self.assertIn('world=1', bridge_path.read_text(encoding="utf-8"))
             self.assertIn('profile="rainbow"', bridge_path.read_text(encoding="utf-8"))
             self.assertTrue(all(not (worker / name).exists() for name in stale_files))
+
+    @unittest.skipUnless(shutil.which("luajit"), "LuaJIT is required")
+    def test_smb1_flagpole_and_level_end_are_victories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = prepare_worker_directory(
+                PROJECT_ROOT / "python/fceux_bridge/mario_ai_fceux_bridge.lua",
+                Path(directory) / "worker", 1, "rainbow")
+            script = r'''
+                MARIO_AI_TEST_PHASE=true
+                local bytes={[0x0770]=1,[0x000E]=8}
+                memory={readbyte=function(address) return bytes[address] or 0 end}
+                local bridge=assert(loadfile(arg[0]))()
+                assert(bridge.phase()=="playing")
+                bytes[0x000E]=4; assert(bridge.phase()=="victory")
+                bytes[0x000E]=5; assert(bridge.phase()=="victory")
+                bytes[0x000E]=6; assert(bridge.phase()=="death")
+                bytes[0x000E]=8; bytes[0x010E]=0x3e; bytes[0x070f]=0xa0
+                assert(bridge.phase()=="playing")
+                bytes[0x0770]=2; assert(bridge.phase()=="waiting")
+            '''
+            subprocess.run([shutil.which("luajit"), "-e", script, str(bridge)],
+                           check=True, capture_output=True, text=True)
 
 
 if __name__ == "__main__":

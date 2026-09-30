@@ -516,10 +516,9 @@ os.remove(legacy_log_path)
 
 local timer_writes={}
 memory={writebyte=function(address,value) timer_writes[address]=value end}
-test("each attempt can start at 999",AI.setTimerTo999()==true)
-test("timer digits are initialized to 999",
-  timer_writes[0x07F8]==9 and timer_writes[0x07F9]==9 and timer_writes[0x07FA]==9)
-test("testing lives counter is refreshed",AI.keepLivesForTesting()==true and timer_writes[0x075A]==9)
+test("timer aid is disabled",AI.setTimerTo999()==false)
+test("lives aid is disabled",AI.keepLivesForTesting()==false)
+test("timer and lives RAM are unchanged",next(timer_writes)==nil)
 memory=nil
 
 local tileRangeReads,tileSingleReads=0,0

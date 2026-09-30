@@ -4,11 +4,9 @@
 
 local AI = {}
 
--- Give every attempt a full 999 seconds; SMB1 counts it down normally.
-local SET_TIMER_TO_999_PER_EPISODE = true
--- Testing-only aid. This keeps the SMB1 life counter replenished. It does not
--- revive Mario or skip the normal death and respawn sequence.
-local TESTING_INFINITE_LIVES = true
+-- Keep game rules intact. Training resets with a savestate after an attempt.
+local SET_TIMER_TO_999_PER_EPISODE = false
+local TESTING_INFINITE_LIVES = false
 -- FCEUX slot 9 is reserved for the AI's fixed training start. Named slots
 -- reload safely without the persist() call that crashes some FCEUX builds.
 local USE_FIXED_TRAINING_STATE = true
@@ -24,12 +22,12 @@ local SHOW_NEURAL_INSPECTOR = os.getenv("MARIO_AI_HIDE_HUD")~="1"
 local HUD_CLICK_COOLDOWN = 0
 
 local RAM = {
-  player_state=0x000E, enemy_present=0x000F, enemy_id=0x0016,
+  game_engine_subroutine=0x000E, enemy_present=0x000F, enemy_id=0x0016,
   enemy_state=0x001E, player_page=0x006D, enemy_page=0x006E,
   player_x=0x0086, enemy_x=0x0087, player_vx=0x0057,
   player_vy=0x009F, enemy_y=0x00CF, player_y=0x03B8,
   player_screen_x=0x03AD, death_music=0x0712,
-  flag_event=0x010E, flag_y=0x070F, tiles=0x0500,
+  tiles=0x0500,
   player_size=0x0754, power=0x0756, operation_mode=0x0770,
   world_number=0x075F, level_number=0x075C,
   timer_hundreds=0x07F8, timer_tens=0x07F9, timer_ones=0x07FA,
@@ -61,7 +59,7 @@ local function readByte(address) return memory.readbyte(address) end
 function AI.observe(frameNumber)
   local marioWorldX = readByte(RAM.player_page) * 256 + readByte(RAM.player_x)
   local operationMode = readByte(RAM.operation_mode)
-  local playerState = readByte(RAM.player_state)
+  local playerState = readByte(RAM.game_engine_subroutine)
   local state = {frame=frameNumber,worldX=marioWorldX,worldY=readByte(RAM.player_y)+16,
     screenX=readByte(RAM.player_screen_x),
     horizontalVelocity=toSignedByte(readByte(RAM.player_vx))/16,
@@ -79,7 +77,10 @@ function AI.observe(frameNumber)
   elseif playerState ~= 0x08 then
     state.phase = "locked"
   end
-  if readByte(RAM.flag_event) == 0x3E and readByte(RAM.flag_y) == 0xA0 then
+  -- SMB1's game engine uses 4 for flagpole slide and 5 for level end.
+  -- $010e/$070f are flagpole animation/collision bytes, not a victory flag.
+  -- https://gist.github.com/1wErt3r/4048722
+  if operationMode == 1 and (playerState == 0x04 or playerState == 0x05) then
     state.phase = "victory"
   end
 
@@ -2438,11 +2439,12 @@ function AI.run()
       importedEpisodes,archivedGenomes),logPath)
     savePopulation("legacy checkpoint history migration")
   end
-  AI.appendLog(string.format("started | database=%s | generation=%d | population=%d | mode=%s | state=%s | experience_contexts=%d | timer=999 per episode (countdown enabled) | test_lives=%s",
+  AI.appendLog(string.format("started | database=%s | generation=%d | population=%d | mode=%s | state=%s | experience_contexts=%d | timer_aid=%s | test_lives=%s",
     loaded and "loaded" or "new",aiState.populationState.generation,#aiState.populationState.genomes,
     aiState.championMode and "champion" or "training",
     fixedTraining and ("slot "..TRAINING_SAVESTATE_SLOT.." via "..stateAdapter.kind) or (stateProblem or "continuous"),
     AI.experienceMemorySize(aiState.populationState),
+    SET_TIMER_TO_999_PER_EPISODE and "999 per episode" or "off",
     TESTING_INFINITE_LIVES and "refreshed" or "off"),logPath)
   if not loaded then savePopulation("initial population") end
   emu.registerexit(function()

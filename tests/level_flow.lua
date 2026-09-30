@@ -33,13 +33,13 @@ emu={registerexit=function() end,frameadvance=function()
   if frame==3 then bytes[0x006D],bytes[0x0086]=0,40 end
   if frame==5 then
     bytes[0x006D],bytes[0x0086]=11,184
-    bytes[0x010E],bytes[0x070F]=0x3E,0xA0
+    bytes[0x000E]=4
   end
   if frame==6 then
-    bytes[0x010E],bytes[0x070F]=0,0
+    bytes[0x000E]=5
     bytes[0x0770]=2
   end
-  if frame==9 then bytes[0x0770],bytes[0x006D],bytes[0x0086]=1,0,40 end
+  if frame==9 then bytes[0x0770],bytes[0x000E],bytes[0x006D],bytes[0x0086]=1,8,0,40 end
   if frame==12 then error("level flow stop") end
 end}
 
@@ -49,7 +49,7 @@ assert(buttonsByFrame[0] and next(buttonsByFrame[0])==nil,
   "mid-level training waits without pressing a controller button")
 assert(slotSaves==1,"the fixed start is captured only after Mario reaches level start")
 assert(slotLoads==1,"training restores only after the level transition")
-assert(timerWrites==6,"each of two episodes initializes the timer once")
+assert(timerWrites==0,"training leaves the SMB1 timer unchanged")
 assert(startPresses==0,"the AI never presses Start")
 local log=assert(io.open("mario_ai_neat.log","r")):read("*a")
 assert(log:find("waiting for level start",1,true),"unsafe mid-level launch is reported")

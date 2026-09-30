@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import configparser
 import shutil
 import subprocess
 import time
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -137,7 +139,10 @@ def prepare_worker_directory(template: Path, worker_directory: Path, target_worl
 def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_directory: Path,
                          count: int, target_worlds: Sequence[int] | None = None,
                          extra_args: Sequence[str] = (),
-                         action_profile: str = "legacy") -> list[subprocess.Popen[bytes]]:
+                         action_profile: str = "legacy",
+                         cheats_enabled: Sequence[bool] | None = None,
+                         window_layout: Path | None = None,
+                         cheat_file: Path | None = None) -> list[subprocess.Popen[bytes]]:
     """Launch isolated FCEUX processes. FCEUX officially supports `-lua` and `-nothrottle`."""
     executable = shutil.which(fceux) or fceux
     if not Path(rom).is_file():
@@ -147,6 +152,16 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
     assigned_worlds = tuple(target_worlds or (1,) * count)
     if len(assigned_worlds) != count:
         raise ValueError("target_worlds must contain one world for each worker")
+    if cheats_enabled is None:
+        assigned_cheats = (False,) * count
+    else:
+        assigned_cheats = tuple(bool(value) for value in cheats_enabled)
+        if len(assigned_cheats) != count:
+            raise ValueError("cheats_enabled must contain one value for each worker")
+    layout: configparser.ConfigParser | None = None
+    if window_layout is not None and Path(window_layout).is_file():
+        layout = configparser.ConfigParser()
+        layout.read(window_layout)
     # FCEUX 2.6 uses --loadlua; earlier builds document -lua.  Detect the
     # installed binary rather than assuming the older spelling.
     try:
@@ -160,15 +175,47 @@ def launch_fceux_workers(fceux: str, rom: Path, bridge_template: Path, run_direc
     for index in range(count):
         bridge = prepare_worker_directory(bridge_template, run_directory / f"worker-{index:02d}",
                                           assigned_worlds[index], action_profile)
+        # FCEUX otherwise auto-loads ~/.fceux/cheats/SuperMarioBros.cht even
+        # with --gamegenie 0. Give each process its own empty cheat directory
+        # and explicitly disable the cheat engine in its private config.
+        config_directory = bridge.parent / "fceux-config"
+        config_directory.mkdir(exist_ok=True)
+        cheats_on = assigned_cheats[index]
+        (config_directory / "fceux.cfg").write_text(
+            "SDL.CheatsDisableAutoLS = %d\nSDL.CheatsDisabled = %d\nSDL.GameGenie = 0\n"
+            % (0 if cheats_on else 1, 0 if cheats_on else 1), encoding="utf-8")
+        if cheats_on and cheat_file is not None and Path(cheat_file).is_file():
+            cheat_directory = config_directory / "cheats"
+            cheat_directory.mkdir(exist_ok=True)
+            shutil.copyfile(cheat_file, cheat_directory / f"{rom.stem}.cht")
+        environment = os.environ.copy()
+        environment["FCEUX_CONFIG_DIR"] = str(config_directory.resolve())
         # FCEUX is launched from the worker directory, so the bridge must be
         # absolute; otherwise a relative run directory is resolved twice.
-        fceux_arguments = [lua_option, str(bridge.resolve()), *extra_args, str(rom.resolve())]
+        # Disable Game Genie for every training and evaluation instance.
+        geometry = None
+        if layout is not None and layout.has_section(f"worker-{index:02d}"):
+            section = layout[f"worker-{index:02d}"]
+            try:
+                x, y = int(section["x"]), int(section["y"])
+                width, height = int(section["width"]), max(200, int(section["height"]) - 28)
+                geometry = f"{width}x{height}+{x}+{y}"
+            except (KeyError, ValueError):
+                geometry = None
+        fceux_arguments = (["--gamegenie", "0"] if not cheats_on else [])
+        if geometry:
+            # One-times scaling is required for four 256px NES viewports to
+            # fit across a 1680px display; FCEUX otherwise enforces a 512px
+            # minimum at its default 2x scale.
+            fceux_arguments.extend(["--xscale", "1", "--yscale", "1",
+                                     "-qwindowgeometry", geometry])
+        fceux_arguments.extend([lua_option, str(bridge.resolve()), *extra_args, str(rom.resolve())])
         # Launch the executable directly on every OS.  On macOS `open -na`
         # returns the launcher PID rather than the emulator PID, which prevents
         # reliable health checks and cleanup of the worker process.
         command = [executable, *fceux_arguments]
         try:
-            processes.append(subprocess.Popen(command, cwd=bridge.parent))
+            processes.append(subprocess.Popen(command, cwd=bridge.parent, env=environment))
             # Let each Qt/SDL process finish attaching to the desktop before
             # the next window starts; simultaneous FCEUX initialization can
             # leave an instance without a live Lua bridge on macOS.

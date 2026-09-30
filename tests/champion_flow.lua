@@ -33,20 +33,20 @@ emu={registerexit=function() end,frameadvance=function()
   frame=frame+1
   if frame==3 then
     bytes[0x006D],bytes[0x0086]=11,184
-    bytes[0x010E],bytes[0x070F]=0x3E,0xA0
+    bytes[0x000E]=4
   end
   if frame==4 then
-    bytes[0x010E],bytes[0x070F]=0,0
+    bytes[0x000E]=5
     bytes[0x0770]=2
   end
-  if frame==7 then bytes[0x0770],bytes[0x006D],bytes[0x0086]=1,0,40 end
+  if frame==7 then bytes[0x0770],bytes[0x000E],bytes[0x006D],bytes[0x0086]=1,8,0,40 end
   if frame==10 then error("champion flow stop") end
 end}
 
 local ok,errorMessage=pcall(dofile,"champion.lua")
 assert(not ok and tostring(errorMessage):find("champion flow stop",1,true),tostring(errorMessage))
 assert(stateCalls==0,"champion play must not create or restore a training slot")
-assert(timerWrites==6,"champion sets 999 once at each level start")
+assert(timerWrites==0,"champion leaves the SMB1 timer unchanged")
 assert(startPresses==0,"champion play must never press Start")
 for transitionFrame=3,6 do
   assert(buttonsByFrame[transitionFrame] and next(buttonsByFrame[transitionFrame])==nil,

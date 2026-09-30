@@ -12,16 +12,13 @@ local TARGET_WORLD_INDEX = __TARGET_WORLD_INDEX__
 local ACTION_DURATIONS = ACTION_PROFILE=="rainbow" and {6,12,24} or {12}
 local RESPONSE_TIMEOUT_FRAMES = 600
 local TRAINING_SLOT = 10
-local TEST_TIMER_DIGIT = 0x09
--- SMB1 stores one less than the displayed lives count: 0x62 displays 99.
-local TEST_LIVES_RAW = 0x62
 
 local RAM = {
-  player_state=0x000E, enemy_present=0x000F, enemy_id=0x0016,
+  game_engine_subroutine=0x000E, enemy_present=0x000F, enemy_id=0x0016,
   enemy_state=0x001E, player_page=0x006D, enemy_page=0x006E,
   player_x=0x0086, enemy_x=0x0087, player_vx=0x0057, player_vy=0x009F,
-  enemy_y=0x00CF, player_y=0x03B8, death_music=0x0712, flag_event=0x010E,
-  flag_y=0x070F, tiles=0x0500, player_size=0x0754, power=0x0756,
+  enemy_y=0x00CF, player_y=0x03B8, death_music=0x0712,
+  tiles=0x0500, player_size=0x0754, power=0x0756,
   operation_mode=0x0770,
   world_select_number=0x076B, world_select_enable=0x07FC,
   world_number=0x075F, level_number=0x075C, area_number=0x0760,
@@ -45,15 +42,6 @@ local function clamp(value,low,high) return math.max(low,math.min(high,value)) e
 local function signed(value) return value>=128 and value-256 or value end
 local function read(address) return memory.readbyte(address) end
 local function path(name) return WORKER_DIRECTORY.."/"..name end
-
-local function applyTestingAids()
-  -- These test aids match the Lua NEAT training behaviour.  They affect
-  -- episode availability only; the AI receives no artificial movement.
-  memory.writebyte(RAM.timer_hundreds,TEST_TIMER_DIGIT)
-  memory.writebyte(RAM.timer_tens,TEST_TIMER_DIGIT)
-  memory.writebyte(RAM.timer_ones,TEST_TIMER_DIGIT)
-  memory.writebyte(RAM.lives,TEST_LIVES_RAW)
-end
 
 local function writeAtomic(name,contents)
   local temporary=path(name..".tmp")
@@ -87,12 +75,18 @@ end
 
 local function phase()
   local mode=read(RAM.operation_mode)
-  local playerState=read(RAM.player_state)
-  if read(RAM.flag_event)==0x3E and read(RAM.flag_y)==0xA0 then return "victory" end
-  if read(RAM.death_music)==1 or playerState==0x0B then return "death" end
-  if mode~=1 or playerState~=0x08 then return "waiting" end
+  local subroutine=read(RAM.game_engine_subroutine)
+  -- SMB1 GameRoutines dispatches 4=FlagpoleSlide, 5=PlayerEndLevel,
+  -- 6=PlayerLoseLife, 8=PlayerCtrlRoutine. $010e and $070f are flagpole
+  -- animation/collision coordinates, not a victory event.
+  -- https://gist.github.com/1wErt3r/4048722
+  if mode==1 and (subroutine==0x04 or subroutine==0x05) then return "victory" end
+  if read(RAM.death_music)==1 or subroutine==0x06 or subroutine==0x0B then return "death" end
+  if mode~=1 or subroutine~=0x08 then return "waiting" end
   return "playing"
 end
+
+if rawget(_G,"MARIO_AI_TEST_PHASE") then return {phase=phase} end
 
 local function solidAt(worldX,worldY)
   local column=math.floor((worldX+8)/16)
@@ -144,7 +138,7 @@ local function observe()
     gap,nearestEnemy and enemyDX>0 and enemyDX<0.25 and 1 or 0}
   for _,value in ipairs(globals) do features[#features+1]=value end
   return {features=features,worldX=worldX,power=power,phase=phase(),
-    operationMode=read(RAM.operation_mode),playerState=read(RAM.player_state)}
+    operationMode=read(RAM.operation_mode),playerState=read(RAM.game_engine_subroutine)}
 end
 
 local function jsonArray(values)
@@ -343,7 +337,6 @@ while true do
       if groundedStartFrames>=8 and stateHandle then
         joypad.set(1,{})
         savestate.save(stateHandle)
-        applyTestingAids()
         initialStateSaved=true
         initialWorldX=snapshot.worldX
       end
@@ -403,13 +396,11 @@ while true do
       if reset and stateHandle then
         joypad.set(1,{})
         savestate.load(stateHandle)
-        applyTestingAids()
         drawPythonHud()
         emu.frameadvance()
       elseif hold and stateHandle then
         joypad.set(1,{})
         savestate.load(stateHandle)
-        applyTestingAids()
         drawPythonHud()
         emu.frameadvance()
       else

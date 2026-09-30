@@ -116,6 +116,13 @@ def parse_arguments() -> argparse.Namespace:
                         help="Episodes per evaluation run.")
     parser.add_argument("--eval-world", type=int, default=1,
                         help="World for the greedy evaluation actor.")
+    parser.add_argument("--window-layout", type=Path,
+                        default=Path("config/fceux-window-layout.ini"),
+                        help="INI file containing worker window rectangles.")
+    parser.add_argument("--cheats-enabled-workers", default="0,1,2,3",
+                        help="Zero-based worker indexes that load the ROM .cht file.")
+    parser.add_argument("--cheat-file", type=Path, default=None,
+                        help="Optional FCEUX .cht file copied into enabled workers.")
 
     return parser.parse_args()
 
@@ -223,6 +230,10 @@ def write_health_report(
 
 def main() -> None:
     args = parse_arguments()
+    enabled_indexes = {int(value.strip()) for value in args.cheats_enabled_workers.split(",") if value.strip()}
+    if any(index < 0 or index >= args.workers for index in enabled_indexes):
+        raise ValueError("--cheats-enabled-workers indexes must be within the worker count")
+    worker_cheats = tuple(index in enabled_indexes for index in range(args.workers))
     try:
         requested_worlds = tuple(int(v.strip()) for v in args.worlds.split(",") if v.strip())
     except ValueError as exc:
@@ -251,6 +262,8 @@ def main() -> None:
         "training_actors": args.workers,
         "eval_actor": 1,
         "worlds": requested_worlds,
+        "cheats_enabled_workers": [index for index, enabled in enumerate(worker_cheats) if enabled],
+        "window_layout": str(args.window_layout),
         "replay_capacity": args.replay_capacity,
         "exploration": {
             "actors": "Ape-X epsilon-greedy only; actor networks run in eval mode",
@@ -364,6 +377,9 @@ def main() -> None:
     fceux_processes.extend(launch_fceux_workers(
         args.fceux, args.rom, bridge_template,
         args.run_dir, args.workers, requested_worlds, action_profile="rainbow",
+        cheats_enabled=worker_cheats,
+        window_layout=args.window_layout,
+        cheat_file=args.cheat_file,
     ))
     training_workers = [
         FileWorker(f"actor-{i:02d}", args.run_dir / f"worker-{i:02d}",
@@ -377,6 +393,8 @@ def main() -> None:
     eval_fceux.extend(launch_fceux_workers(
         args.fceux, args.rom, bridge_template,
         eval_run_dir, 1, (args.eval_world,), action_profile="rainbow",
+        cheats_enabled=(False,), window_layout=None, cheat_file=None,
+        extra_args=("--xscale", "1", "--yscale", "1", "-qwindowgeometry", "512x469+851+205"),
     ))
     eval_file_worker = FileWorker("eval", eval_run_dir / "worker-00",
                                   action_profile="rainbow")
