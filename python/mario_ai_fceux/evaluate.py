@@ -59,19 +59,25 @@ def main() -> None:
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     algorithm = str(payload.get("algorithm", ""))
     if algorithm.startswith("Rainbow") or algorithm.startswith("Ape-X Rainbow"):
+        action_profile = "rainbow"
         configuration = AgentConfig(**payload["config"])
         agent = RainbowAgent(
             PrioritizedReplayBuffer(configuration.observation_size, capacity=1, seed=configuration.seed),
             configuration, options.device)
         agent.load(checkpoint, validate_replay=False, restore_rng=False)
     else:
+        action_profile = "legacy"
         algorithm, agent = load_baseline_policy(checkpoint, options.device)
     repository_root = Path(__file__).resolve().parents[2]
     evaluation_directory = options.run_dir / "evaluations" / time.strftime("%Y%m%d-%H%M%S")
     evaluation_directory.mkdir(parents=True)
     bridge = repository_root / "python" / "fceux_bridge" / "mario_ai_fceux_bridge.lua"
-    processes = launch_fceux_workers(options.fceux, options.rom, bridge, evaluation_directory, 1, (options.world,))
-    worker = FileWorker("evaluation", evaluation_directory / "worker-00")
+    processes = launch_fceux_workers(
+        options.fceux, options.rom, bridge, evaluation_directory, 1, (options.world,),
+        action_profile=action_profile,
+        extra_args=("--xscale", "1", "--yscale", "1", "-qwindowgeometry", "512x469+851+205"),
+    )
+    worker = FileWorker("evaluation", evaluation_directory / "worker-00", action_profile=action_profile)
     episodes: list[dict[str, object]] = []
     maximum_x = 0
     episode_decisions = 0
