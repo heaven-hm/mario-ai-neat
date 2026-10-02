@@ -122,7 +122,10 @@ def parse_arguments() -> argparse.Namespace:
                         help="Max batches in experience queue (backpressure).")
     parser.add_argument("--n-step", type=int, default=3)
     parser.add_argument("--learn-per-batch", type=int, default=4,
-                        help="Optimizer updates per received experience batch.")
+                        help="Optimizer updates per received experience batch. 16 was tried "
+                             "on 2026-10-02 and reverted: conversion fell across two windows "
+                             "(1.0%% -> 0.32%% -> 0%%) while training loss dropped to 0.92, "
+                             "which is the buffer being fitted rather than the level learned.")
     parser.add_argument("--checkpoint-every", type=int, default=10_000,
                         help="Checkpoint every N optimizer steps.")
     parser.add_argument("--eval-every", type=float, default=120.0,

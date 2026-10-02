@@ -61,7 +61,7 @@ def apex_learner_main(
     device_str: str | None,
     weight_sync_every: int = 500,
     checkpoint_every: int = 10_000,
-    learn_per_batch: int = 4,    # optimizer steps per received batch
+    learn_per_batch: int = 4,    # optimizer steps per received batch; 16 overfit the buffer
 ) -> None:
     """Own replay, optimizer, and checkpoints. Broadcast weights asynchronously."""
 
