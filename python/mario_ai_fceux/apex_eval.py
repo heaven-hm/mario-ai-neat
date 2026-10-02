@@ -11,6 +11,7 @@ This gives unbiased performance metrics independent of the training epsilon.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import signal
 import time
@@ -60,8 +61,19 @@ def publish_eval_hud(worker: FileWorker, run_directory: Path, observation: Obser
 
 def build_benchmark_report(episodes: list[dict], run_metadata: dict,
                            evaluation_number: int, requested_episodes: int | None = None,
-                           timestamp: str | None = None) -> dict:
-    """Convert one frozen-policy episode batch to the shared benchmark schema."""
+                           timestamp: str | None = None,
+                           weights_sha256: str | None = None,
+                           learner_optimizer_steps: int | None = None,
+                           evaluator_sha256: str | None = None) -> dict:
+    """Convert one frozen-policy episode batch to the shared benchmark schema.
+
+    Every report must attribute what ran: weights_sha256 hashes the exact
+    weight bytes evaluated, learner_optimizer_steps locates them in training,
+    and evaluator_sha256 hashes the evaluator code. checkpoint_sha256 stays
+    reserved for frozen pins (model.pt file hashes); periodic evals of live
+    weights record it as null so legacy evidence stays readable while being
+    visibly unattributed to any pin.
+    """
     victories = sum(episode.get("reason") == "victory" for episode in episodes)
     finished = len(episodes)
     details = []
@@ -94,6 +106,10 @@ def build_benchmark_report(episodes: list[dict], run_metadata: dict,
         "completion_rate": victories / finished if finished else 0.0,
         "episodes": details,
         "source_revision": run_metadata.get("source_revision"),
+        "weights_sha256": weights_sha256,
+        "learner_optimizer_steps": learner_optimizer_steps,
+        "evaluator_sha256": evaluator_sha256,
+        "checkpoint_sha256": None,
     }
 
 
@@ -204,6 +220,7 @@ def eval_worker_main(
 
     weights_loaded = False
     loaded_weight_bytes: bytes | None = None
+    evaluator_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     last_eval_at = 0.0
     prior_evaluations = [path for path in (run_dir / "evaluations").glob("eval-*")
                          if path.is_dir() and path.name.removeprefix("eval-").isdigit()]
@@ -340,8 +357,14 @@ def eval_worker_main(
             victories = sum(e["reason"] == "victory" for e in episodes)
             avg_x = sum(e["max_x"] for e in episodes) / max(1, len(episodes))
             win_rate = victories / max(1, len(episodes))
-            benchmark_report = build_benchmark_report(episodes, run_metadata, eval_count,
-                                                     requested_episodes=episodes_per_eval)
+            learner_status = read_json(run_dir / "learner_status.json") or {}
+            benchmark_report = build_benchmark_report(
+                episodes, run_metadata, eval_count,
+                requested_episodes=episodes_per_eval,
+                weights_sha256=hashlib.sha256(loaded_weight_bytes).hexdigest()
+                if loaded_weight_bytes else None,
+                learner_optimizer_steps=learner_status.get("optimizer_updates"),
+                evaluator_sha256=evaluator_sha256)
             write_benchmark_report(run_dir, benchmark_report)
             trace_path = write_action_traces(run_dir, eval_count, episodes)
             best_policy = bool(loaded_weight_bytes and save_best_policy(

@@ -97,6 +97,20 @@ class ComparabilityTests(unittest.TestCase):
             [make_report(2, 10)], [make_report(1, 10)])
         self.assertEqual(problems, [])
 
+    def test_rejects_unattributed_sweeps(self) -> None:
+        report = make_report(2, 10)
+        report["checkpoint_sha256"] = None
+        problems = champion_gate.check_comparable([report], [make_report(2, 10)])
+        self.assertTrue(any("unattributed" in problem for problem in problems))
+
+    def test_rejects_evaluator_mismatch(self) -> None:
+        candidate = make_report(2, 10)
+        candidate["evaluator_sha256"] = "evaluator-a"
+        incumbent = make_report(2, 10)
+        incumbent["evaluator_sha256"] = "evaluator-b"
+        problems = champion_gate.check_comparable([candidate], [incumbent])
+        self.assertTrue(any("evaluator" in problem for problem in problems))
+
 
 class CliTests(unittest.TestCase):
     def test_recorded_champion_gate_end_to_end(self) -> None:

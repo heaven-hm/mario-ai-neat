@@ -105,6 +105,12 @@ def check_comparable(candidate_reports: list[dict], incumbent_reports: list[dict
         elif sum(isinstance(item, dict) and item.get("reason") == "victory" for item in episodes) \
                 != victories:
             problems.append(f"{name}: victory count does not match its episode records")
+        if not report.get("checkpoint_sha256") and not report.get("weights_sha256"):
+            problems.append(f"{name}: unattributed sweep (no checkpoint_sha256 or "
+                            "weights_sha256); numbers cannot be credited to a pin")
+    evaluators = {report.get("evaluator_sha256") for _, report in all_reports}
+    if len(evaluators) > 1:
+        problems.append("sweeps ran under different evaluator code (evaluator_sha256 mismatch)")
     reference = tuple(candidate_reports[0].get(key) for key in REQUIRED_CONDITIONS) \
         if candidate_reports else None
     for side, report in all_reports:

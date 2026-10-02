@@ -114,8 +114,30 @@ class EvaluationOutputTests(unittest.TestCase):
         self.assertEqual(stored["victories"], 1)
         self.assertEqual(stored["completion_rate"], 0.5)
         self.assertEqual(stored["source_revision"], "abc123")
+        self.assertIn("evaluator_sha256", stored)
+        self.assertIn("weights_sha256", stored)
+        self.assertIsNone(stored["weights_sha256"])
+        self.assertIsNone(stored["checkpoint_sha256"])
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[1]["reason"], "victory")
+
+    def test_attribution_fields_record_evaluated_weights(self) -> None:
+        run_metadata = {
+            "algorithm": "Ape-X Rainbow", "eval_world": 1, "seed": 7,
+            "rom_sha256": "rom-hash", "fceux_sha256": "fceux-hash",
+            "action_repeat_frames": 12, "start_protocol": "fixed-start-v1",
+            "eval_episodes": 1, "source_revision": "abc123",
+        }
+        episodes = [{"reason": "victory", "max_x": 120, "terminal_x": 120,
+                     "action_decisions": 45, "elapsed_seconds": 4.1}]
+        report = build_benchmark_report(
+            episodes, run_metadata, 4,
+            weights_sha256="weights-hash", learner_optimizer_steps=599612,
+            evaluator_sha256="evaluator-hash")
+        self.assertEqual(report["weights_sha256"], "weights-hash")
+        self.assertEqual(report["learner_optimizer_steps"], 599612)
+        self.assertEqual(report["evaluator_sha256"], "evaluator-hash")
+        self.assertIsNone(report["checkpoint_sha256"])
 
 
 if __name__ == "__main__":

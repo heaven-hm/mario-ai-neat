@@ -125,6 +125,7 @@ def main() -> None:
     report = {"algorithm": algorithm, "checkpoint": str(checkpoint), "world": options.world, "level": 1,
               "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
               "source_revision": run_metadata.get("source_revision"),
+              "evaluator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "evaluation_mode": "greedy_no_learning",
               "evaluation_seed": options.evaluation_seed,
               "rom_sha256": rom_digest, "fceux_executable": str(fceux_path),
