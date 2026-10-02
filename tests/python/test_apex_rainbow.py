@@ -641,10 +641,10 @@ class TestApexLearnerIntegration(unittest.TestCase):
 class TestResumeConfigGuard(unittest.TestCase):
     """A resume must tolerate optimization knobs, never semantic changes."""
 
-    def _agent(self, observation_size: int = 4, **overrides) -> RainbowAgent:
+    def _agent(self, observation_size: int = 4, atom_count: int = 11, **overrides) -> RainbowAgent:
         from mario_ai_fceux.agent import AgentConfig
         config = AgentConfig(observation_size=observation_size, action_count=2,
-                             atom_count=11, **overrides)
+                             atom_count=atom_count, **overrides)
         replay = PrioritizedReplayBuffer(observation_size, capacity=64, seed=1)
         return RainbowAgent(replay, config=config, device="cpu")
 
