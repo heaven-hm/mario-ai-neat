@@ -27,6 +27,7 @@ from .environment import FileWorker, NoProgressTracker, Observation
 from .model import RainbowNetwork
 from .protocol import atomic_write_json, read_json
 from .apex_actor import _action_details, _load_weights_from_bytes
+from .agent import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -166,14 +167,23 @@ def eval_worker_main(
     observation_size: int = 184,
     action_count: int = ACTION_COUNT,
     atom_count: int = 51,
-    value_min: float = -20.0,
-    value_max: float = 20.0,
+    value_min: float | None = None,
+    value_max: float | None = None,
     eval_every_seconds: float = 120.0,   # run an eval batch every N seconds
     episodes_per_eval: int = 5,
     max_episode_seconds: float = 300.0,
     device_str: str | None = None,
 ) -> None:
     """Evaluation process: greedy policy, frozen weights, periodic eval runs."""
+
+    # Greedy action values are read off the support, so evaluating under a
+    # different range than the learner trained with rescales every value and
+    # ranks a different policy. Share the learner's support by default.
+    shared = AgentConfig()
+    if value_min is None:
+        value_min = shared.value_min
+    if value_max is None:
+        value_max = shared.value_max
 
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 

@@ -508,7 +508,8 @@ def main() -> None:
         eval_process = context.Process(
             target=eval_worker_main,
             args=(eval_file_worker, eval_weight_queue, str(args.run_dir),
-                  184, ACTION_COUNT, 51, -100.0, 100.0,
+                  agent_config.observation_size, agent_config.action_count,
+                  agent_config.atom_count, agent_config.value_min, agent_config.value_max,
                   args.eval_every, args.eval_episodes, 300.0, args.device),
             daemon=True,
         )

@@ -548,6 +548,17 @@ class TestValueSupport(unittest.TestCase):
         self.assertEqual((actor.value_min, actor.value_max),
                          (learner.value_min, learner.value_max))
 
+    def test_evaluator_cannot_drift_onto_its_own_value_support(self) -> None:
+        from inspect import signature
+
+        from mario_ai_fceux.apex_eval import eval_worker_main
+
+        defaults = signature(eval_worker_main).parameters
+        self.assertIsNone(defaults["value_min"].default)
+        self.assertIsNone(defaults["value_max"].default)
+        # None defaults resolve to the learner's support inside the worker, so
+        # a hard-coded evaluator range can never reappear at the call site.
+
 
 class TestActorConfig(unittest.TestCase):
 
