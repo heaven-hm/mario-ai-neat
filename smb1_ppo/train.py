@@ -33,7 +33,7 @@ from .env import (
     resolve_device,
 )
 from .evaluate import build_evaluation_environment, collect_episodes
-from .stats import RewardStatsVecEnv
+from .stats import EpisodeOutcomeCallback, RewardStatsVecEnv
 
 TENSORBOARD_DIRECTORY = "tensorboard"
 
@@ -296,9 +296,10 @@ def main() -> None:
     if resume_path:
         print(f"resumed from {resume_path}")
 
+    stats_callback = EpisodeOutcomeCallback(stats_env)
     model.learn(
         total_timesteps=options.total_timesteps,
-        callback=[checkpoint_callback, evaluation_callback],
+        callback=[checkpoint_callback, evaluation_callback, stats_callback],
         reset_num_timesteps=restart,
         progress_bar=options.progress_bar,
     )

@@ -87,6 +87,25 @@ class CommandLineTests(unittest.TestCase):
 
             tensorboard = list((run_directory / "tensorboard").rglob("events.out.tfevents*"))
             self.assertTrue(tensorboard, "no TensorBoard event file was written")
+            # The reward decomposition and measured episode outcomes must reach
+            # the logs, not just SB3's own loss curves.
+            from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+            accumulator = EventAccumulator(str(tensorboard[0].parent))
+            accumulator.Reload()
+            tags = set(accumulator.Tags()["scalars"])
+            for expected in (
+                "rollout/shaped_reward_per_step",
+                "rollout/raw_reward_per_step",
+                "reward_terms/forward_per_step",
+                "reward_terms/death_per_step",
+                "reward_terms/flag_per_step",
+                "episodes/finished",
+                "episodes/win_rate_total",
+                "episodes/mean_max_x_window",
+                "train/entropy_loss",
+            ):
+                self.assertIn(expected, tags, f"{expected} missing from the run logs")
 
             self.assertTrue((run_directory / "best_model.zip").is_file())
             best = json.loads((run_directory / "best_model_eval.json").read_text())
