@@ -27,12 +27,12 @@
   "actor_epsilons": [
     0.4,
     0.19884,
-    0.1,
-    0.1,
-    0.1,
-    0.1,
-    0.1,
-    0.1
+    0.09884,
+    0.04913,
+    0.02442,
+    0.01214,
+    0.00604,
+    0.003
   ],
   "unsolved_epsilon_floor": 0.1,
   "exploration_schedule": "Per-level epsilon floor until that actor wins the level",
