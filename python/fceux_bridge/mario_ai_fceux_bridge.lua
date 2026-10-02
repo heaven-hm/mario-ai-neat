@@ -77,7 +77,9 @@ local function readCommand(sequence)
     text:match('"reset"%s*:%s*true')~=nil,text:match('"hold"%s*:%s*true')~=nil,
     text:match('"advance"%s*:%s*true')~=nil,
     text:match('"campaign_reset"%s*:%s*true')~=nil,
-    text:match('"restart_with_cheats"%s*:%s*(%a+)'),action
+    text:match('"restart_with_cheats"%s*:%s*(%a+)'),action,
+    text:match('"checkpoint"%s*:%s*true')~=nil,
+    text:match('"restore_frontier"%s*:%s*true')~=nil
 end
 
 local function phase()
@@ -93,7 +95,7 @@ local function phase()
   return "playing"
 end
 
-if rawget(_G,"MARIO_AI_TEST_PHASE") then return {phase=phase} end
+if rawget(_G,"MARIO_AI_TEST_PHASE") then return {phase=phase,readCommand=readCommand} end
 
 local function solidAt(worldX,worldY)
   local column=math.floor((worldX+8)/16)
@@ -319,11 +321,15 @@ end
 
 local currentLevelHandle=nil
 local worldStartHandle=nil
+local frontierHandle=nil
 if savestate and savestate.object then
   currentLevelHandle=savestate.object(CURRENT_LEVEL_SLOT)
   -- FCEUX exposes predefined slots only through 1..10.  The campaign root
   -- therefore uses an anonymous in-memory state instead of invalid slot 11.
-  if savestate.create then worldStartHandle=savestate.create() end
+  if savestate.create then
+    worldStartHandle=savestate.create()
+    frontierHandle=savestate.create()
+  end
 end
 writeAtomic("bridge_started.json", '{"bridge":"started"}')
 local initialStateSaved=false
@@ -334,6 +340,7 @@ local groundedStartFrames=0
 local groundedStartX=nil
 local initialWorldX=nil
 local advancingToLevel=nil
+local frontierAvailable=false
 
 while true do
   local snapshot=observe()
@@ -356,6 +363,7 @@ while true do
         joypad.set(1,{})
         savestate.save(currentLevelHandle)
         if snapshot.level==0 and worldStartHandle then savestate.save(worldStartHandle) end
+        frontierAvailable=false
         initialStateSaved=true
         initialWorldX=snapshot.worldX
       end
@@ -419,6 +427,7 @@ while true do
         initialWorldX=snapshot.worldX
         advancingToLevel=nil
         groundedStartFrames=0
+        frontierAvailable=false
       end
     else
       groundedStartFrames=0
@@ -441,9 +450,9 @@ while true do
       sequence=sequence+1
       local terminal=snapshot.phase=="death" or snapshot.phase=="victory" or deathReset
       publish(sequence,snapshot,terminal,deathReset and "death" or nil)
-      local action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats=nil,nil,false,false,false,false,nil
+      local action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats,checkpoint,restoreFrontier=nil,nil,false,false,false,false,nil,false,false
       for _=1,RESPONSE_TIMEOUT_FRAMES do
-        action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats=readCommand(sequence)
+        action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats,checkpoint,restoreFrontier=readCommand(sequence)
         if action~=nil then break end
         joypad.set(1,{})
         drawPythonHud()
@@ -462,6 +471,7 @@ while true do
         joypad.set(1,{})
         savestate.load(worldStartHandle)
         initialWorldX=nil
+        frontierAvailable=false
         drawPythonHud()
         emu.frameadvance()
       elseif advance and snapshot.level<3 then
@@ -474,7 +484,11 @@ while true do
         emu.frameadvance()
       elseif reset and currentLevelHandle then
         joypad.set(1,{})
-        savestate.load(currentLevelHandle)
+        if restoreFrontier and frontierAvailable and frontierHandle then
+          savestate.load(frontierHandle)
+        else
+          savestate.load(currentLevelHandle)
+        end
         drawPythonHud()
         emu.frameadvance()
       elseif hold and currentLevelHandle then
@@ -483,6 +497,10 @@ while true do
         drawPythonHud()
         emu.frameadvance()
       else
+        if checkpoint and frontierHandle then
+          savestate.save(frontierHandle)
+          frontierAvailable=true
+        end
         for _=1,(durationFrames or 12) do
           -- FCEUX consumes joypad.set at each frame boundary. Reapply the
           -- action every frame, just as the Lua NEAT loop does, so a 24-frame

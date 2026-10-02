@@ -318,6 +318,8 @@ class TestApexEpsilon(unittest.TestCase):
             arguments = parse_arguments()
         self.assertEqual(arguments.queue_capacity, 10_000)
         self.assertEqual(arguments.actor_batch_size, 32)
+        self.assertEqual(arguments.frontier_spacing, 256)
+        self.assertEqual(arguments.frontier_retries, 3)
 
     def test_saved_layout_assigns_four_powered_and_four_normal_workers(self) -> None:
         layout = PROJECT_ROOT / "config/fceux-window-layout.ini"
@@ -466,6 +468,8 @@ class TestActorConfig(unittest.TestCase):
         self.assertEqual(cfg.action_count, ACTION_COUNT)
         self.assertEqual(cfg.n_step, 3)
         self.assertGreater(cfg.batch_size, 0)
+        self.assertEqual(cfg.frontier_spacing, 256)
+        self.assertEqual(cfg.frontier_retries, 3)
 
 
 # ---------------------------------------------------------------------------

@@ -106,7 +106,8 @@ class FileWorker:
         self.last_sequence = sequence
         return observation
 
-    def send_action(self, observation: Observation, action: int) -> None:
+    def send_action(self, observation: Observation, action: int,
+                    checkpoint_frontier: bool = False) -> None:
         if self.action_profile == "rainbow":
             _, duration_frames = decode_action(action)
         else:
@@ -116,10 +117,15 @@ class FileWorker:
         atomic_write_json(self.command_path, {"sequence": observation.sequence,
                                               "action": int(action),
                                               "duration_frames": duration_frames,
-                                              "reset": False})
+                                              "reset": False,
+                                              "checkpoint": bool(checkpoint_frontier)})
 
-    def reset(self, observation: Observation) -> None:
-        atomic_write_json(self.command_path, {"sequence": observation.sequence, "action": 3, "reset": True})
+    def reset(self, observation: Observation, restore_frontier: bool = False) -> None:
+        """Restart a failed attempt, optionally from the latest safe frontier."""
+        atomic_write_json(self.command_path, {
+            "sequence": observation.sequence, "action": 3, "reset": True,
+            "restore_frontier": bool(restore_frontier),
+        })
 
     def advance_level(self, observation: Observation) -> None:
         """Let SMB1 load the next level and save its new start checkpoint."""

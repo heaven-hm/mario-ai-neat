@@ -146,6 +146,18 @@ archive can still replace its oldest successful transitions when full, and
 rehearsal reduces forgetting rather than guaranteeing perfect play. The
 learner reports `protected_success_transitions` so retention is visible.
 
+Actors also use a bounded frontier curriculum. After Mario reaches another
+256 pixels on stable ground, the bridge saves an in-memory FCEUX savestate.
+After a death or four-second no-progress cutoff, the actor retries that
+frontier up to three times; then it returns to the clean level start. This
+concentrates attempts on the next obstacle without creating an irreversible
+shortcut: a frontier is never reused across levels or worker restarts, and
+only fully verified wins are kept in protected replay. Change the settings
+with `--frontier-spacing` and `--frontier-retries` (set retries to `0` to
+disable frontier restoration). This is inspired by Go-Explore's return-and-
+explore idea, adapted to FCEUX's local savestates rather than a claim of exact
+Go-Explore reproduction.
+
 The automatic greedy evaluator now discards batches if its emulator stops
 publishing observations. Its best-policy archive ranks completed episode
 progress from the actual records and keeps the strongest measured weights

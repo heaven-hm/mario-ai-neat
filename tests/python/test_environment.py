@@ -47,6 +47,21 @@ class WorkerDirectoryTests(unittest.TestCase):
             self.assertEqual(read_json(worker.command_path),
                              {"sequence": 23, "action": 3, "campaign_reset": True})
 
+    def test_frontier_commands_are_sequence_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            worker = FileWorker("worker-00", directory, action_profile="rainbow")
+            observation = Observation(23, np.zeros(184, dtype=np.float32), 320, 0, False, "")
+            worker.send_action(observation, 8, checkpoint_frontier=True)
+            self.assertEqual(read_json(worker.command_path), {
+                "sequence": 23, "action": 8, "duration_frames": 24,
+                "reset": False, "checkpoint": True,
+            })
+            worker.reset(observation, restore_frontier=True)
+            self.assertEqual(read_json(worker.command_path), {
+                "sequence": 23, "action": 3, "reset": True,
+                "restore_frontier": True,
+            })
+
     def test_prepare_clears_stale_protocol_status_before_bridge_start(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -91,6 +106,26 @@ class WorkerDirectoryTests(unittest.TestCase):
                 bytes[0x000E]=8; bytes[0x010E]=0x3e; bytes[0x070f]=0xa0
                 assert(bridge.phase()=="playing")
                 bytes[0x0770]=2; assert(bridge.phase()=="waiting")
+            '''
+            subprocess.run([shutil.which("luajit"), "-e", script, str(bridge)],
+                           check=True, capture_output=True, text=True)
+
+    @unittest.skipUnless(shutil.which("luajit"), "LuaJIT is required")
+    def test_bridge_parses_frontier_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            worker_directory = Path(directory) / "worker"
+            bridge = prepare_worker_directory(
+                PROJECT_ROOT / "python/fceux_bridge/mario_ai_fceux_bridge.lua",
+                worker_directory, 1, "rainbow")
+            (worker_directory / "command.json").write_text(
+                '{"sequence":7,"action":8,"duration_frames":24,"reset":true,'
+                '"checkpoint":true,"restore_frontier":true}', encoding="utf-8")
+            script = r'''
+                MARIO_AI_TEST_PHASE=true
+                memory={readbyte=function() return 0 end}
+                local bridge=assert(loadfile(arg[0]))()
+                local _,duration,reset,_,_,_,_,action,checkpoint,restore=bridge.readCommand(7)
+                assert(duration==24 and reset and action==8 and checkpoint and restore)
             '''
             subprocess.run([shutil.which("luajit"), "-e", script, str(bridge)],
                            check=True, capture_output=True, text=True)

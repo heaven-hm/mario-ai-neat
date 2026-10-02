@@ -41,6 +41,8 @@ VICTORY_REWARD_BONUS = 20.0
 # Matches the Ape-X paper's per-actor epsilon annealing philosophy.
 APEX_EPSILONS = (0.40, 0.20, 0.10, 0.05, 0.025, 0.012, 0.006, 0.003)
 UNSOLVED_WORLD_EPSILON_FLOOR = 0.10
+FRONTIER_SPACING_PIXELS = 256
+FRONTIER_RETRIES = 3
 
 
 def _apex_epsilon(actor_index: int, total_actors: int) -> float:
@@ -75,6 +77,8 @@ class ActorConfig:
     seed: int = 7
     alternate_cheat_campaigns: bool = False
     unsolved_epsilon_floor: float = UNSOLVED_WORLD_EPSILON_FLOOR
+    frontier_spacing: int = FRONTIER_SPACING_PIXELS
+    frontier_retries: int = FRONTIER_RETRIES
 
 
 class NStepBuffer:
@@ -270,6 +274,12 @@ def actor_main(
     won_levels: set[tuple[int, int]] = set()
     levels_completed = 0
     campaigns_completed = 0
+    frontier_course: tuple[int, int] | None = None
+    next_frontier_x = 0
+    frontier_available = False
+    frontier_retries = 0
+    frontier_resets = 0
+    start_resets = 0
 
     metrics_path = Path(run_directory) / f"actor_{actor_index:02d}_metrics.json"
 
@@ -320,6 +330,18 @@ def actor_main(
             n_step_buf.flush()
             episode_replay.clear()
             progress_tracker.reset()
+            frontier_course = None
+            frontier_available = False
+            frontier_retries = 0
+
+        course = (observation.world, observation.level)
+        if course != frontier_course:
+            # Each level owns its savestate. Never restore a checkpoint made
+            # in a preceding level or after a worker's cheat-mode restart.
+            frontier_course = course
+            next_frontier_x = observation.world_x + config.frontier_spacing
+            frontier_available = False
+            frontier_retries = 0
 
         episode_max_x = max(episode_max_x, observation.world_x)
         best_episode_x = max(best_episode_x, episode_max_x)
@@ -377,7 +399,18 @@ def actor_main(
                     worker.advance_level(observation)
             else:
                 # Death and no-progress retries stay on the current level.
-                worker.reset(observation)
+                restore_frontier = (frontier_available
+                                    and frontier_retries < config.frontier_retries)
+                worker.reset(observation, restore_frontier=restore_frontier)
+                if restore_frontier:
+                    frontier_retries += 1
+                    frontier_resets += 1
+                else:
+                    # A few attempts from a saved frontier are useful for
+                    # credit assignment; repeated failures return to the
+                    # clean start so the policy cannot overfit one bad state.
+                    frontier_retries = 0
+                    start_resets += 1
             worker.previous = None
             worker.previous_action = 0  # type: ignore[attr-defined]
             worker.previous_action_duration = LEGACY_DURATION_FRAMES  # type: ignore[attr-defined]
@@ -396,6 +429,11 @@ def actor_main(
                     "level": observation.level + 1,
                     "episode_max_x": episode_max_x,
                     "best_episode_x": best_episode_x,
+                    "frontier_x": next_frontier_x - config.frontier_spacing
+                    if frontier_available else None,
+                    "frontier_retries": frontier_retries,
+                    "frontier_resets": frontier_resets,
+                    "start_resets": start_resets,
                 },
             )
             episode_max_x = 0
@@ -409,7 +447,18 @@ def actor_main(
                      steps, episodes, episodes - victories, victories,
                      best_episode_x, epsilon)
 
-        worker.send_action(observation, action)
+        # Save only stable, grounded advances. A spatial interval avoids
+        # writing a savestate every decision while providing a retryable
+        # frontier for the next obstacle.
+        checkpoint_frontier = (
+            bool(observation.state[171])
+            and observation.world_x >= next_frontier_x
+        )
+        if checkpoint_frontier:
+            frontier_available = True
+            frontier_retries = 0
+            next_frontier_x = observation.world_x + config.frontier_spacing
+        worker.send_action(observation, action, checkpoint_frontier=checkpoint_frontier)
 
         # Record transition once we have a previous state.
         if worker.previous is not None:

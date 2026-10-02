@@ -111,6 +111,10 @@ def parse_arguments() -> argparse.Namespace:
                         help="Actors reload weights every N collected steps.")
     parser.add_argument("--unsolved-epsilon-floor", type=float, default=0.10,
                         help="Minimum exploration probability before an actor wins a level.")
+    parser.add_argument("--frontier-spacing", type=int, default=256,
+                        help="Grounded progress pixels between retryable savestate frontiers.")
+    parser.add_argument("--frontier-retries", type=int, default=3,
+                        help="Attempts from a saved frontier before returning to level start.")
     parser.add_argument("--queue-capacity", type=int, default=10_000,
                         help="Max batches in experience queue (backpressure).")
     parser.add_argument("--n-step", type=int, default=3)
@@ -265,6 +269,10 @@ def main() -> None:
     args = parse_arguments()
     if not 0.0 <= args.unsolved_epsilon_floor <= 1.0:
         raise ValueError("--unsolved-epsilon-floor must be in [0, 1]")
+    if args.frontier_spacing < 1:
+        raise ValueError("--frontier-spacing must be positive")
+    if args.frontier_retries < 0:
+        raise ValueError("--frontier-retries must be non-negative")
     worker_cheats = worker_cheat_modes(args.window_layout, args.workers,
                                       args.cheats_enabled_workers)
     if any(worker_cheats) and not args.cheat_file.is_file():
@@ -311,6 +319,11 @@ def main() -> None:
                            for i in range(args.workers)],
         "unsolved_epsilon_floor": args.unsolved_epsilon_floor,
         "exploration_schedule": "Per-level epsilon floor until that actor wins the level",
+        "frontier_curriculum": {
+            "strategy": "grounded savestate checkpoints with bounded retries",
+            "spacing_pixels": args.frontier_spacing,
+            "retries": args.frontier_retries,
+        },
         "actor_seeds": [args.seed + i * 1000 for i in range(args.workers)],
         "experience_queue_max_batches": args.queue_capacity,
         "actor_batch_size": args.actor_batch_size,
@@ -393,6 +406,8 @@ def main() -> None:
         value_max=100.0,
         weight_sync_every=args.actor_weight_sync_every,
         unsolved_epsilon_floor=args.unsolved_epsilon_floor,
+        frontier_spacing=args.frontier_spacing,
+        frontier_retries=args.frontier_retries,
         seed=args.seed,
     )
 
