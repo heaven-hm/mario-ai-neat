@@ -104,6 +104,23 @@ has not yet demonstrated better gameplay than the mature Lua NEAT database.
 Read [Python Rainbow training for FCEUX](docs/python-rainbow.md) for setup,
 checkpoint recovery, evaluation, current limitations, and the benchmark protocol.
 
+## SMB1 PPO baseline
+
+A second, independent Python training path exists as an experiment and a
+benchmark against the Ape-X Rainbow system: **PPO on a different environment**.
+It uses `gym-super-mario-bros` and `nes-py` instead of FCEUX, so it needs no
+emulator window, no Lua bridge, and no savestates, and it takes a user-supplied
+SMB1 ROM. Rainbow `.pt` checkpoints are not loadable there, because the
+observation format, action space, and architecture all differ.
+
+It has its own branch, its own run directory, and its own promotion rule: a
+model is only called a World 1-1 solution after a 20-episode deterministic
+no-cheat evaluation wins all twenty.
+
+Read [the SMB1 PPO baseline](docs/smb1-ppo.md) for the action mapping, the reward
+design and its anti-reward-hacking safeguards, exact commands, hardware
+expectations, limitations, and that promotion criterion.
+
 ![Python Rainbow DQN worker running in FCEUX](docs/images/python-rainbow-fceux-worker.png)
 
 *A live Python worker: the left panel shows RAM and encoder activations; the right panel shows shared replay, update, episode, loss, and action-value telemetry.*
