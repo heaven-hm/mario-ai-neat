@@ -168,6 +168,13 @@ the greedy evaluator remain normal Mario throughout. FCEUX reloads its private
 cheat configuration on this controlled restart; the bridge does not pretend to
 toggle power by writing RAM.
 
+The default eight-worker launch reads `cheats=enabled/disabled` from
+`config/fceux-window-layout.ini`: workers 0–3 are powered and 4–7 are normal.
+`--cheats-enabled-workers` overrides those entries. Enabled workers receive
+the same checked-in `config/SuperMarioBros.cht`, so a fresh run does not depend
+on different local cheat files from previous emulator sessions. The evaluator
+always runs without cheats.
+
 ### Checkpoints and storage
 
 `model.pt` and `replay.npz` are written every 10,000 learner updates and when

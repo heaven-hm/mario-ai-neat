@@ -44,7 +44,7 @@ from mario_ai_fceux.apex_actor import (
 from mario_ai_fceux.actions import (ACTION_COUNT, ACTION_NAMES, decode_action,
                                     encode_action, greedy_action, migrate_legacy_action)
 from mario_ai_fceux.apex_learner import apex_learner_main, _serialize_weights
-from mario_ai_fceux.apex_train import parse_arguments
+from mario_ai_fceux.apex_train import parse_arguments, worker_cheat_modes
 from mario_ai_fceux.agent import RainbowAgent
 from mario_ai_fceux.model import RainbowNetwork
 from mario_ai_fceux.replay import Transition
@@ -318,6 +318,13 @@ class TestApexEpsilon(unittest.TestCase):
             arguments = parse_arguments()
         self.assertEqual(arguments.queue_capacity, 10_000)
         self.assertEqual(arguments.actor_batch_size, 32)
+
+    def test_saved_layout_assigns_four_powered_and_four_normal_workers(self) -> None:
+        layout = PROJECT_ROOT / "config/fceux-window-layout.ini"
+        self.assertEqual(worker_cheat_modes(layout, 8),
+                         (True, True, True, True, False, False, False, False))
+        self.assertEqual(worker_cheat_modes(layout, 8, "4,5"),
+                         (False, False, False, False, True, True, False, False))
 
 
 # ---------------------------------------------------------------------------

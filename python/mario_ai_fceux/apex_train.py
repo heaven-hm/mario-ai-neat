@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import configparser
 import hashlib
 import json
 import logging
@@ -126,9 +127,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--window-layout", type=Path,
                         default=Path("config/fceux-window-layout.ini"),
                         help="INI file containing worker window rectangles.")
-    parser.add_argument("--cheats-enabled-workers", default="0,1,2,3",
-                        help="Zero-based worker indexes that load the ROM .cht file.")
-    parser.add_argument("--cheat-file", type=Path, default=None,
+    parser.add_argument("--cheats-enabled-workers", default=None,
+                        help="Override the layout INI: zero-based indexes loading the ROM .cht file.")
+    parser.add_argument("--cheat-file", type=Path, default=Path("config/SuperMarioBros.cht"),
                         help="Optional FCEUX .cht file copied into enabled workers.")
     parser.add_argument("--alternate-cheat-campaigns", action="store_true",
                         help="For initially powered workers, alternate cheat mode after each World-N-4 win.")
@@ -237,14 +238,37 @@ def write_health_report(
 # Main coordinator
 # ---------------------------------------------------------------------------
 
+def worker_cheat_modes(layout_path: Path, worker_count: int,
+                       override: str | None = None) -> tuple[bool, ...]:
+    """Use the saved window layout's cheat assignment unless CLI overrides it."""
+    if override is not None:
+        indexes = {int(value.strip()) for value in override.split(",") if value.strip()}
+        if any(index < 0 or index >= worker_count for index in indexes):
+            raise ValueError("--cheats-enabled-workers indexes must be within the worker count")
+        return tuple(index in indexes for index in range(worker_count))
+    layout = configparser.ConfigParser()
+    if layout.read(layout_path):
+        modes = []
+        for index in range(worker_count):
+            section = f"worker-{index:02d}"
+            if not layout.has_option(section, "cheats"):
+                raise ValueError(f"{layout_path} lacks cheats= for {section}")
+            value = layout.get(section, "cheats").strip().lower()
+            if value not in ("enabled", "disabled"):
+                raise ValueError(f"{layout_path} has invalid cheats= for {section}")
+            modes.append(value == "enabled")
+        return tuple(modes)
+    return tuple(index < min(worker_count, 4) for index in range(worker_count))
+
+
 def main() -> None:
     args = parse_arguments()
-    enabled_indexes = {int(value.strip()) for value in args.cheats_enabled_workers.split(",") if value.strip()}
-    if any(index < 0 or index >= args.workers for index in enabled_indexes):
-        raise ValueError("--cheats-enabled-workers indexes must be within the worker count")
     if not 0.0 <= args.unsolved_epsilon_floor <= 1.0:
         raise ValueError("--unsolved-epsilon-floor must be in [0, 1]")
-    worker_cheats = tuple(index in enabled_indexes for index in range(args.workers))
+    worker_cheats = worker_cheat_modes(args.window_layout, args.workers,
+                                      args.cheats_enabled_workers)
+    if any(worker_cheats) and not args.cheat_file.is_file():
+        raise FileNotFoundError(f"enabled workers need a cheat file: {args.cheat_file}")
     try:
         requested_worlds = tuple(int(v.strip()) for v in args.worlds.split(",") if v.strip())
     except ValueError as exc:
