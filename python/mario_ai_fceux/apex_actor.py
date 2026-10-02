@@ -45,6 +45,13 @@ VICTORY_REWARD_BONUS = 20.0
 # greedy policy learned to tap exactly where successful trajectories committed.
 MAX_PROGRESS_REWARD = 4.0
 
+# Temporally correlated exploration: while exploring, reuse the previous action
+# with this probability instead of resampling.  Independent random actions
+# cancel out in a momentum game like SMB1 (run, brake, jump-back, run), while
+# short random *sequences* stay coherent enough to cross a gap or land a stomp,
+# which is exactly what exploration has to discover.
+EXPLORATION_STICKINESS = 0.25
+
 # Ape-X exploration schedule: actor 0 explores most, actor 7 exploits most.
 # Matches the Ape-X paper's per-actor epsilon annealing philosophy.
 APEX_EPSILONS = (0.40, 0.20, 0.10, 0.05, 0.025, 0.012, 0.006, 0.003)
@@ -154,10 +161,14 @@ def _select_action(
     epsilon: float,
     action_count: int,
     device: torch.device,
+    previous_action: int | None = None,
+    stickiness: float = EXPLORATION_STICKINESS,
 ) -> int:
     """Epsilon-greedy action selection using the actor's local network copy."""
     action, _, _ = _action_details(network, support, state, epsilon,
-                                  action_count, device)
+                                  action_count, device,
+                                  previous_action=previous_action,
+                                  stickiness=stickiness)
     return action
 
 
@@ -169,6 +180,8 @@ def _action_details(
     action_count: int,
     device: torch.device,
     safe_start: bool = False,
+    previous_action: int | None = None,
+    stickiness: float = EXPLORATION_STICKINESS,
 ) -> tuple[int, np.ndarray, np.ndarray]:
     """Return action, Q values, and encoder summary for the live FCEUX HUD."""
     # Actor policy values use learned mean weights; exploration comes only
@@ -182,7 +195,10 @@ def _action_details(
                     if action_count == ACTION_COUNT
                     else int(q_values.argmax(dim=1).item()))
     if np.random.random() < epsilon:
-        action = int(np.random.randint(action_count))
+        # Sticky exploration keeps random steps in short coherent sequences.
+        action = (previous_action if previous_action is not None
+                  and np.random.random() < stickiness
+                  else int(np.random.randint(action_count)))
     else:
         action = greedy_index
     if safe_start and action_count == ACTION_COUNT:
@@ -475,6 +491,7 @@ def actor_main(
             safe_start=(observation.world_x <= 160
                         and bool(observation.state[171])
                         and not bool(observation.state[182])),
+            previous_action=getattr(worker, "previous_action", None),
         )
         _publish_hud(worker, run_directory, observation, action, q_values, hidden,
                      steps, episodes, episodes - victories, victories,

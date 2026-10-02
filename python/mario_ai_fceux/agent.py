@@ -25,7 +25,10 @@ class AgentConfig:
     observation_size: int = 184
     action_count: int = ACTION_COUNT
     gamma: float = 0.99
-    learning_rate: float = 6.25e-5
+    # The Ape-X reference uses 6.25e-4 with a 512 batch; the bootcamp learner
+    # started ten times below that and, at ~50 updates/s, was slow to move away
+    # from the policy the old shaping had already fitted.
+    learning_rate: float = 1.25e-4
     batch_size: int = 128
     learning_starts: int = 10_000
     target_sync_steps: int = 2_000

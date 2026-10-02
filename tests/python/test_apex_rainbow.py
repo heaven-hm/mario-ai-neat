@@ -406,6 +406,18 @@ class TestActionSelection(unittest.TestCase):
         self.assertTrue(np.isfinite(q_values).all())
         self.assertTrue(np.isfinite(hidden).all())
 
+    def test_exploration_repeats_the_previous_action_when_sticky(self) -> None:
+        state = np.zeros(4, dtype=np.float32)
+        action, _, _ = _action_details(self.network, self.support, state, 1.0, 2, self.device,
+                                       previous_action=1, stickiness=1.0)
+        self.assertEqual(action, 1)
+
+    def test_exploration_resamples_without_stickiness(self) -> None:
+        state = np.zeros(4, dtype=np.float32)
+        actions = {_action_details(self.network, self.support, state, 1.0, 2, self.device,
+                                   previous_action=1, stickiness=0.0)[0] for _ in range(64)}
+        self.assertEqual(actions, {0, 1})
+
     def test_actor_action_values_do_not_change_when_noisy_weights_reset(self) -> None:
         state = np.zeros(4, dtype=np.float32)
         self.network.train()

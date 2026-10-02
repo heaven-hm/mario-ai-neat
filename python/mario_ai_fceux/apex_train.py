@@ -386,7 +386,7 @@ def main() -> None:
         observation_size=184,
         action_count=ACTION_COUNT,
         gamma=0.99,
-        learning_rate=6.25e-5,
+        learning_rate=1.25e-4,
         batch_size=args.batch_size,
         learning_starts=10_000,
         target_sync_steps=2_000,
