@@ -655,6 +655,19 @@ class TestResumeConfigGuard(unittest.TestCase):
             resumed = self._agent(learning_rate=1.25e-4)
             resumed.load(path, validate_replay=False)
 
+    def test_weights_load_without_a_matching_replay_snapshot(self) -> None:
+        # --fresh-replay keeps learned weights while starting an empty buffer, so
+        # the strict snapshot pairing has to be skippable on purpose.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            saved = self._agent()
+            saved.save(path, Path(directory) / "replay.npz")
+            resumed = self._agent()
+            resumed.replay.snapshot_id = "another-snapshot"
+            with self.assertRaises(ValueError):
+                resumed.load(path)
+            resumed.load(path, validate_replay=False)
+
     def test_support_widening_resumes_when_atoms_are_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.pt"

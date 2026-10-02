@@ -96,6 +96,9 @@ def parse_arguments() -> argparse.Namespace:
                         help="Total training steps target.")
     parser.add_argument("--resume", action="store_true",
                         help="Load model.pt and replay.npz if they exist.")
+    parser.add_argument("--fresh-replay", action="store_true",
+                        help="With --resume, keep the learned weights and optimizer state "
+                             "but start an empty replay buffer (after changing reward shaping).")
     parser.add_argument("--device", default=None,
                         help="PyTorch device: mps, cuda, or cpu.")
     parser.add_argument("--seed", type=int, default=7)
@@ -398,7 +401,8 @@ def main() -> None:
         per_beta_steps=1_000_000,
         seed=args.seed,
     )
-    learner_config = {**vars(agent_config), "replay_capacity": args.replay_capacity}
+    learner_config = {**vars(agent_config), "replay_capacity": args.replay_capacity,
+                      "fresh_replay": args.fresh_replay}
 
     # ---- Build ActorConfig (shared template; index injected at launch).
     actor_config = ActorConfig(
