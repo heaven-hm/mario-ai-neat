@@ -237,18 +237,45 @@ def import_rom(
     return copied
 
 
+def rom_seam_name(attributes=None) -> str | None:
+    """Return the ROM lookup this gym-super-mario-bros resolves through.
+
+    Two layouts exist. Releases through 7.x import ``rom_path(lost_levels,
+    rom_mode)``; releases from 9.x are Gymnasium-native and import
+    ``smb1_rom_path()`` instead. Both hard-code a packaged image and offer no
+    path argument, so the module attribute each one calls is the only seam.
+    ``attributes`` exists so both layouts can be tested from one installation.
+    """
+    from gym_super_mario_bros import smb_env
+
+    names = set(dir(smb_env)) if attributes is None else set(attributes)
+    if "smb1_rom_path" in names:
+        return "smb1_rom_path"
+    if "rom_path" in names:
+        return "rom_path"
+    return None
+
+
 def use_local_rom(path: Path | str) -> None:
     """Make gym-super-mario-bros load the supplied ROM instead of its own.
 
-    The upstream environment hard-codes ``rom_path(lost_levels, rom_mode)``
-    inside ``SuperMarioBrosEnv.__init__``, so the module attribute it calls is
-    the only injection point. Only the plain SMB1 vanilla image is accepted:
-    the ROM-hack modes change the pixels the CNN sees and would silently
+    Only the plain SMB1 image is accepted. On the legacy layout the ROM-hack
+    modes are refused because they change the pixels the CNN sees; on the modern
+    layout Lost Levels is refused for the same reason. Either would silently
     invalidate a benchmark against the Rainbow system.
     """
     from gym_super_mario_bros import smb_env
 
     requested = str(Path(path).expanduser().resolve())
+    seam = rom_seam_name()
+    if seam is None:
+        raise RomError(
+            "this gym-super-mario-bros version exposes no ROM lookup to redirect; "
+            "install gym-super-mario-bros 7.4.0 or 9.x"
+        )
+
+    def smb1_rom_path() -> str:
+        return requested
 
     def rom_path(lost_levels: bool, rom_mode: str) -> str:
         if lost_levels:
@@ -257,7 +284,16 @@ def use_local_rom(path: Path | str) -> None:
             raise RomError(f"only the unmodified SMB1 image is supported, not {rom_mode!r}")
         return requested
 
-    smb_env.rom_path = rom_path
+    if seam == "smb1_rom_path":
+        smb_env.smb1_rom_path = smb1_rom_path
+        if hasattr(smb_env, "smb2jp_rom_path"):
+
+            def smb2jp_rom_path() -> str:
+                raise RomError("this project trains Super Mario Bros. 1 only, not Lost Levels")
+
+            smb_env.smb2jp_rom_path = smb2jp_rom_path
+    else:
+        smb_env.rom_path = rom_path
 
 
 def arguments() -> argparse.Namespace:

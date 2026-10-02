@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import gymnasium
 import numpy as np
@@ -20,12 +21,20 @@ from smb1_ppo.env import (
     make_env,
     make_vec_env,
     observation_shape,
+    raw_env_kwargs,
     resolve_device,
     start_method,
 )
 from smb1_ppo.rom import RomError
 from smb1_ppo.synthetic import LEVEL_X, SyntheticScript
-from support import LegacyGymEnv, legacy_spaces, smb1_info
+from support import (
+    GymnasiumStyleGymEnv,
+    LegacyGymEnv,
+    environment_spaces,
+    legacy_gym_available,
+    legacy_spaces,
+    smb1_info,
+)
 
 
 class LevelSpecTests(unittest.TestCase):
@@ -70,18 +79,28 @@ class EnvConfigTests(unittest.TestCase):
 
 class GymnasiumApiAdapterTests(unittest.TestCase):
     def _adapter(self):
-        observation_space, action_space = legacy_spaces()
+        observation_space, action_space = environment_spaces()
         env = LegacyGymEnv(smb1_info(x_pos=100))
         env.observation_space = observation_space
         env.action_space = action_space
         return GymnasiumApiAdapter(env)
 
-    def test_spaces_are_converted_to_gymnasium_types(self) -> None:
+    def test_spaces_are_gymnasium_types_after_the_adapter(self) -> None:
         env = self._adapter()
         self.assertIsInstance(env.observation_space, gymnasium.spaces.Box)
         self.assertIsInstance(env.action_space, gymnasium.spaces.Discrete)
         self.assertEqual(env.observation_space.dtype, np.uint8)
         self.assertEqual(int(env.action_space.n), 7)
+
+    @unittest.skipUnless(legacy_gym_available(), "the legacy gym package is not installed")
+    def test_legacy_gym_spaces_are_converted(self) -> None:
+        observation_space, action_space = legacy_spaces()
+        converted_observation = to_gymnasium_space(observation_space)
+        converted_action = to_gymnasium_space(action_space)
+        self.assertIsInstance(converted_observation, gymnasium.spaces.Box)
+        self.assertIsInstance(converted_action, gymnasium.spaces.Discrete)
+        self.assertEqual(converted_observation.shape, (2, 2, 3))
+        self.assertEqual(int(converted_action.n), 7)
 
     def test_reset_returns_an_observation_and_info_pair(self) -> None:
         env = self._adapter()
@@ -106,7 +125,7 @@ class GymnasiumApiAdapterTests(unittest.TestCase):
         self.assertEqual(info["x_pos"], 120)
 
     def test_truncation_is_taken_from_the_time_limit_info_key(self) -> None:
-        observation_space, action_space = legacy_spaces()
+        observation_space, action_space = environment_spaces()
         inner = LegacyGymEnv(smb1_info())
         inner.observation_space = observation_space
         inner.action_space = action_space
@@ -127,6 +146,11 @@ class GymnasiumApiAdapterTests(unittest.TestCase):
 
     def test_viewport_is_unavailable_when_the_environment_has_no_ram(self) -> None:
         self.assertIsNone(self._adapter().viewport)
+
+    def test_rendering_uses_the_signature_the_environment_exposes(self) -> None:
+        self.assertEqual(self._adapter().render(), "rendered:human")
+        gymnasium_style = GymnasiumStyleGymEnv()
+        self.assertEqual(GymnasiumApiAdapter(gymnasium_style).render(), "rendered")
 
     def test_a_gymnasium_space_passes_through_unchanged(self) -> None:
         space = gymnasium.spaces.Box(0, 1, (2,), np.float32)
@@ -218,9 +242,42 @@ class VectorizationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_vec_env(EnvConfig(environment=ENVIRONMENT_SYNTHETIC), workers=0)
 
-    def test_start_method_is_platform_appropriate(self) -> None:
+    def test_start_method_is_safe_on_every_platform(self) -> None:
         self.assertIsNone(start_method(1))
-        self.assertIn(start_method(8), ("spawn", "forkserver"))
+        with mock.patch("smb1_ppo.env.platform.system", return_value="Windows"):
+            self.assertEqual(start_method(8), "spawn")
+        with mock.patch("smb1_ppo.env.platform.system", return_value="Darwin"):
+            self.assertEqual(start_method(8), "spawn")
+        with mock.patch("smb1_ppo.env.platform.system", return_value="Linux"):
+            self.assertEqual(start_method(8), "forkserver")
+
+
+class ConstructorArgumentTests(unittest.TestCase):
+    """The two gym-super-mario-bros layouts take different keyword arguments."""
+
+    def test_the_legacy_layout_takes_rom_mode_and_no_render_mode(self) -> None:
+        legacy = {"self", "rom_mode", "lost_levels", "target"}
+        self.assertEqual(
+            raw_env_kwargs(legacy, LevelSpec(1, 2)),
+            {"rom_mode": "vanilla", "lost_levels": False, "target": (1, 2)},
+        )
+
+    def test_the_gymnasium_layout_takes_render_mode(self) -> None:
+        modern = {"self", "lost_levels", "target", "render_mode"}
+        self.assertEqual(
+            raw_env_kwargs(modern, LevelSpec(1, 3), "human"),
+            {"lost_levels": False, "target": (1, 3), "render_mode": "human"},
+        )
+
+    def test_render_mode_is_omitted_when_the_environment_has_no_such_parameter(self) -> None:
+        self.assertNotIn("render_mode", raw_env_kwargs({"self", "lost_levels", "target"}, LevelSpec()))
+
+    def test_lost_levels_is_never_requested(self) -> None:
+        for parameters in (
+            {"self", "rom_mode", "lost_levels", "target"},
+            {"self", "lost_levels", "target", "render_mode"},
+        ):
+            self.assertFalse(raw_env_kwargs(parameters, LevelSpec())["lost_levels"])
 
     def test_seed_on_reset_pins_the_episode_seed(self) -> None:
         environment = SeedOnReset(make_env(EnvConfig(environment=ENVIRONMENT_SYNTHETIC))(), seed=99)

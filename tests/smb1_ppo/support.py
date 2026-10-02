@@ -78,11 +78,41 @@ class LegacyGymEnv:
         return f"rendered:{mode}"
 
 
+class GymnasiumStyleGymEnv(LegacyGymEnv):
+    """A Gymnasium-style environment whose ``render`` takes no arguments."""
+
+    def __init__(self):
+        super().__init__(smb1_info())
+        self.observation_space, self.action_space = environment_spaces()
+
+    def render(self):
+        return "rendered"
+
+
+def legacy_gym_available() -> bool:
+    """True where the legacy ``gym`` package is installed (nes-py 8.x)."""
+    try:
+        import gym  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def legacy_spaces():
-    """Legacy Gym spaces, the type gym-super-mario-bros actually exposes."""
+    """Legacy Gym spaces, the type gym-super-mario-bros 7.x exposes."""
     import gym
 
     return gym.spaces.Box(0, 255, (2, 2, 3), np.uint8), gym.spaces.Discrete(7)
+
+
+def environment_spaces():
+    """Whatever space types the installed environment exposes."""
+    if legacy_gym_available():
+        return legacy_spaces()
+    return (
+        gymnasium.spaces.Box(0, 255, (2, 2, 3), np.uint8),
+        gymnasium.spaces.Discrete(7),
+    )
 
 
 class ScriptedEnv(gymnasium.Env):

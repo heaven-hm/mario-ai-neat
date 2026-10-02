@@ -6,6 +6,7 @@ level, and World 1-1 is the default because it is the first promotion target.
 
 from __future__ import annotations
 
+import inspect
 import platform
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -73,6 +74,7 @@ class EnvConfig:
     reward: RewardConfig = field(default_factory=RewardConfig)
     seed: int = DEFAULT_SEED
     synthetic: SyntheticScript = field(default_factory=SyntheticScript)
+    render_mode: str | None = None
 
     def __post_init__(self):
         if self.environment not in (ENVIRONMENT_SMB1, ENVIRONMENT_SYNTHETIC):
@@ -151,6 +153,22 @@ class SeedOnReset(gymnasium.Wrapper):
         return self.env.reset(**kwargs)
 
 
+def raw_env_kwargs(parameters, level: LevelSpec, render_mode: str | None = None) -> dict:
+    """Choose the constructor arguments the installed environment accepts.
+
+    Both layouts take ``lost_levels`` and ``target``, but only the legacy one
+    takes ``rom_mode``, and only the Gymnasium one takes ``render_mode``. Passing
+    an unsupported keyword raises, so the signature decides.
+    """
+    parameters = set(parameters)
+    if "rom_mode" in parameters:
+        return {"rom_mode": "vanilla", "lost_levels": False, "target": level.target}
+    kwargs = {"lost_levels": False, "target": level.target}
+    if "render_mode" in parameters:
+        kwargs["render_mode"] = render_mode
+    return kwargs
+
+
 def build_raw_environment(config: EnvConfig):
     """Build the unwrapped, adapter-free environment for a level."""
     if config.is_synthetic:
@@ -159,7 +177,8 @@ def build_raw_environment(config: EnvConfig):
     use_local_rom(resolve_rom(config.rom))
     from gym_super_mario_bros.smb_env import SuperMarioBrosEnv
 
-    return SuperMarioBrosEnv(rom_mode="vanilla", lost_levels=False, target=config.level.target)
+    parameters = inspect.signature(SuperMarioBrosEnv.__init__).parameters
+    return SuperMarioBrosEnv(**raw_env_kwargs(parameters, config.level, config.render_mode))
 
 
 def make_env(config: EnvConfig, rank: int = 0, record_trace: bool = False):
@@ -174,7 +193,7 @@ def make_env(config: EnvConfig, rank: int = 0, record_trace: bool = False):
         env = build_raw_environment(config)
         if not config.is_synthetic:
             env = joypad_space(env)
-        env = GymnasiumApiAdapter(env)
+        env = GymnasiumApiAdapter(env, render_mode=config.render_mode or "human")
         env = FrameSkipMaxPool(env, config.frame_skip)
         if config.no_progress_frames:
             env = NoProgressLimit(env, config.no_progress_frames)
@@ -193,13 +212,15 @@ def make_env(config: EnvConfig, rank: int = 0, record_trace: bool = False):
 def start_method(workers: int) -> str | None:
     """Pick a safe start method for the worker count and platform.
 
-    macOS defaults to ``spawn`` because forking a process that has already
-    touched CUDA or MPS is unsafe; Linux uses ``forkserver``, which keeps a
-    single interpreter start-up cost off every worker.
+    ``forkserver`` exists only on POSIX, so Windows must use ``spawn``: passing
+    ``forkserver`` there raises before any worker starts. macOS also uses
+    ``spawn``, because forking a process that has already initialised MPS is
+    unsafe. On Linux ``forkserver`` is preferred because it pays the interpreter
+    start-up cost once instead of in every worker.
     """
     if workers <= 1:
         return None
-    return "spawn" if platform.system() == "Darwin" else "forkserver"
+    return "forkserver" if platform.system() == "Linux" else "spawn"
 
 
 def make_vec_env(
@@ -265,6 +286,14 @@ def describe_environment() -> dict[str, object]:
             description[name] = getattr(imported, "__version__", "unknown")
         except Exception as error:  # pragma: no cover - reporting path
             description[name] = f"unavailable: {type(error).__name__}"
+    # Which ROM lookup the installed package resolves through, i.e. which of the
+    # two gym-super-mario-bros layouts this run used.
+    try:
+        from .rom import rom_seam_name
+
+        description["rom_lookup_seam"] = rom_seam_name()
+    except Exception as error:  # pragma: no cover - reporting path
+        description["rom_lookup_seam"] = f"unavailable: {type(error).__name__}"
     return description
 
 
@@ -285,6 +314,7 @@ __all__ = [
     "make_env",
     "make_vec_env",
     "observation_shape",
+    "raw_env_kwargs",
     "resolve_device",
     "start_method",
 ]

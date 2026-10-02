@@ -33,7 +33,12 @@ def to_gymnasium_space(space):
     """Convert a legacy Gym space to its Gymnasium equivalent."""
     if isinstance(space, gymnasium.spaces.Space):
         return space
-    import gym
+    try:
+        import gym
+    except ImportError:
+        raise TypeError(
+            f"cannot convert {type(space).__name__} to Gymnasium: the legacy gym package is not installed"
+        ) from None
 
     if isinstance(space, gym.spaces.Box):
         return gymnasium.spaces.Box(low=np.asarray(space.low), high=np.asarray(space.high), dtype=space.dtype)
@@ -43,15 +48,20 @@ def to_gymnasium_space(space):
 
 
 class GymnasiumApiAdapter(gymnasium.Env):
-    """Expose a legacy Gym environment through the Gymnasium API."""
+    """Expose a legacy Gym environment through the Gymnasium API.
+
+    A Gymnasium-native environment (gym-super-mario-bros 9.x) already satisfies
+    this contract, so the adapter becomes a pass-through for everything except
+    space conversion, which it handles idempotently.
+    """
 
     metadata = {"render_modes": ["human", "rgb_array"]}
 
-    def __init__(self, env):
+    def __init__(self, env, render_mode: str = "human"):
         self.env = env
         self.observation_space = to_gymnasium_space(env.observation_space)
         self.action_space = to_gymnasium_space(env.action_space)
-        self.render_mode: str | None = "human"
+        self.render_mode: str | None = render_mode
         self._state: dict[str, object] = {}
 
     # MARK: Gymnasium API
@@ -107,7 +117,21 @@ class GymnasiumApiAdapter(gymnasium.Env):
         return observation, reward, bool(done) and not truncated, truncated, info
 
     def render(self):
-        return self.env.render(mode=self.render_mode or "human")
+        return self._call_render()
+
+    def _call_render(self):
+        """Render with the signature the wrapped environment exposes.
+
+        The legacy NES environment takes ``render(mode=...)``; the Gymnasium one
+        takes no arguments and reads its constructor's ``render_mode`` instead.
+        """
+        try:
+            parameters = inspect.signature(self.env.render).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if parameters:
+            return self.env.render(mode=self.render_mode or "human")
+        return self.env.render()
 
     def close(self):
         close = getattr(self.env, "close", None)

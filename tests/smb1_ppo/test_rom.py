@@ -181,32 +181,53 @@ class ResolutionTests(unittest.TestCase):
 class LocalRomSeamTests(unittest.TestCase):
     """gym-super-mario-bros hard-codes its ROM lookup; the seam must redirect it."""
 
+    def test_both_layouts_are_recognized(self) -> None:
+        self.assertEqual(rom.rom_seam_name(["rom_path", "SuperMarioBrosEnv"]), "rom_path")
+        self.assertEqual(rom.rom_seam_name(["smb1_rom_path", "rom_path"]), "smb1_rom_path")
+        self.assertIsNone(rom.rom_seam_name(["SuperMarioBrosEnv"]))
+
+    def test_the_installed_layout_is_recognized(self) -> None:
+        self.assertIn(rom.rom_seam_name(), ("smb1_rom_path", "rom_path"))
+
     def test_the_seam_redirects_the_upstream_lookup(self) -> None:
         from gym_super_mario_bros import smb_env
 
-        original = smb_env.rom_path
+        seam = rom.rom_seam_name()
+        original = getattr(smb_env, seam)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "mine.nes"
             path.write_bytes(ines_image())
             try:
                 rom.use_local_rom(path)
-                self.assertEqual(smb_env.rom_path(False, "vanilla"), str(path.resolve()))
+                seam_function = getattr(smb_env, seam)
+                resolved = seam_function(False, "vanilla") if seam == "rom_path" else seam_function()
+                self.assertEqual(resolved, str(path.resolve()))
             finally:
-                smb_env.rom_path = original
+                setattr(smb_env, seam, original)
 
-    def test_stock_image_variants_are_refused(self) -> None:
+    def test_unsupported_images_are_refused_at_the_seam(self) -> None:
         from gym_super_mario_bros import smb_env
 
-        original = smb_env.rom_path
+        seam = rom.rom_seam_name()
+        restored = {
+            name: getattr(smb_env, name)
+            for name in ("rom_path", "smb1_rom_path", "smb2jp_rom_path")
+            if hasattr(smb_env, name)
+        }
         try:
             rom.use_local_rom("/tmp/any.nes")
-            with self.assertRaises(rom.RomError):
-                smb_env.rom_path(True, "vanilla")
-            for mode in ("pixel", "rectangle", "downsample"):
+            if seam == "smb1_rom_path":
                 with self.assertRaises(rom.RomError):
-                    smb_env.rom_path(False, mode)
+                    smb_env.smb2jp_rom_path()
+            else:
+                with self.assertRaises(rom.RomError):
+                    smb_env.rom_path(True, "vanilla")
+                for mode in ("pixel", "rectangle", "downsample"):
+                    with self.assertRaises(rom.RomError):
+                        smb_env.rom_path(False, mode)
         finally:
-            smb_env.rom_path = original
+            for name, function in restored.items():
+                setattr(smb_env, name, function)
 
 
 if __name__ == "__main__":

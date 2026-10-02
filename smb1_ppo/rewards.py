@@ -237,14 +237,26 @@ class MarioRewardWrapper(gymnasium.Wrapper):
         self.death_cause = CAUSE_UNCLASSIFIED
 
     def _observe(self, info: dict) -> None:
-        viewport = self._viewport()
-        detected = detect_signals(info, viewport)
+        detected = detect_signals(info, self._viewport(info))
         self.signals = detected
         if self._best_x is None and "x_pos" in info:
             self._best_x = int(info["x_pos"])
 
-    def _viewport(self) -> int | None:
-        """Read the probe the environment adapter exposes, if it has one."""
+    def _viewport(self, info: dict | None = None) -> int | None:
+        """Return SMB1's vertical viewport byte from the best available source.
+
+        The Gymnasium-native releases publish it as ``info["y_viewport"]``. The
+        legacy release does not, so the RAM byte that environment itself reads is
+        probed through the adapter. When neither exists the death is left
+        unclassified rather than inferred.
+        """
+        if info:
+            published = info.get("y_viewport")
+            if published is not None:
+                try:
+                    return int(published)
+                except (TypeError, ValueError):
+                    pass
         try:
             viewport = self.env.unwrapped.viewport
         except Exception:
@@ -304,7 +316,7 @@ class MarioRewardWrapper(gymnasium.Wrapper):
         elif died:
             terms.death = self.config.death_penalty
             self.event = EVENT_DEATH
-            self.death_cause = classify_death_cause(self._viewport())
+            self.death_cause = classify_death_cause(self._viewport(info))
         elif truncated:
             self.event = EVENT_TRUNCATED
             self.death_cause = CAUSE_UNCLASSIFIED

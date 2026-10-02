@@ -254,6 +254,13 @@ class SignalHonestyTests(unittest.TestCase):
         self.assertEqual(info["death_cause"], CAUSE_UNCLASSIFIED)
         self.assertIn("viewport", env.signals.missing)
 
+    def test_a_published_viewport_field_is_preferred_over_the_ram_probe(self) -> None:
+        info = smb1_info(x_pos=120, y_viewport=3)
+        env = wrap(smb1_info(y_viewport=1), [(info, True, False, -25.0)], viewport=1)
+        _, _, _, _, info = step(env)
+        self.assertEqual(info["death_cause"], CAUSE_PIT)
+        self.assertNotIn("viewport", env.signals.missing)
+
     def test_detect_signals_reports_every_present_field(self) -> None:
         signals = detect_signals(smb1_info(), viewport=1)
         self.assertEqual(signals.missing, ())

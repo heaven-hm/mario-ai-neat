@@ -45,6 +45,12 @@ def add_environment_arguments(parser: argparse.ArgumentParser) -> None:
         default=0,
         help="truncate an episode after this many stalled frames (0 disables it)",
     )
+    group.add_argument(
+        "--render-mode",
+        choices=("human", "rgb_array"),
+        default=None,
+        help="only the Gymnasium-native environment takes this at construction; used by watch",
+    )
 
 
 def add_reward_arguments(parser: argparse.ArgumentParser) -> None:

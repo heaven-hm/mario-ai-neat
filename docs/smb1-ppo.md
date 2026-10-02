@@ -40,7 +40,7 @@ flowchart LR
 ## The ROM is yours, and the trainer checks it
 
 No ROM is included, downloaded, or redistributed by this repository. Import a
-legally obtained cartridge dump once:
+legally obtained cartridge dump once (this works on either environment layout):
 
 ```bash
 python -m smb1_ppo.rom import --source "/path/to/Super Mario Bros. (World).nes"
@@ -62,29 +62,41 @@ python -m smb1_ppo.rom check          # inspect the configured ROM without copyi
 
 ## Environment compatibility
 
-`gym-super-mario-bros` resolves its ROM through a fixed internal lookup with no
-path argument, so `smb1_ppo.rom.use_local_rom` substitutes that lookup for your
-file. Only the plain, unmodified image is accepted; the package's `pixel`,
-`rectangle`, and `downsample` variants change the pixels the CNN sees and would
-silently invalidate a comparison against Rainbow.
+There are two incompatible `gym-super-mario-bros` layouts, and this package runs
+on either. Which one you get is decided by your Python version, and the install
+script picks the matching dependency file.
 
-The installed stack also predates Gymnasium, and `smb1_ppo.compat` is the single
-place that knows it:
-
-| Concern | Installed behaviour | What this package does |
+| | Modern (recommended) | Legacy |
 |---|---|---|
-| `reset` | returns a bare observation array | returns `(observation, info)`, recovering the state summary from the environment's own accessor |
-| `step` | returns 4 values | returns the Gymnasium 5-tuple, deriving `truncated` from the time-limit info key |
-| spaces | `gym.spaces.Box` / `gym.spaces.Discrete` | converted to `gymnasium.spaces`, which Stable-Baselines3 asserts on |
-| seeding | `nes_py`'s `JoypadSpace` overrides `reset` with no parameters | the adapter inspects the signature and passes only accepted arguments |
+| Python | 3.13 or 3.14 | 3.12 |
+| `gym-super-mario-bros` | 9.x | 7.4.0 |
+| `nes-py` | 9.x | 8.2.1 |
+| API | Gymnasium-native: tuple reset, five-tuple step, `gymnasium` spaces | legacy Gym: bare-array reset, four-tuple step, `gym.spaces` |
+| Wheels | prebuilt for Linux, macOS, and Windows | source build only (**MSVC Build Tools 2022 required on Windows**, clang++ or g++ elsewhere) |
+| NumPy | 2 supported | must be `< 2` |
+| ROM lookup | `smb1_rom_path()` | `rom_path(lost_levels, rom_mode)` |
+| Pit detection | `info["y_viewport"]` is public | RAM byte `0x00B5` is probed through the adapter |
 
-Pinned dependency constraints, learned the hard way:
+Prefer the modern layout, especially on Windows: needing a C++ toolchain just to
+install an emulator is the most likely way a first run stalls.
 
-- **NumPy must be `< 2`.** `nes-py 8.2.1` computes the PRG-ROM size as a `uint8`
-  and overflows on NumPy 2 scalar-promotion rules, so the environment cannot even
-  construct. `requirements-smb1-ppo.txt` pins NumPy 1.26.
-- **OpenCV must be `< 5`.** OpenCV 5 requires NumPy 2.
-- `rich` and `tqdm` are needed for the SB3 progress bar; the installer includes them.
+`smb1_ppo.compat` is the single place that knows about the difference. On the
+legacy layout it translates `reset`/`step` arity and converts `gym.spaces` into
+`gymnasium.spaces`, and it passes only the reset and render arguments each
+wrapped environment actually accepts — `nes_py`'s `JoypadSpace` overrides
+`reset` with no parameters at all, so it silently swallows a seed, and the
+legacy `render` takes a `mode` argument where the Gymnasium one takes none. On
+the modern layout those translations are pass-throughs.
+
+`smb1_ppo.rom.use_local_rom` redirects whichever lookup the installed release
+calls, and refuses Lost Levels and the ROM-hack image variants on both, because
+those change the pixels the CNN sees and would silently invalidate a comparison
+against Rainbow.
+
+Both layouts are verified here: the full suite passes on each, and each ran a
+bounded real-ROM training and evaluation smoke test. `run.json` records the
+versions and the ROM lookup seam a run used, so a result states which layout
+produced it.
 
 ## Action mapping
 
@@ -167,11 +179,16 @@ score counter.
 
 ## Commands
 
-Install (creates `.venv` and pins the working dependency set):
+Install (creates `.venv`, picks the dependency set for your Python version, and
+prints which layout it installed):
 
 ```bash
 scripts/smb1_ppo_setup.sh
 ```
+
+It needs Python 3.12 or 3.13+. Anything older is refused with a clear message
+rather than a dependency-resolution failure. The two dependency files are
+`requirements-smb1-ppo.txt` (Python 3.13+) and `requirements-smb1-ppo-py312.txt`.
 
 Import a ROM you own:
 
@@ -252,19 +269,21 @@ else can promote a model.
 One `nes-py` process per worker; each worker is CPU-bound and single-threaded,
 so workers should not exceed physical cores.
 
-- **Apple Silicon Mac, 8 workers:** the intended configuration. Pass
-  `--device cpu`, which is the right call for a CNN of this size; `--device auto`
+- **Windows or Apple Silicon with Python 3.13+, 8 workers:** the intended
+  configuration. On Windows this also avoids needing MSVC Build Tools, which the
+  legacy `nes-py 8.2.1` source build requires.
+- **Pass `--device cpu`.** It is the right call for a CNN of this size; `--device auto`
   prefers MPS when available, but Stable-Baselines3 documents MPS as
   inference-oriented and PPO training on it can be slower or unstable.
-- **Measured on a 4-core cloud container, 2 workers:** 119 environment steps per
-  second, where one step is four emulated frames. Expect roughly linear scaling
-  with workers up to the core count, so 2,000,000 steps is a few hours on 8
-  cores, not minutes.
+- **Measured on a 4-core cloud container, 2 workers:** 119 steps/s on the legacy
+  layout and 126 steps/s on the modern one, where one step is four emulated
+  frames. Expect roughly linear scaling with workers up to the core count, so
+  2,000,000 steps is a few hours on 8 cores, not minutes.
 - Memory is modest: 4 stacked 84x84 float32 frames per environment, a small CNN,
   and no replay buffer (PPO is on-policy).
 
-If worker processes fail to start, check the start method: macOS uses `spawn`
-and Linux `forkserver`, both of which require the entry point to stay inside
+If worker processes fail to start, check the start method: Windows and macOS use
+`spawn`, Linux uses `forkserver`, and both require the entry point to stay inside
 `if __name__ == "__main__"`.
 
 ## Limitations
@@ -282,6 +301,9 @@ and Linux `forkserver`, both of which require the entry point to stay inside
   so a policy that wins World 1-1 from the level start is not evidence that it
   generalises to other states.
 - **Death cause is coarse.** `pit`, `hazard`, or `unclassified`, as described above.
+  On the legacy layout a pit is recognized by probing RAM `0x00B5` rather than a
+  published field, so if that probe ever disappears the cause degrades to
+  `unclassified` and the reward wrapper records it in `signals.missing`.
 - **`--no-progress-frames` is off by default.** Waiting for a moving platform or
   a walking enemy is a legitimate SMB1 strategy, so ending episodes for standing
   still is opt-in rather than assumed.

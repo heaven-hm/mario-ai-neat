@@ -38,6 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="stop an episode after this many decisions (0 runs it to its end)",
     )
     parser.add_argument("--frame-delay", type=float, default=0.0, help="seconds to sleep between decisions")
+    # The Gymnasium-native stack needs this at construction time to open a window.
+    parser.set_defaults(render_mode="human")
     return parser
 
 

@@ -268,7 +268,7 @@ def main() -> None:
         options.eval_freq if options.evaluate else 0,
         options.eval_episodes,
         options.seed,
-        cli.environment_summary(config),
+        environment_summary,
     )
 
     write_run_metadata(
