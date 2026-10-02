@@ -3,19 +3,20 @@
   "architecture": "distributed_async",
   "training_actors": 8,
   "eval_actor": 1,
+  "evaluation_enabled": false,
   "worlds": [
     1,
     1,
     1,
     1,
-    1,
-    1,
-    1,
-    1
+    2,
+    2,
+    3,
+    3
   ],
   "cheats_enabled_workers": [],
   "alternate_cheat_campaigns": false,
-  "repeat_level_on_victory": true,
+  "repeat_level_on_victory": false,
   "window_layout": "config/fceux-window-layout.ini",
   "replay_capacity": 500000,
   "exploration": {
@@ -26,19 +27,19 @@
   "actor_epsilons": [
     0.4,
     0.19884,
-    0.1,
-    0.1,
-    0.1,
-    0.1,
-    0.1,
-    0.1
+    0.09884,
+    0.04913,
+    0.02442,
+    0.01214,
+    0.00604,
+    0.003
   ],
   "unsolved_epsilon_floor": 0.1,
   "exploration_schedule": "Per-level epsilon floor until that actor wins the level",
   "frontier_curriculum": {
     "strategy": "grounded savestate checkpoints with bounded retries",
-    "spacing_pixels": 256,
-    "retries": 3
+    "spacing_pixels": 128,
+    "retries": 6
   },
   "actor_seeds": [
     7,
@@ -71,7 +72,7 @@
   "torch_version": "2.13.0",
   "numpy_version": "2.4.6",
   "python_version": "3.12.1",
-  "source_revision": "8689393adbc9a28caa9b0dffb1f6abee931f558f",
+  "source_revision": "7fdd4928518ca877e97c7fed1a3c6651edeaebe8",
   "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
   "fceux_executable": "/opt/homebrew/Cellar/fceux/2.6.6_12/bin/fceux",
   "fceux_sha256": "2d84a8310d530745263cfeadf00de9a631162a8dd76c71e1bed659c73753f2f6"
