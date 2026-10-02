@@ -339,6 +339,13 @@ class TestApexEpsilon(unittest.TestCase):
         self.assertEqual(arguments.actor_batch_size, 32)
         self.assertEqual(arguments.frontier_spacing, 256)
         self.assertEqual(arguments.frontier_retries, 3)
+        self.assertFalse(arguments.repeat_level_on_victory)
+
+    def test_repeat_level_mode_is_available_for_mastery_curricula(self) -> None:
+        with patch("sys.argv", ["apex_train", "--rom", "SuperMarioBros.nes",
+                                  "--repeat-level-on-victory"]):
+            arguments = parse_arguments()
+        self.assertTrue(arguments.repeat_level_on_victory)
 
     def test_saved_layout_assigns_four_powered_and_four_normal_workers(self) -> None:
         layout = PROJECT_ROOT / "config/fceux-window-layout.ini"

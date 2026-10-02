@@ -187,6 +187,22 @@ the same checked-in `config/SuperMarioBros.cht`, so a fresh run does not depend
 on different local cheat files from previous emulator sessions. The evaluator
 always runs without cheats.
 
+### World 1 mastery bootcamp
+
+For the fastest clean-policy recovery, run all eight actors on World 1 with
+the saved window geometry but no cheats, and repeat level 1-1 after each win:
+
+```bash
+PYTHONPATH=python .venv-fceux/bin/python -m mario_ai_fceux.apex_train \
+  --rom SuperMarioBros.nes --fceux fceux --workers 8 --worlds 1,1,1,1,1,1,1,1 \
+  --run-dir runs/w1-bootcamp --resume --cheats-enabled-workers '' \
+  --repeat-level-on-victory
+```
+
+Do not promote a level merely because a training actor has one lucky win.
+Promote only after greedy no-cheat evaluation wins at least 16 of 20 episodes;
+then retain two workers on the mastered course and move six to the next course.
+
 ### Checkpoints and storage
 
 `model.pt` and `replay.npz` are written every 10,000 learner updates and when

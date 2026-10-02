@@ -137,6 +137,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Optional FCEUX .cht file copied into enabled workers.")
     parser.add_argument("--alternate-cheat-campaigns", action="store_true",
                         help="For initially powered workers, alternate cheat mode after each World-N-4 win.")
+    parser.add_argument("--repeat-level-on-victory", action="store_true",
+                        help="Repeat the current level after each win for a mastery curriculum.")
 
     return parser.parse_args()
 
@@ -307,6 +309,7 @@ def main() -> None:
         "worlds": requested_worlds,
         "cheats_enabled_workers": [index for index, enabled in enumerate(worker_cheats) if enabled],
         "alternate_cheat_campaigns": bool(args.alternate_cheat_campaigns),
+        "repeat_level_on_victory": bool(args.repeat_level_on_victory),
         "window_layout": str(args.window_layout),
         "replay_capacity": args.replay_capacity,
         "exploration": {
@@ -408,6 +411,7 @@ def main() -> None:
         unsolved_epsilon_floor=args.unsolved_epsilon_floor,
         frontier_spacing=args.frontier_spacing,
         frontier_retries=args.frontier_retries,
+        repeat_level_on_victory=args.repeat_level_on_victory,
         seed=args.seed,
     )
 

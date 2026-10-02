@@ -77,6 +77,7 @@ class ActorConfig:
     weight_sync_every: int = 400  # steps between weight pulls
     seed: int = 7
     alternate_cheat_campaigns: bool = False
+    repeat_level_on_victory: bool = False
     unsolved_epsilon_floor: float = UNSOLVED_WORLD_EPSILON_FLOOR
     frontier_spacing: int = FRONTIER_SPACING_PIXELS
     frontier_retries: int = FRONTIER_RETRIES
@@ -392,7 +393,12 @@ def actor_main(
                 # Each actor owns one SMB1 world campaign.  The bridge keeps
                 # its current-level checkpoint after 1-1/1-2/1-3 wins, then
                 # restores that world's 1-1 state after 1-4.
-                if observation.level >= 3:
+                if config.repeat_level_on_victory:
+                    # Mastery curriculum: retain the exact clean level start
+                    # and collect additional complete demonstrations before
+                    # permitting the campaign to advance.
+                    worker.reset(observation)
+                elif observation.level >= 3:
                     campaigns_completed += 1
                     if config.alternate_cheat_campaigns:
                         # First campaign is powered; each later completed
