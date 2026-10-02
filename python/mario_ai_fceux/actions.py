@@ -13,6 +13,9 @@ LEGACY_DURATION_FRAMES = 12
 # If the network values two jump horizons almost equally, use the longer
 # learned macro. A six-frame tap often cannot clear SMB1 obstacles reliably.
 JUMP_HORIZON_TIE_TOLERANCE = 0.05
+# At a clean SMB1 spawn Mario faces right on stable ground. Backtracking,
+# braking, or jumping backward there cannot be a competent policy response.
+SAFE_START_BASES = (0, 1, 4, 5)  # run, jump-run, jump-in-place, walk
 
 
 def encode_action(base_index: int, duration_index: int) -> int:
@@ -70,3 +73,18 @@ def greedy_action(q_values) -> int:
         if near_tied:
             selected = max(near_tied, key=lambda index: index % len(ACTION_DURATIONS))
     return selected
+
+
+def safe_start_action(q_values) -> int:
+    """Choose the best forward-capable action at a clear level start.
+
+    This is a narrow safety constraint, not a replacement policy: it is used
+    only before the first obstacle/gap, where moving left or braking has no
+    valid SMB1 objective and a collapsed value estimate otherwise self-traps.
+    """
+    values = list(float(value) for value in q_values)
+    if len(values) != ACTION_COUNT:
+        raise ValueError(f"expected {ACTION_COUNT} Q values, got {len(values)}")
+    masked = [value if index // len(ACTION_DURATIONS) in SAFE_START_BASES
+              else float("-inf") for index, value in enumerate(values)]
+    return greedy_action(masked)

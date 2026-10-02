@@ -42,7 +42,8 @@ from mario_ai_fceux.apex_actor import (
     _shaped_reward,
 )
 from mario_ai_fceux.actions import (ACTION_COUNT, ACTION_NAMES, decode_action,
-                                    encode_action, greedy_action, migrate_legacy_action)
+                                    encode_action, greedy_action, migrate_legacy_action,
+                                    safe_start_action)
 from mario_ai_fceux.apex_learner import apex_learner_main, _serialize_weights
 from mario_ai_fceux.apex_train import parse_arguments, worker_cheat_modes
 from mario_ai_fceux.agent import RainbowAgent
@@ -169,6 +170,13 @@ class TestSMB1Actions(unittest.TestCase):
         values[5] = 0.90
         self.assertEqual(greedy_action(values), 4)
 
+    def test_safe_start_refuses_backward_and_braking_actions(self) -> None:
+        values = np.zeros(ACTION_COUNT, dtype=np.float32)
+        values[6] = 10.0   # retreat@6: the observed broken greedy choice
+        values[10] = 9.0   # brake@12
+        values[4] = 8.0    # jump+run@12: best safe action
+        self.assertEqual(safe_start_action(values), 4)
+
     def test_legacy_network_heads_expand_and_preserve_medium_action_heads(self) -> None:
         old_network = RainbowNetwork(observation_size=4, action_count=6, atom_count=5)
         new_network = RainbowNetwork(observation_size=4, action_count=ACTION_COUNT, atom_count=5)
@@ -218,6 +226,17 @@ class TestReplayCorrectness(unittest.TestCase):
         self.assertEqual(replay.protect_existing_successes(), 1)
         self.assertEqual(replay.protect_existing_successes(), 0)
         self.assertEqual(list(replay.protected_order), [0])
+
+    def test_protected_successes_are_rehearsed_in_each_batch(self) -> None:
+        replay = PrioritizedReplayBuffer(2, capacity=100, seed=11)
+        for index in range(5):
+            state = np.full(2, 1_000 + index, dtype=np.float32)
+            replay.add(Transition(state, 1, 20.0, state, True, 0.0), protect=True)
+        for index in range(50):
+            state = np.full(2, index, dtype=np.float32)
+            replay.add(Transition(state, 0, -1.0, state, True, 0.0))
+        indices, _, _ = replay.sample(20, beta=0.4, protected_fraction=0.25)
+        self.assertEqual(sum(replay.protected[index] for index in indices), 5)
 
     def test_sum_tree_finds_global_prefixes_for_non_power_of_two_capacity(self) -> None:
         tree = SumTree(5)

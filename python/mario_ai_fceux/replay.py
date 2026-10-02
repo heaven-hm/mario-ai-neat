@@ -137,23 +137,50 @@ class PrioritizedReplayBuffer:
         self.position = (index + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def sample(self, batch_size: int, beta: float) -> tuple[np.ndarray, list[Transition], np.ndarray]:
+    def sample(self, batch_size: int, beta: float,
+               protected_fraction: float = 0.25) -> tuple[np.ndarray, list[Transition], np.ndarray]:
+        """Sample PER plus a bounded rehearsal share of winning trajectories."""
         if self.size < batch_size:
             raise ValueError("not enough replay transitions")
+        if not 0.0 <= protected_fraction <= 1.0:
+            raise ValueError("protected_fraction must be in [0, 1]")
         total = self.tree.total
         if total <= 0:
             raise RuntimeError("replay priorities are empty")
-        boundaries = np.linspace(0.0, total, batch_size + 1)
-        samples = self.rng.uniform(boundaries[:-1], boundaries[1:])
-        indices = np.asarray([self.tree.find_prefixsum(float(sample)) for sample in samples], dtype=np.int64)
-        priorities = self.tree.values[indices + self.tree.leaf_count]
+        protected_indices = np.asarray(self.protected_order, dtype=np.int64)
+        protected_count = min(int(batch_size * protected_fraction), len(protected_indices))
+        if protected_count:
+            selected_protected = self.rng.choice(protected_indices, size=protected_count,
+                                                 replace=False).astype(np.int64)
+        else:
+            selected_protected = np.empty(0, dtype=np.int64)
+        per_count = batch_size - protected_count
+        if protected_count:
+            # Demonstrations are intentionally sampled uniformly. Draw the
+            # remaining PER part from non-protected transitions so the batch
+            # actually contains the requested rehearsal proportion.
+            candidates = np.flatnonzero(~self.protected[:self.size])
+            priorities_for_candidates = self.tree.values[candidates + self.tree.leaf_count]
+            probabilities_for_candidates = priorities_for_candidates / priorities_for_candidates.sum()
+            per_indices = self.rng.choice(candidates, size=per_count, replace=True,
+                                          p=probabilities_for_candidates).astype(np.int64)
+        else:
+            boundaries = np.linspace(0.0, total, per_count + 1)
+            samples = self.rng.uniform(boundaries[:-1], boundaries[1:])
+            per_indices = np.asarray([self.tree.find_prefixsum(float(sample)) for sample in samples], dtype=np.int64)
+        priorities = self.tree.values[per_indices + self.tree.leaf_count]
         probabilities = priorities / total
         minimum_probability = self.tree.minimum / total
         maximum_weight = (self.size * minimum_probability) ** (-beta)
-        weights = ((self.size * probabilities) ** (-beta) / maximum_weight).astype(np.float32)
+        per_weights = ((self.size * probabilities) ** (-beta) / maximum_weight).astype(np.float32)
+        indices = np.concatenate((selected_protected, per_indices))
+        # The protected slice is deliberate demonstration rehearsal rather
+        # than unbiased PER, so it receives neutral importance weighting.
+        weights = np.concatenate((np.ones(protected_count, dtype=np.float32), per_weights))
+        sampled_priorities = self.tree.values[indices + self.tree.leaf_count]
         transitions = [Transition(self.states[index].copy(), int(self.actions[index]), float(self.rewards[index]),
                                   self.next_states[index].copy(), bool(self.terminated[index]),
-                                  float(self.discounts[index]), float(priorities[row]))
+                                  float(self.discounts[index]), float(sampled_priorities[row]))
                        for row, index in enumerate(indices)]
         return indices, transitions, weights
 

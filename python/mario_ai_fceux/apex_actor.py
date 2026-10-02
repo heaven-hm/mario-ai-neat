@@ -22,7 +22,8 @@ from typing import Deque
 import numpy as np
 import torch
 
-from .actions import ACTION_COUNT, LEGACY_DURATION_FRAMES, decode_action, greedy_action
+from .actions import (ACTION_COUNT, LEGACY_DURATION_FRAMES, decode_action,
+                      greedy_action, safe_start_action)
 from .environment import FileWorker, NoProgressTracker, Observation
 from .model import RainbowNetwork
 from .protocol import atomic_write_json, read_json
@@ -148,6 +149,7 @@ def _action_details(
     epsilon: float,
     action_count: int,
     device: torch.device,
+    safe_start: bool = False,
 ) -> tuple[int, np.ndarray, np.ndarray]:
     """Return action, Q values, and encoder summary for the live FCEUX HUD."""
     # Actor policy values use learned mean weights; exploration comes only
@@ -164,6 +166,10 @@ def _action_details(
         action = int(np.random.randint(action_count))
     else:
         action = greedy_index
+    if safe_start and action_count == ACTION_COUNT:
+        # Do not let either an unstable Q estimate or exploratory noise turn
+        # Mario around before the level's first hazard.
+        action = safe_start_action(q_values[0].cpu().numpy())
     hidden_summary = encoded.reshape(-1, 16, 16).mean(dim=2)
     return action, q_values[0].cpu().numpy(), hidden_summary[0].cpu().numpy()
 
@@ -442,6 +448,9 @@ def actor_main(
         # Select action.
         action, q_values, hidden = _action_details(
             network, support, observation.state, epsilon, config.action_count, device,
+            safe_start=(observation.world_x <= 160
+                        and bool(observation.state[171])
+                        and not bool(observation.state[182])),
         )
         _publish_hud(worker, run_directory, observation, action, q_values, hidden,
                      steps, episodes, episodes - victories, victories,

@@ -269,6 +269,8 @@ def eval_worker_main(
                 return result
             action, q_values, hidden = _action_details(
                 network, support, obs.state, 0.0, action_count, device,
+                safe_start=(obs.world_x <= 160 and bool(obs.state[171])
+                            and not bool(obs.state[182])),
             )
             publish_eval_hud(worker, run_dir, obs, action, q_values, hidden,
                              total_decisions + 1, completed_episodes,
