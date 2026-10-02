@@ -20,6 +20,16 @@ from .model import RainbowNetwork
 from .replay import PrioritizedReplayBuffer, Transition
 
 
+# Optimization knobs may differ between resumes: they tune how the learner
+# moves, not what the stored transitions mean.  Everything that would
+# reinterpret learned state (observation size, action space, atoms, discount,
+# n-step, value support) still has to match exactly.
+RESUME_TOLERATED_FIELDS = frozenset({
+    "learning_rate", "batch_size", "target_sync_steps",
+    "per_beta_start", "per_beta_steps", "learning_starts",
+})
+
+
 @dataclass
 class AgentConfig:
     observation_size: int = 184
@@ -288,8 +298,14 @@ class RainbowAgent:
         if saved_config is not None:
             normalized_saved_config = asdict(AgentConfig(**saved_config))
             current_config = asdict(self.config)
+            # Optimization knobs may differ between resumes: they change how the
+            # learner moves, not what the stored transitions mean.  Everything
+            # that would reinterpret learned state (observation size, action
+            # space, atoms, discount, n-step, value support) still has to match,
+            # otherwise a resume would silently reinterpret the checkpoint.
             differences = [name for name, value in current_config.items()
-                           if normalized_saved_config.get(name) != value]
+                           if name not in RESUME_TOLERATED_FIELDS
+                           and normalized_saved_config.get(name) != value]
             if differences == ["action_count"] and normalized_saved_config["action_count"] == LEGACY_ACTION_COUNT \
                     and self.config.action_count == ACTION_COUNT:
                 legacy_action_migration = True

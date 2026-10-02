@@ -619,5 +619,31 @@ class TestApexLearnerIntegration(unittest.TestCase):
                 if process.is_alive():
                     process.kill()
 
+class TestResumeConfigGuard(unittest.TestCase):
+    """A resume must tolerate optimization knobs, never semantic changes."""
+
+    def _agent(self, observation_size: int = 4, **overrides) -> RainbowAgent:
+        from mario_ai_fceux.agent import AgentConfig
+        config = AgentConfig(observation_size=observation_size, action_count=2,
+                             atom_count=11, **overrides)
+        replay = PrioritizedReplayBuffer(observation_size, capacity=64, seed=1)
+        return RainbowAgent(replay, config=config, device="cpu")
+
+    def test_learning_rate_change_still_resumes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            self._agent(learning_rate=6.25e-5).save(path)
+            resumed = self._agent(learning_rate=1.25e-4)
+            resumed.load(path, validate_replay=False)
+
+    def test_data_semantics_must_still_match_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            self._agent().save(path)
+            with self.assertRaises(ValueError) as context:
+                self._agent(observation_size=8).load(path, validate_replay=False)
+            self.assertIn("observation_size", str(context.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
