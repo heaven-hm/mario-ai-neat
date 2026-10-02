@@ -97,8 +97,10 @@ class ActorConfig:
     n_step: int = 3
     batch_size: int = 32          # transitions per queue push
     atom_count: int = 51
-    value_min: float = -100.0
-    value_max: float = 100.0
+    # Must match the learner's support exactly: the actor reads its Q-values off
+    # the same atom layout, so a narrower support here would misprice actions.
+    value_min: float = -250.0
+    value_max: float = 250.0
     weight_sync_every: int = 400  # steps between weight pulls
     seed: int = 7
     alternate_cheat_campaigns: bool = False

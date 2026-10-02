@@ -523,6 +523,25 @@ class TestShapedReward(unittest.TestCase):
 # Actor config defaults
 # ---------------------------------------------------------------------------
 
+class TestValueSupport(unittest.TestCase):
+    """The C51 support has to cover the dense progress reward's value scale."""
+
+    def test_support_covers_the_running_speed_value_scale(self) -> None:
+        from mario_ai_fceux.agent import AgentConfig
+        config = AgentConfig()
+        running_reward_per_decision = 2.0  # ~30 px at the normal 12-frame horizon
+        per_decision_discount = 0.985      # longest discount seen in the replay
+        self.assertGreater(config.value_max,
+                           running_reward_per_decision / (1.0 - per_decision_discount))
+        self.assertEqual((config.value_min, config.value_max), (-250.0, 250.0))
+
+    def test_actor_and_learner_share_one_value_support(self) -> None:
+        from mario_ai_fceux.agent import AgentConfig
+        actor, learner = ActorConfig(), AgentConfig()
+        self.assertEqual((actor.value_min, actor.value_max),
+                         (learner.value_min, learner.value_max))
+
+
 class TestActorConfig(unittest.TestCase):
 
     def test_default_config_is_sane(self) -> None:
@@ -635,6 +654,21 @@ class TestResumeConfigGuard(unittest.TestCase):
             self._agent(learning_rate=6.25e-5).save(path)
             resumed = self._agent(learning_rate=1.25e-4)
             resumed.load(path, validate_replay=False)
+
+    def test_support_widening_resumes_when_atoms_are_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            self._agent(value_min=-100.0, value_max=100.0).save(path)
+            resumed = self._agent(value_min=-250.0, value_max=250.0)
+            resumed.load(path, validate_replay=False)
+
+    def test_atom_count_change_still_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            self._agent().save(path)
+            with self.assertRaises(ValueError) as context:
+                self._agent(atom_count=5).load(path, validate_replay=False)
+            self.assertIn("atom_count", str(context.exception))
 
     def test_data_semantics_must_still_match_on_resume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

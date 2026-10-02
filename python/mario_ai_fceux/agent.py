@@ -23,10 +23,14 @@ from .replay import PrioritizedReplayBuffer, Transition
 # Optimization knobs may differ between resumes: they tune how the learner
 # moves, not what the stored transitions mean.  Everything that would
 # reinterpret learned state (observation size, action space, atoms, discount,
-# n-step, value support) still has to match exactly.
+# n-step) still has to match, and so does the value support's *shape*: with the
+# atom count fixed and a symmetric [min, max] support, atom i always sits at
+# min + i*step, so scaling the support rescales every predicted value by the
+# same factor and leaves the argmax over actions untouched.
 RESUME_TOLERATED_FIELDS = frozenset({
     "learning_rate", "batch_size", "target_sync_steps",
     "per_beta_start", "per_beta_steps", "learning_starts",
+    "value_min", "value_max",
 })
 
 
@@ -44,8 +48,13 @@ class AgentConfig:
     target_sync_steps: int = 2_000
     n_step: int = 3
     atom_count: int = 51
-    value_min: float = -100.0
-    value_max: float = 100.0
+    # Dense progress rewards make V proportional to the remaining level, so the
+    # value scale runs past ±100 (a running-speed decision alone implies ~133);
+    # the old ±100 support clamped those targets and left 2.9% of atom mass on
+    # the ceiling atom.  Widening rescales learned values monotonically, so the
+    # policy and the replay snapshot survive a resume.
+    value_min: float = -250.0
+    value_max: float = 250.0
     per_beta_start: float = 0.4
     per_beta_steps: int = 1_000_000
     seed: int = 7
