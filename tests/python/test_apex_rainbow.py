@@ -478,7 +478,7 @@ class TestShapedReward(unittest.TestCase):
     def test_stuck_episode_has_terminal_failure_penalty(self) -> None:
         previous = _make_observation(world_x=40)
         stuck = _make_observation(world_x=40, terminal=True, reason="stuck")
-        self.assertEqual(_terminal_transition(previous, stuck, action=13).reward, -20.0)
+        self.assertEqual(_terminal_transition(previous, stuck, action=13).reward, -60.0)
 
     def test_forward_progress_gives_positive_reward(self) -> None:
         prev = _make_observation(world_x=100)
@@ -496,12 +496,12 @@ class TestShapedReward(unittest.TestCase):
         prev = _make_observation(world_x=200)
         curr = _make_observation(world_x=200, terminal=True, reason="death")
         reward = _shaped_reward(prev, curr)
-        self.assertEqual(reward, -20.0)
+        self.assertEqual(reward, -60.0)
 
     def test_death_penalty_still_dominates_maximum_progress(self) -> None:
         prev = _make_observation(world_x=200)
         curr = _make_observation(world_x=232, terminal=True, reason="death")
-        self.assertEqual(_shaped_reward(prev, curr), -18.0)
+        self.assertEqual(_shaped_reward(prev, curr), -58.0)
 
     def test_reward_is_bounded(self) -> None:
         prev = _make_observation(world_x=0)
