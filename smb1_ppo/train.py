@@ -238,6 +238,8 @@ def main() -> None:
         model.set_random_seed(options.seed)
         restart = False
     else:
+        if checkpoints.discard_stale_best_model(run_directory):
+            print("fresh start: removed a stale best_model.zip from an earlier run")
         model = PPO(
             "CnnPolicy",
             stats_env,

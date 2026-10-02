@@ -187,6 +187,24 @@ def mark_best_model(
     return path
 
 
+def discard_stale_best_model(run_directory: Path | str) -> bool:
+    """Remove a best-model left behind by an earlier run in the same directory.
+
+    A fresh start (no --resume) is a new training run, so its first measured
+    evaluation must rank against nothing rather than against a policy the
+    operator may have left behind; otherwise a stale best_model.zip keeps
+    winning the comparison and gets reported as the new run's best.
+    """
+    run_directory = guard_run_directory(run_directory)
+    removed = False
+    for name in (BEST_MODEL, BEST_EVALUATION):
+        candidate = run_directory / name
+        if candidate.is_file():
+            candidate.unlink()
+            removed = True
+    return removed
+
+
 def resolve_resume(run_directory: Path | str, request: str | None) -> Path:
     """Resolve ``--resume`` into a concrete checkpoint path."""
     run_directory = guard_run_directory(run_directory)

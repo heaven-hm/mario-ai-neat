@@ -126,6 +126,21 @@ class BestModelTests(unittest.TestCase):
         run.mkdir(parents=True)
         return run
 
+    def test_a_fresh_start_discards_a_stale_best_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = self._run_directory(directory)
+            checkpoints.mark_best_model(
+                FakeModel(steps=1024),
+                run,
+                {"win_rate": 0.5, "x_position": {"mean": 10.0}},
+            )
+            self.assertTrue((run / checkpoints.BEST_MODEL).is_file())
+            self.assertTrue((run / checkpoints.BEST_EVALUATION).is_file())
+            self.assertTrue(checkpoints.discard_stale_best_model(run))
+            self.assertFalse((run / checkpoints.BEST_MODEL).exists())
+            self.assertFalse((run / checkpoints.BEST_EVALUATION).exists())
+            self.assertFalse(checkpoints.discard_stale_best_model(run))
+
     def test_a_first_measured_evaluation_becomes_the_best_model(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             run = self._run_directory(directory)
