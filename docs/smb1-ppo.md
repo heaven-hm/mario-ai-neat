@@ -213,6 +213,12 @@ python -m smb1_ppo.train --rom roms/super-mario-bros.nes \
     --workers 8 --total-timesteps 4000000 --resume latest
 ```
 
+On a resume, `--total-timesteps` counts **additional** steps, not a new grand
+total: Stable-Baselines3 adds the checkpoint's step count to it when
+`reset_num_timesteps=False`. Resuming from 800,000 with `--total-timesteps
+2000000` therefore ends at 2,800,000. Pass the number of further steps you
+actually want.
+
 Evaluate 20 deterministic no-cheat World 1-1 episodes:
 
 ```bash
@@ -314,6 +320,42 @@ If worker processes fail to start, check the start method: Windows and macOS use
   limit, beyond the small per-decision cost.
 - **Synthetic runs are never benchmark results.** They exist to test the pipeline
   on machines without a ROM.
+
+## Measured status
+
+As of 2026-10-02, World 1-1 is **not solved**, and this is the measured evidence
+rather than an impression. A 2,800,000-step run (8 workers, Apple Silicon, CPU,
+`--device cpu`, defaults otherwise) was evaluated greedily:
+
+| Measurement | Result |
+|---|---|
+| 20 deterministic episodes | 0 wins, 0% win rate, not promoted |
+| x position | mean, median, min and max all exactly 316 |
+| Episode duration | 37 decisions (148 emulated frames), ~0.19 s |
+| Endings | 20 deaths, all classified `hazard` |
+| Distinct action traces | 1 |
+
+The diagnosis is in the action trace: the greedy policy is degenerate. It emits
+`right+A+B` for all 37 decisions of every episode, never varying the action, and
+dies to the first hazard at x=316, which is roughly a tenth of the level. Across
+2.8M steps the value function learned well — explained variance rose from 0.00 to
+0.83 and value loss fell to 0.007 — while the policy did not: entropy stayed at
+1.65 of the 1.945 maximum, so the sampled policy was still near-uniform and its
+argmax was an arbitrary, stable, losing sequence. Sampled rollouts reached
+x≈1042-1111 in their better windows, so the trajectory to move further exists in
+the policy's support; it was never concentrated on.
+
+Plausible next levers, in the order worth trying: train several million steps
+further; lower the entropy bonus (`--ent-coef 0.003`) so the policy can
+concentrate; and reduce `--frame-skip` to 2, since holding an action for exactly
+four frames makes precise jump timing impossible and the Rainbow system handled
+that with explicit 6/12/24-frame macro durations.
+
+Two smaller behaviours worth knowing: `best_model.zip` is never replaced by an
+*equal* evaluation, only a strictly better one, so a plateau keeps the first
+model that reached it; and greedy episodes of a deterministic environment are
+repeats of one trajectory, which is why `distinct_action_traces` is reported
+alongside the win rate.
 
 ## The 20-episode promotion criterion
 
