@@ -57,6 +57,11 @@ class EvaluationOutputTests(unittest.TestCase):
             saved = json.loads((run_directory / "best_policy_eval.json").read_text())
             self.assertEqual(evaluation_rank(saved), evaluation_rank(improved))
 
+    def test_rank_uses_episode_progress_when_report_has_no_average(self) -> None:
+        early = {"victories": 0, "episodes": [{"max_x": 100}, {"max_x": 140}]}
+        later = {"victories": 0, "episodes": [{"max_x": 110}, {"max_x": 150}]}
+        self.assertGreater(evaluation_rank(later), evaluation_rank(early))
+
     def test_apex_evaluation_persists_compact_action_trace(self) -> None:
         episodes = [{"action_trace": [
             {"decision": 0, "world_x": 430, "action": "jump+run@24",

@@ -105,6 +105,10 @@ def apex_learner_main(
             agent.save(checkpoint_path, replay_path)
             logger.info("Migrated legacy six-action checkpoint to %d movement-duration actions",
                         config.action_count)
+        protected_from_previous = replay.protect_existing_successes()
+        if protected_from_previous:
+            logger.info("Protected %d surviving victory transitions from the prior replay",
+                        protected_from_previous)
 
     last_loss: float | None = None
     last_weight_sync = 0
@@ -153,6 +157,12 @@ def apex_learner_main(
                     loss = agent.learn()
                     if loss is not None:
                         last_loss = loss
+            elif kind == "success":
+                _, actor_id, world, level, transitions = message
+                for transition in transitions:
+                    replay.add(transition, protect=True)
+                logger.info("Protected %d successful transitions from actor %d course %d-%d",
+                            len(transitions), actor_id, world + 1, level + 1)
 
         # --- Check coordinator status messages (non-blocking) ---
         try:
@@ -166,6 +176,7 @@ def apex_learner_main(
                             "steps": agent.steps,
                             "optimizer_updates": agent.optimizer_steps,
                             "replay_transitions": len(replay),
+                            "protected_success_transitions": len(replay.protected_order),
                             "transitions_received": agent.steps,
                             "epsilon": 0.0,
                             "latest_loss": last_loss,

@@ -129,8 +129,10 @@ def evaluation_rank(report: dict) -> tuple[int, float, int]:
     """Rank policies by wins first, then average and worst-case level progress."""
     episode_rows = report.get("episodes", [])
     minimum_x = min((int(row.get("max_x", 0)) for row in episode_rows), default=0)
+    average_x = (sum(int(row.get("max_x", 0)) for row in episode_rows) / len(episode_rows)
+                 if episode_rows else float(report.get("avg_max_x", 0.0)))
     return (int(report.get("victories", 0)),
-            float(report.get("avg_max_x", 0.0)), minimum_x)
+            average_x, minimum_x)
 
 
 def save_best_policy(run_directory: Path, weight_bytes: bytes, report: dict) -> bool:
@@ -231,14 +233,22 @@ def eval_worker_main(
                   "action_trace": []}
         action_trace = result["action_trace"]
         last_observation: Observation | None = None
+        last_observation_at = episode_start
         progress_tracker = NoProgressTracker()
         previous_action_frames = 0
         while time.monotonic() - episode_start < max_episode_seconds:
             obs = worker.next_observation()
             if obs is None:
+                if time.monotonic() - last_observation_at >= 60.0:
+                    # A dead bridge is an invalid evaluation, not a zero-X
+                    # policy failure. The supervisor will restart its emulator.
+                    result["reason"] = "bridge_stalled"
+                    result["elapsed_seconds"] = round(time.monotonic() - episode_start, 3)
+                    return result
                 time.sleep(0.002)
                 continue
             last_observation = obs
+            last_observation_at = time.monotonic()
             max_x = max(max_x, obs.world_x)
             best_world_x = max(best_world_x, obs.world_x)
             if not obs.terminal and progress_tracker.update(obs.world_x, previous_action_frames):
@@ -304,7 +314,17 @@ def eval_worker_main(
         now = time.monotonic()
         if weights_loaded and (now - last_eval_at) >= eval_every_seconds:
             eval_count += 1
-            episodes = [_run_eval_episode() for _ in range(episodes_per_eval)]
+            episodes = []
+            for _ in range(episodes_per_eval):
+                episode = _run_eval_episode()
+                if episode["reason"] == "bridge_stalled":
+                    logger.warning("Eval bridge stalled; waiting for emulator recovery")
+                    break
+                episodes.append(episode)
+            if len(episodes) != episodes_per_eval:
+                eval_count -= 1
+                last_eval_at = time.monotonic()
+                continue
             victories = sum(e["reason"] == "victory" for e in episodes)
             avg_x = sum(e["max_x"] for e in episodes) / max(1, len(episodes))
             win_rate = victories / max(1, len(episodes))

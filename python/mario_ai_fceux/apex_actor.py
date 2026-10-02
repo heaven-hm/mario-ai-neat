@@ -40,6 +40,7 @@ VICTORY_REWARD_BONUS = 20.0
 # Ape-X exploration schedule: actor 0 explores most, actor 7 exploits most.
 # Matches the Ape-X paper's per-actor epsilon annealing philosophy.
 APEX_EPSILONS = (0.40, 0.20, 0.10, 0.05, 0.025, 0.012, 0.006, 0.003)
+UNSOLVED_WORLD_EPSILON_FLOOR = 0.10
 
 
 def _apex_epsilon(actor_index: int, total_actors: int) -> float:
@@ -51,6 +52,13 @@ def _apex_epsilon(actor_index: int, total_actors: int) -> float:
     log_max = np.log(APEX_EPSILONS[0])
     log_min = np.log(APEX_EPSILONS[-1])
     return float(np.exp(log_max + fraction * (log_min - log_max)))
+
+
+def training_epsilon(actor_index: int, total_actors: int, victories: int,
+                     unsolved_floor: float = UNSOLVED_WORLD_EPSILON_FLOOR) -> float:
+    """Give an unsolved assigned level meaningful exploration."""
+    base = _apex_epsilon(actor_index, total_actors)
+    return max(base, unsolved_floor) if victories == 0 else base
 
 
 @dataclass
@@ -66,6 +74,7 @@ class ActorConfig:
     weight_sync_every: int = 400  # steps between weight pulls
     seed: int = 7
     alternate_cheat_campaigns: bool = False
+    unsolved_epsilon_floor: float = UNSOLVED_WORLD_EPSILON_FLOOR
 
 
 class NStepBuffer:
@@ -225,7 +234,8 @@ def actor_main(
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     config = ActorConfig(**config_dict)
-    epsilon = _apex_epsilon(actor_index, total_actors)
+    epsilon = training_epsilon(actor_index, total_actors, 0,
+                               config.unsolved_epsilon_floor)
     device = torch.device(
         device_str or ("mps" if torch.backends.mps.is_available()
                        else "cuda" if torch.cuda.is_available() else "cpu")
@@ -248,6 +258,7 @@ def actor_main(
     n_step_buf = NStepBuffer(config.gamma, config.n_step)
     progress_tracker = NoProgressTracker()
     batch: list[Transition] = []
+    episode_replay: Deque[Transition] = deque(maxlen=8192)
 
     steps = 0
     last_sync = 0
@@ -256,6 +267,7 @@ def actor_main(
     best_episode_x = 0
     episodes = 0
     victories = 0
+    won_levels: set[tuple[int, int]] = set()
     levels_completed = 0
     campaigns_completed = 0
 
@@ -306,10 +318,16 @@ def actor_main(
             # restarted FCEUX. Do not create a transition across cheat modes.
             worker.previous = None
             n_step_buf.flush()
+            episode_replay.clear()
             progress_tracker.reset()
 
         episode_max_x = max(episode_max_x, observation.world_x)
         best_episode_x = max(best_episode_x, episode_max_x)
+        epsilon = training_epsilon(
+            actor_index, total_actors,
+            int((observation.world, observation.level) in won_levels),
+            config.unsolved_epsilon_floor,
+        )
 
         previous_duration = getattr(worker, "previous_action_duration", LEGACY_DURATION_FRAMES)
         if not observation.terminal and progress_tracker.update(
@@ -320,18 +338,28 @@ def actor_main(
         if observation.terminal:
             # Replay must contain terminal outcomes, not just episode metrics.
             if worker.previous is not None:
-                batch.extend(n_step_buf.push(_terminal_transition(
+                ready = n_step_buf.push(_terminal_transition(
                     worker.previous, observation, getattr(worker, "previous_action", 0),
-                )))
+                ))
+                batch.extend(ready)
+                episode_replay.extend(ready)
                 steps += 1
             episodes += 1
             if observation.reason == "victory":
                 victories += 1
                 levels_completed += 1
+                won_levels.add((observation.world, observation.level))
             # Flush n-step buffer at episode boundary.
-            for t in n_step_buf.flush():
-                batch.append(t)
+            tail = n_step_buf.flush()
+            batch.extend(tail)
+            episode_replay.extend(tail)
             _flush_batch()
+            if observation.reason == "victory" and episode_replay:
+                # Rehearse the complete n-step winning trajectory after its
+                # ordinary batch. The learner stores a bounded protected copy.
+                experience_queue.put(("success", actor_index, observation.world,
+                                      observation.level, list(episode_replay)))
+            episode_replay.clear()
             if observation.reason == "victory":
                 # Each actor owns one SMB1 world campaign.  The bridge keeps
                 # its current-level checkpoint after 1-1/1-2/1-3 wins, then
@@ -399,8 +427,9 @@ def actor_main(
                     / LEGACY_DURATION_FRAMES
                 ),
             )
-            for ready in n_step_buf.push(t):
-                batch.append(ready)
+            ready = n_step_buf.push(t)
+            batch.extend(ready)
+            episode_replay.extend(ready)
             steps += 1
 
             if len(batch) >= config.batch_size:

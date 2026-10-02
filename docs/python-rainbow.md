@@ -119,6 +119,45 @@ its observation, so it can distinguish the 32 SMB1 courses. A worker restart
 begins its campaign from that worker's World-N-1; model and replay checkpoints
 remain reusable across restarts.
 
+### Faster learning and retaining wins
+
+The eight-world assignment maximizes course coverage, but gives each course
+only one exploration stream. For a fresh model, a one-hour trial can instead
+assign several workers to early courses, for example
+`--worlds 1,1,1,1,2,2,3,4`. Once clean, greedy evaluation repeatedly completes
+those courses, expand the assignment toward `1,2,3,4,5,6,7,8`. This is a
+curriculum hypothesis, not a measured speedup for this ROM. Keep the two trials
+in separate run directories and compare victories and greedy progress after
+the same number of environment transitions as well as the same wall time.
+
+Every actor now explores an unsolved level with at least 10% random actions.
+After that actor wins the level, its original Ape-X epsilon applies. The floor
+can be changed with `--unsolved-epsilon-floor`; `0.003` reproduces the old
+effective eight-actor schedule. This matters most for late workers: the old
+World 8 actor used only 0.3% random actions, despite training on a different
+course from every other worker.
+
+When a worker wins, it sends up to the last 8,192 n-step episode transitions to a bounded
+protected part of the shared replay (up to 10,000 transitions, or 5% of a
+smaller buffer). Normal replay turnover cannot overwrite these transitions.
+Protected positions and their order are saved in `replay.npz`; resume of an
+older snapshot also protects surviving positive terminal transitions. The
+archive can still replace its oldest successful transitions when full, and
+rehearsal reduces forgetting rather than guaranteeing perfect play. The
+learner reports `protected_success_transitions` so retention is visible.
+
+The automatic greedy evaluator now discards batches if its emulator stops
+publishing observations. Its best-policy archive ranks completed episode
+progress from the actual records and keeps the strongest measured weights
+separately from the latest training checkpoint. A valid greedy run with
+actions and repeated wins is the evidence that a skill transferred; training
+reward or a single powered-worker win is insufficient.
+
+These choices follow the [Ape-X actor diversity study](https://openreview.net/pdf?id=H1Dy---0Z),
+[Rainbow's component study](https://ojs.aaai.org/index.php/AAAI/article/view/11796),
+[curriculum learning survey](https://www.jmlr.org/papers/v21/20-212.html), and
+[experience replay for continual learning](https://proceedings.neurips.cc/paper/8327-experience-replay-for-continual-learning.pdf).
+
 ### Alternating powered and normal campaigns
 
 With `--cheats-enabled-workers 0,1,2,3 --alternate-cheat-campaigns`, workers

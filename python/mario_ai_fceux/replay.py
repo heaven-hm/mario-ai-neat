@@ -8,6 +8,7 @@ compressed snapshot is written only with a training checkpoint.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
 import os
 from pathlib import Path
 import uuid
@@ -93,12 +94,34 @@ class PrioritizedReplayBuffer:
         self.position = 0
         self.max_priority = 1.0
         self.snapshot_id: str | None = None
+        # Keep a small bounded rehearsal set of completed runs. Ordinary PER
+        # still samples globally; normal writes skip these protected slots.
+        self.protected_limit = min(10_000, max(0, capacity // 20))
+        self.protected = np.zeros(capacity, dtype=np.bool_)
+        self.protected_order: deque[int] = deque()
 
     def __len__(self) -> int:
         return self.size
 
-    def add(self, transition: Transition) -> None:
+    def protect_existing_successes(self, minimum_reward: float = 10.0) -> int:
+        """Carry surviving victory evidence forward from pre-memory snapshots."""
+        if self.protected_order or self.protected_limit == 0:
+            return 0
+        indices = np.flatnonzero(self.terminated[:self.size]
+                                  & (self.rewards[:self.size] >= minimum_reward))
+        for index in indices[-self.protected_limit:]:
+            self.protected[int(index)] = True
+            self.protected_order.append(int(index))
+        return len(self.protected_order)
+
+    def add(self, transition: Transition, protect: bool = False) -> None:
+        if protect and self.protected_limit == 0:
+            protect = False
+        if protect and len(self.protected_order) >= self.protected_limit:
+            self.protected[self.protected_order.popleft()] = False
         index = self.position
+        while self.protected[index]:
+            index = (index + 1) % self.capacity
         self.states[index] = np.asarray(transition.state, dtype=np.float32).reshape(self.observation_size)
         self.next_states[index] = np.asarray(transition.next_state, dtype=np.float32).reshape(self.observation_size)
         self.actions[index] = int(transition.action)
@@ -107,8 +130,11 @@ class PrioritizedReplayBuffer:
         self.terminated[index] = bool(transition.terminated)
         priority = max(float(transition.priority), self.max_priority, self.priority_epsilon)
         self.tree.update(index, priority ** self.alpha)
+        if protect:
+            self.protected[index] = True
+            self.protected_order.append(index)
         self.max_priority = max(self.max_priority, priority)
-        self.position = (self.position + 1) % self.capacity
+        self.position = (index + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size: int, beta: float) -> tuple[np.ndarray, list[Transition], np.ndarray]:
@@ -147,7 +173,9 @@ class PrioritizedReplayBuffer:
             np.savez_compressed(handle, observation_size=self.observation_size, capacity=self.capacity,
                                 alpha=self.alpha, priority_epsilon=self.priority_epsilon, size=self.size,
                                 position=self.position, max_priority=self.max_priority,
-                                snapshot_id=self.snapshot_id, format_version=2,
+                                snapshot_id=self.snapshot_id, format_version=3,
+                                protected_limit=self.protected_limit,
+                                protected_order=np.asarray(self.protected_order, dtype=np.int64),
                                 states=self.states[:self.size],
                                 next_states=self.next_states[:self.size], actions=self.actions[:self.size],
                                 rewards=self.rewards[:self.size], discounts=self.discounts[:self.size],
@@ -167,6 +195,15 @@ class PrioritizedReplayBuffer:
             buffer.position = int(payload["position"])
             buffer.max_priority = float(payload["max_priority"])
             buffer.snapshot_id = str(payload["snapshot_id"]) if "snapshot_id" in payload else None
+            if "protected_order" in payload:
+                buffer.protected_limit = int(payload["protected_limit"])
+                order = [int(index) for index in payload["protected_order"]]
+                if (buffer.protected_limit < 0 or buffer.protected_limit >= buffer.capacity
+                        or len(order) > buffer.protected_limit or len(set(order)) != len(order)
+                        or any(index < 0 or index >= buffer.size for index in order)):
+                    raise ValueError("invalid protected replay indices in snapshot")
+                buffer.protected_order = deque(order)
+                buffer.protected[order] = True
             buffer.states[:buffer.size] = payload["states"]
             buffer.next_states[:buffer.size] = payload["next_states"]
             buffer.actions[:buffer.size] = payload["actions"]

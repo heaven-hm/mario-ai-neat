@@ -33,6 +33,7 @@ from mario_ai_fceux.apex_actor import (
     NStepBuffer,
     ActorConfig,
     _apex_epsilon,
+    training_epsilon,
     _action_details,
     _select_action,
     _load_weights_from_bytes,
@@ -187,6 +188,37 @@ class TestSMB1Actions(unittest.TestCase):
 
 class TestReplayCorrectness(unittest.TestCase):
 
+    def test_success_replay_survives_turnover_and_checkpoint(self) -> None:
+        replay = PrioritizedReplayBuffer(2, capacity=100, seed=11)
+        success = Transition(np.array([999, 1], dtype=np.float32), 1, 20.0,
+                             np.array([1000, 1], dtype=np.float32), True, 0.0)
+        replay.add(success, protect=True)
+        for index in range(240):
+            state = np.array([index, 0], dtype=np.float32)
+            replay.add(Transition(state, 0, 0.0, state, False, 0.99))
+        protected_index = replay.protected_order[0]
+        self.assertEqual(len(replay.protected_order), 1)
+        self.assertEqual(float(replay.states[protected_index, 0]), 999.0)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "replay.npz"
+            replay.save(path)
+            restored = PrioritizedReplayBuffer.load(path, seed=11)
+        self.assertEqual(list(restored.protected_order), [protected_index])
+        self.assertEqual(float(restored.states[protected_index, 0]), 999.0)
+        for index in range(200):
+            state = np.array([index, 2], dtype=np.float32)
+            restored.add(Transition(state, 0, 0.0, state, False, 0.99))
+        self.assertEqual(float(restored.states[protected_index, 0]), 999.0)
+
+    def test_existing_victory_transitions_are_protected_on_resume(self) -> None:
+        replay = PrioritizedReplayBuffer(2, capacity=100, seed=11)
+        state = np.array([42, 0], dtype=np.float32)
+        replay.add(Transition(state, 1, 20.0, state, True, 0.0))
+        replay.add(Transition(state, 2, -20.0, state, True, 0.0))
+        self.assertEqual(replay.protect_existing_successes(), 1)
+        self.assertEqual(replay.protect_existing_successes(), 0)
+        self.assertEqual(list(replay.protected_order), [0])
+
     def test_sum_tree_finds_global_prefixes_for_non_power_of_two_capacity(self) -> None:
         tree = SumTree(5)
         for index, priority in enumerate((1.0, 2.0, 4.0, 8.0, 16.0)):
@@ -251,6 +283,11 @@ class TestReplayCorrectness(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestApexEpsilon(unittest.TestCase):
+
+    def test_unsolved_world_keeps_exploring_then_uses_base_schedule(self) -> None:
+        self.assertAlmostEqual(training_epsilon(7, 8, 0), 0.10)
+        self.assertAlmostEqual(training_epsilon(7, 8, 1), 0.003)
+        self.assertAlmostEqual(training_epsilon(0, 8, 0), 0.40)
 
     def test_first_actor_has_highest_epsilon(self) -> None:
         eps_0 = _apex_epsilon(0, 8)
@@ -475,6 +512,18 @@ class TestApexLearnerIntegration(unittest.TestCase):
                 self.assertEqual(kind, "status")
                 self.assertIn("replay_transitions", status)
                 self.assertGreaterEqual(status["replay_transitions"], 0)
+
+                exp_queue.put(("success", 0, 0, 0, [
+                    Transition(state, 1, 20.0, state + 0.1, True, 0.0),
+                ]))
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    status_inbox.put(("status",))
+                    _, status = status_outbox.get(timeout=5)
+                    if status["protected_success_transitions"] == 1:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(status["protected_success_transitions"], 1)
 
                 # Check weights are broadcast.
                 try:

@@ -50,7 +50,7 @@ import torch
 
 from .actions import ACTION_COUNT, ACTION_DURATIONS
 from .agent import AgentConfig
-from .apex_actor import ActorConfig, actor_main, _apex_epsilon
+from .apex_actor import ActorConfig, actor_main, _apex_epsilon, training_epsilon
 from .apex_eval import eval_worker_main
 from .apex_learner import apex_learner_main
 from .environment import START_PROTOCOL, FileWorker, launch_fceux_workers
@@ -67,6 +67,11 @@ logger = logging.getLogger(__name__)
 
 HEALTH_CHECK_INTERVAL = 10 * 60   # seconds
 WORKER_STALE_SECONDS = 3 * 60
+# A healthy bridge publishes one observation per action (6/12/24 frames).
+# This is deliberately much longer than a normal action so startup and macOS
+# scheduling do not cause false positives, while still recovering a live but
+# wedged FCEUX window instead of waiting forever.
+OBSERVATION_STALE_SECONDS = 90
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +108,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Broadcast weights every N learner optimizer steps.")
     parser.add_argument("--actor-weight-sync-every", type=int, default=400,
                         help="Actors reload weights every N collected steps.")
+    parser.add_argument("--unsolved-epsilon-floor", type=float, default=0.10,
+                        help="Minimum exploration probability before an actor wins a level.")
     parser.add_argument("--queue-capacity", type=int, default=10_000,
                         help="Max batches in experience queue (backpressure).")
     parser.add_argument("--n-step", type=int, default=3)
@@ -235,6 +242,8 @@ def main() -> None:
     enabled_indexes = {int(value.strip()) for value in args.cheats_enabled_workers.split(",") if value.strip()}
     if any(index < 0 or index >= args.workers for index in enabled_indexes):
         raise ValueError("--cheats-enabled-workers indexes must be within the worker count")
+    if not 0.0 <= args.unsolved_epsilon_floor <= 1.0:
+        raise ValueError("--unsolved-epsilon-floor must be in [0, 1]")
     worker_cheats = tuple(index in enabled_indexes for index in range(args.workers))
     try:
         requested_worlds = tuple(int(v.strip()) for v in args.worlds.split(",") if v.strip())
@@ -273,7 +282,11 @@ def main() -> None:
             "learner": "NoisyNet remains active in Rainbow learner updates",
             "action_priors": "none",
         },
-        "actor_epsilons": [round(_apex_epsilon(i, args.workers), 5) for i in range(args.workers)],
+        "actor_epsilons": [round(training_epsilon(i, args.workers, 0,
+                                                   args.unsolved_epsilon_floor), 5)
+                           for i in range(args.workers)],
+        "unsolved_epsilon_floor": args.unsolved_epsilon_floor,
+        "exploration_schedule": "Per-level epsilon floor until that actor wins the level",
         "actor_seeds": [args.seed + i * 1000 for i in range(args.workers)],
         "experience_queue_max_batches": args.queue_capacity,
         "actor_batch_size": args.actor_batch_size,
@@ -355,6 +368,7 @@ def main() -> None:
         value_min=-100.0,
         value_max=100.0,
         weight_sync_every=args.actor_weight_sync_every,
+        unsolved_epsilon_floor=args.unsolved_epsilon_floor,
         seed=args.seed,
     )
 
@@ -401,6 +415,8 @@ def main() -> None:
     ))
     eval_file_worker = FileWorker("eval", eval_run_dir / "worker-00",
                                   action_profile="rainbow")
+    worker_launched_at = [time.time()] * args.workers
+    eval_launched_at = time.time()
 
     # ---- Launch learner process.
     learner_process = context.Process(
@@ -489,9 +505,51 @@ def main() -> None:
             cheat_file=args.cheat_file, worker_indexes=(index,),
         )[0]
         fceux_processes[index] = replacement
+        worker_launched_at[index] = time.time()
         active_cheat_modes[index] = cheats_enabled
         logger.info("Worker %d restarted for campaign cheat mode: %s", index,
                     "enabled" if cheats_enabled else "disabled")
+
+    def restart_stale_emulator(index: int) -> None:
+        """Replace a live FCEUX process whose bridge stopped publishing."""
+        previous = fceux_processes[index]
+        if previous.poll() is None:
+            previous.terminate()
+            try:
+                previous.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                previous.kill()
+        replacement = launch_fceux_workers(
+            args.fceux, args.rom, bridge_template, args.run_dir, 1,
+            (requested_worlds[index],), action_profile="rainbow",
+            cheats_enabled=(active_cheat_modes[index],),
+            window_layout=args.window_layout, cheat_file=args.cheat_file,
+            worker_indexes=(index,),
+        )[0]
+        fceux_processes[index] = replacement
+        worker_launched_at[index] = time.time()
+        logger.warning("Restarted stale Python/FCEUX worker %d after %.0fs without observations",
+                       index, OBSERVATION_STALE_SECONDS)
+
+    def restart_stale_eval_emulator() -> None:
+        """Replace a wedged evaluator emulator without restarting training."""
+        nonlocal eval_launched_at
+        previous = eval_fceux[0]
+        if previous.poll() is None:
+            previous.terminate()
+            try:
+                previous.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                previous.kill()
+        eval_fceux[0] = launch_fceux_workers(
+            args.fceux, args.rom, bridge_template, eval_run_dir, 1,
+            (args.eval_world,), action_profile="rainbow",
+            cheats_enabled=(False,), window_layout=None, cheat_file=None,
+            extra_args=("--xscale", "1", "--yscale", "1",
+                         "-qwindowgeometry", "512x469+851+205"),
+        )[0]
+        eval_launched_at = time.time()
+        logger.warning("Restarted stale greedy evaluator emulator")
 
     try:
         while active:
@@ -515,11 +573,26 @@ def main() -> None:
                 if dead_actors:
                     raise RuntimeError(f"Ape-X actor process(es) exited: {dead_actors}")
                 dead_emulators = [index for index, process in enumerate(fceux_processes)
-                                  if process.poll() is not None]
+                               if process.poll() is not None]
                 if dead_emulators:
                     raise RuntimeError(f"FCEUX training emulator(s) exited: {dead_emulators}")
+                stale_workers = []
+                for index in range(args.workers):
+                    observation_path = args.run_dir / f"worker-{index:02d}" / "observation.json"
+                    last_observation = (observation_path.stat().st_mtime
+                                        if observation_path.exists() else worker_launched_at[index])
+                    if time.time() - last_observation > OBSERVATION_STALE_SECONDS:
+                        stale_workers.append(index)
+                for index in stale_workers:
+                    restart_stale_emulator(index)
                 if not eval_process.is_alive():
                     logger.warning("Evaluation process exited; training continues without current eval data")
+                else:
+                    eval_observation = eval_run_dir / "worker-00" / "observation.json"
+                    last_eval_observation = (eval_observation.stat().st_mtime
+                                             if eval_observation.exists() else eval_launched_at)
+                    if time.time() - last_eval_observation > OBSERVATION_STALE_SECONDS:
+                        restart_stale_eval_emulator()
                 try:
                     status_inbox.put_nowait(("status",))
                     _, learner_status = status_outbox.get(timeout=3)

@@ -369,7 +369,15 @@ while true do
       -- Make at most three title-screen Start attempts before the first saved
       -- playable frame.  Once that state exists, this branch is never used
       -- again, including after a death or game-over screen.
-      if snapshot.operationMode==0 and initialStartAttempts<3 and waitingFrames%120==0 then
+      -- A fresh FCEUX process can restore SMB1 in the title/game-over wait
+      -- state with operation mode 1 and player state 0.  That state is not
+      -- playable, but it is also not the normal title mode (0), so checking
+      -- only operationMode used to strand new evaluation windows forever.
+      -- Retry Start for both known non-playable startup states; once a clean
+      -- grounded frame is captured, this branch is never used again.
+      local startupNeedsStart=(snapshot.operationMode==0)
+        or (snapshot.operationMode==1 and snapshot.playerState==0)
+      if startupNeedsStart and initialStartAttempts<3 and waitingFrames%120==0 then
         -- From the supplied SMB1 disassembly: WorldSelectNumber=$076b,
         -- WorldSelectEnableFlag=$07fc, WorldNumber=$075f, LevelNumber=$075c,
         -- and AreaNumber=$0760.  SMB1's selector starts the selected world at
