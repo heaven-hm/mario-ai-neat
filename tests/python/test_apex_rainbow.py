@@ -304,9 +304,19 @@ class TestReplayCorrectness(unittest.TestCase):
 class TestApexEpsilon(unittest.TestCase):
 
     def test_unsolved_world_keeps_exploring_then_uses_base_schedule(self) -> None:
-        self.assertAlmostEqual(training_epsilon(7, 8, 0), 0.10)
-        self.assertAlmostEqual(training_epsilon(7, 8, 1), 0.003)
+        # The exploring head carries the floor while the level is unsolved...
         self.assertAlmostEqual(training_epsilon(0, 8, 0), 0.40)
+        # ...while the exploit tail keeps its Ape-X schedule, so the learner
+        # still sees the state distribution its own greedy policy produces.
+        self.assertAlmostEqual(training_epsilon(7, 8, 0), _apex_epsilon(7, 8))
+        self.assertAlmostEqual(training_epsilon(7, 8, 1), 0.003)
+        self.assertAlmostEqual(training_epsilon(2, 8, 0), _apex_epsilon(2, 8))
+
+    def test_unsolved_floor_still_raises_a_weak_exploring_actor(self) -> None:
+        # In a wide population the exploring head's own base falls below the
+        # floor, and the floor is what keeps that actor exploring.
+        self.assertLess(_apex_epsilon(3, 12), 0.2)
+        self.assertAlmostEqual(training_epsilon(3, 12, 0, unsolved_floor=0.2), 0.2)
 
     def test_first_actor_has_highest_epsilon(self) -> None:
         eps_0 = _apex_epsilon(0, 8)
@@ -395,6 +405,18 @@ class TestActionSelection(unittest.TestCase):
         self.assertEqual(hidden.shape, (16,))
         self.assertTrue(np.isfinite(q_values).all())
         self.assertTrue(np.isfinite(hidden).all())
+
+    def test_exploration_repeats_the_previous_action_when_sticky(self) -> None:
+        state = np.zeros(4, dtype=np.float32)
+        action, _, _ = _action_details(self.network, self.support, state, 1.0, 2, self.device,
+                                       previous_action=1, stickiness=1.0)
+        self.assertEqual(action, 1)
+
+    def test_exploration_resamples_without_stickiness(self) -> None:
+        state = np.zeros(4, dtype=np.float32)
+        actions = {_action_details(self.network, self.support, state, 1.0, 2, self.device,
+                                   previous_action=1, stickiness=0.0)[0] for _ in range(64)}
+        self.assertEqual(actions, {0, 1})
 
     def test_actor_action_values_do_not_change_when_noisy_weights_reset(self) -> None:
         state = np.zeros(4, dtype=np.float32)
@@ -485,12 +507,40 @@ class TestShapedReward(unittest.TestCase):
         prev = _make_observation(world_x=0)
         curr = _make_observation(world_x=100_000)
         reward = _shaped_reward(prev, curr)
-        self.assertLessEqual(reward, 22.0)  # 2.0 max progress + 20 victory max
+        self.assertLessEqual(reward, 24.0)  # 4.0 max progress + 20 victory max
+
+    def test_long_commitment_earns_the_same_return_per_frame_as_a_tap(self) -> None:
+        # The reward cap must sit above the fastest committed action, otherwise
+        # a 24-frame run earns less per frame than a 6-frame tap and replay
+        # teaches the greedy policy to tap instead of building speed.
+        prev = _make_observation(world_x=100)
+        tap = _shaped_reward(prev, _make_observation(world_x=115), 6)  # 2.5 px/frame
+        committed = _shaped_reward(prev, _make_observation(world_x=160), 24)
+        self.assertAlmostEqual(tap / 6, committed / 24, places=5)
 
 
 # ---------------------------------------------------------------------------
 # Actor config defaults
 # ---------------------------------------------------------------------------
+
+class TestValueSupport(unittest.TestCase):
+    """The C51 support has to cover the dense progress reward's value scale."""
+
+    def test_support_covers_the_running_speed_value_scale(self) -> None:
+        from mario_ai_fceux.agent import AgentConfig
+        config = AgentConfig()
+        running_reward_per_decision = 2.0  # ~30 px at the normal 12-frame horizon
+        per_decision_discount = 0.985      # longest discount seen in the replay
+        self.assertGreater(config.value_max,
+                           running_reward_per_decision / (1.0 - per_decision_discount))
+        self.assertEqual((config.value_min, config.value_max), (-250.0, 250.0))
+
+    def test_actor_and_learner_share_one_value_support(self) -> None:
+        from mario_ai_fceux.agent import AgentConfig
+        actor, learner = ActorConfig(), AgentConfig()
+        self.assertEqual((actor.value_min, actor.value_max),
+                         (learner.value_min, learner.value_max))
+
 
 class TestActorConfig(unittest.TestCase):
 
@@ -587,6 +637,60 @@ class TestApexLearnerIntegration(unittest.TestCase):
             finally:
                 if process.is_alive():
                     process.kill()
+
+class TestResumeConfigGuard(unittest.TestCase):
+    """A resume must tolerate optimization knobs, never semantic changes."""
+
+    def _agent(self, observation_size: int = 4, atom_count: int = 11, **overrides) -> RainbowAgent:
+        from mario_ai_fceux.agent import AgentConfig
+        config = AgentConfig(observation_size=observation_size, action_count=2,
+                             atom_count=atom_count, **overrides)
+        replay = PrioritizedReplayBuffer(observation_size, capacity=64, seed=1)
+        return RainbowAgent(replay, config=config, device="cpu")
+
+    def test_learning_rate_change_still_resumes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            self._agent(learning_rate=6.25e-5).save(path)
+            resumed = self._agent(learning_rate=1.25e-4)
+            resumed.load(path, validate_replay=False)
+
+    def test_weights_load_without_a_matching_replay_snapshot(self) -> None:
+        # --fresh-replay keeps learned weights while starting an empty buffer, so
+        # the strict snapshot pairing has to be skippable on purpose.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            saved = self._agent()
+            saved.save(path, Path(directory) / "replay.npz")
+            resumed = self._agent()
+            resumed.replay.snapshot_id = "another-snapshot"
+            with self.assertRaises(ValueError):
+                resumed.load(path)
+            resumed.load(path, validate_replay=False)
+
+    def test_support_widening_resumes_when_atoms_are_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            self._agent(value_min=-100.0, value_max=100.0).save(path)
+            resumed = self._agent(value_min=-250.0, value_max=250.0)
+            resumed.load(path, validate_replay=False)
+
+    def test_atom_count_change_still_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            self._agent().save(path)
+            with self.assertRaises(ValueError) as context:
+                self._agent(atom_count=5).load(path, validate_replay=False)
+            self.assertIn("atom_count", str(context.exception))
+
+    def test_data_semantics_must_still_match_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.pt"
+            self._agent().save(path)
+            with self.assertRaises(ValueError) as context:
+                self._agent(observation_size=8).load(path, validate_replay=False)
+            self.assertIn("observation_size", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

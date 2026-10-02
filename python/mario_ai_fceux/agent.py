@@ -20,19 +20,41 @@ from .model import RainbowNetwork
 from .replay import PrioritizedReplayBuffer, Transition
 
 
+# Optimization knobs may differ between resumes: they tune how the learner
+# moves, not what the stored transitions mean.  Everything that would
+# reinterpret learned state (observation size, action space, atoms, discount,
+# n-step) still has to match, and so does the value support's *shape*: with the
+# atom count fixed and a symmetric [min, max] support, atom i always sits at
+# min + i*step, so scaling the support rescales every predicted value by the
+# same factor and leaves the argmax over actions untouched.
+RESUME_TOLERATED_FIELDS = frozenset({
+    "learning_rate", "batch_size", "target_sync_steps",
+    "per_beta_start", "per_beta_steps", "learning_starts",
+    "value_min", "value_max",
+})
+
+
 @dataclass
 class AgentConfig:
     observation_size: int = 184
     action_count: int = ACTION_COUNT
     gamma: float = 0.99
-    learning_rate: float = 6.25e-5
+    # The Ape-X reference uses 6.25e-4 with a 512 batch; the bootcamp learner
+    # started ten times below that and, at ~50 updates/s, was slow to move away
+    # from the policy the old shaping had already fitted.
+    learning_rate: float = 1.25e-4
     batch_size: int = 128
     learning_starts: int = 10_000
     target_sync_steps: int = 2_000
     n_step: int = 3
     atom_count: int = 51
-    value_min: float = -100.0
-    value_max: float = 100.0
+    # Dense progress rewards make V proportional to the remaining level, so the
+    # value scale runs past ±100 (a running-speed decision alone implies ~133);
+    # the old ±100 support clamped those targets and left 2.9% of atom mass on
+    # the ceiling atom.  Widening rescales learned values monotonically, so the
+    # policy and the replay snapshot survive a resume.
+    value_min: float = -250.0
+    value_max: float = 250.0
     per_beta_start: float = 0.4
     per_beta_steps: int = 1_000_000
     seed: int = 7
@@ -285,8 +307,14 @@ class RainbowAgent:
         if saved_config is not None:
             normalized_saved_config = asdict(AgentConfig(**saved_config))
             current_config = asdict(self.config)
+            # Optimization knobs may differ between resumes: they change how the
+            # learner moves, not what the stored transitions mean.  Everything
+            # that would reinterpret learned state (observation size, action
+            # space, atoms, discount, n-step, value support) still has to match,
+            # otherwise a resume would silently reinterpret the checkpoint.
             differences = [name for name, value in current_config.items()
-                           if normalized_saved_config.get(name) != value]
+                           if name not in RESUME_TOLERATED_FIELDS
+                           and normalized_saved_config.get(name) != value]
             if differences == ["action_count"] and normalized_saved_config["action_count"] == LEGACY_ACTION_COUNT \
                     and self.config.action_count == ACTION_COUNT:
                 legacy_action_migration = True

@@ -70,15 +70,27 @@ def apex_learner_main(
     directory = Path(run_directory)
     # replay_capacity is an Ape-X-level param; strip it before building AgentConfig.
     replay_capacity = int(config_dict.pop("replay_capacity", 500_000))
+    fresh_replay = bool(config_dict.pop("fresh_replay", False))
     config = AgentConfig(**config_dict)
     replay_path = directory / "replay.npz"
     checkpoint_path = directory / "model.pt"
 
     if resume and checkpoint_path.exists():
-        checkpoint_to_load, replay = RainbowAgent.load_checkpoint_pair(
-            checkpoint_path, replay_path, config.observation_size,
-            config.seed, max(replay_capacity, config.batch_size * 2),
-        )
+        if fresh_replay:
+            # Keep the weights, step count and optimizer state, but start a clean
+            # buffer: transitions collected under earlier reward shaping would
+            # otherwise keep teaching the policy the old value of a commitment.
+            checkpoint_to_load = checkpoint_path
+            replay = PrioritizedReplayBuffer(
+                config.observation_size,
+                capacity=max(replay_capacity, config.batch_size * 2),
+                seed=config.seed,
+            )
+        else:
+            checkpoint_to_load, replay = RainbowAgent.load_checkpoint_pair(
+                checkpoint_path, replay_path, config.observation_size,
+                config.seed, max(replay_capacity, config.batch_size * 2),
+            )
     elif resume and replay_path.exists():
         checkpoint_to_load = checkpoint_path
         replay = PrioritizedReplayBuffer.load(replay_path, config.seed)
@@ -92,9 +104,11 @@ def apex_learner_main(
     agent = RainbowAgent(replay, config=config, device=device_str)
     if resume and checkpoint_path.exists():
         try:
-            agent.load(checkpoint_to_load)
+            agent.load(checkpoint_to_load, validate_replay=not fresh_replay)
             logger.info("Resumed from %s (step %d, opt %d)", checkpoint_to_load,
                         agent.steps, agent.optimizer_steps)
+            if fresh_replay:
+                logger.info("Fresh replay buffer: learned weights kept, buffer starts empty")
         except Exception as exc:
             raise RuntimeError(
                 f"Could not safely resume {checkpoint_path}; refusing to discard learned state: {exc}"

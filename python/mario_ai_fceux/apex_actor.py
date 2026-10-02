@@ -38,6 +38,20 @@ logger = logging.getLogger(__name__)
 DEATH_REWARD_PENALTY = 20.0
 VICTORY_REWARD_BONUS = 20.0
 
+# Progress is capped just above the furthest a committed action can travel: 24
+# frames at SMB1's ~2.5 px/frame top running speed is 60 px, or 3.75 reward.
+# The old 2.0 cap paid a 24-frame commitment half the return per frame that a
+# 6-frame tap earned, so replay rewarded tapping over building speed and the
+# greedy policy learned to tap exactly where successful trajectories committed.
+MAX_PROGRESS_REWARD = 4.0
+
+# Temporally correlated exploration: while exploring, reuse the previous action
+# with this probability instead of resampling.  Independent random actions
+# cancel out in a momentum game like SMB1 (run, brake, jump-back, run), while
+# short random *sequences* stay coherent enough to cross a gap or land a stomp,
+# which is exactly what exploration has to discover.
+EXPLORATION_STICKINESS = 0.25
+
 # Ape-X exploration schedule: actor 0 explores most, actor 7 exploits most.
 # Matches the Ape-X paper's per-actor epsilon annealing philosophy.
 APEX_EPSILONS = (0.40, 0.20, 0.10, 0.05, 0.025, 0.012, 0.006, 0.003)
@@ -59,9 +73,20 @@ def _apex_epsilon(actor_index: int, total_actors: int) -> float:
 
 def training_epsilon(actor_index: int, total_actors: int, victories: int,
                      unsolved_floor: float = UNSOLVED_WORLD_EPSILON_FLOOR) -> float:
-    """Give an unsolved assigned level meaningful exploration."""
+    """Give an unsolved assigned level meaningful exploration in the exploring head.
+
+    Ape-X only works while its population spans exploration to exploitation.  A
+    floor applied to every actor while the assigned level is unsolved removes the
+    exploit end entirely, so the learner never sees the state distribution its
+    own greedy policy produces and the argmax drifts away from the trajectories
+    that actually earned reward.  Keep the floor on the exploring head of the
+    population and let the rest follow the Ape-X schedule.
+    """
     base = _apex_epsilon(actor_index, total_actors)
-    return max(base, unsolved_floor) if victories == 0 else base
+    if victories:
+        return base
+    exploring_head = max(1, total_actors // 3)
+    return max(base, unsolved_floor) if actor_index < exploring_head else base
 
 
 @dataclass
@@ -72,8 +97,10 @@ class ActorConfig:
     n_step: int = 3
     batch_size: int = 32          # transitions per queue push
     atom_count: int = 51
-    value_min: float = -100.0
-    value_max: float = 100.0
+    # Must match the learner's support exactly: the actor reads its Q-values off
+    # the same atom layout, so a narrower support here would misprice actions.
+    value_min: float = -250.0
+    value_max: float = 250.0
     weight_sync_every: int = 400  # steps between weight pulls
     seed: int = 7
     alternate_cheat_campaigns: bool = False
@@ -136,10 +163,14 @@ def _select_action(
     epsilon: float,
     action_count: int,
     device: torch.device,
+    previous_action: int | None = None,
+    stickiness: float = EXPLORATION_STICKINESS,
 ) -> int:
     """Epsilon-greedy action selection using the actor's local network copy."""
     action, _, _ = _action_details(network, support, state, epsilon,
-                                  action_count, device)
+                                  action_count, device,
+                                  previous_action=previous_action,
+                                  stickiness=stickiness)
     return action
 
 
@@ -151,6 +182,8 @@ def _action_details(
     action_count: int,
     device: torch.device,
     safe_start: bool = False,
+    previous_action: int | None = None,
+    stickiness: float = EXPLORATION_STICKINESS,
 ) -> tuple[int, np.ndarray, np.ndarray]:
     """Return action, Q values, and encoder summary for the live FCEUX HUD."""
     # Actor policy values use learned mean weights; exploration comes only
@@ -164,7 +197,10 @@ def _action_details(
                     if action_count == ACTION_COUNT
                     else int(q_values.argmax(dim=1).item()))
     if np.random.random() < epsilon:
-        action = int(np.random.randint(action_count))
+        # Sticky exploration keeps random steps in short coherent sequences.
+        action = (previous_action if previous_action is not None
+                  and np.random.random() < stickiness
+                  else int(np.random.randint(action_count)))
     else:
         action = greedy_index
     if safe_start and action_count == ACTION_COUNT:
@@ -457,6 +493,7 @@ def actor_main(
             safe_start=(observation.world_x <= 160
                         and bool(observation.state[171])
                         and not bool(observation.state[182])),
+            previous_action=getattr(worker, "previous_action", None),
         )
         _publish_hud(worker, run_directory, observation, action, q_values, hidden,
                      steps, episodes, episodes - victories, victories,
@@ -515,7 +552,8 @@ def actor_main(
 def _shaped_reward(previous: Observation, current: Observation,
                    duration_frames: int = LEGACY_DURATION_FRAMES) -> float:
     """Reward progress and charge game time so standing still loses value."""
-    reward = max(-2.0, min(2.0, (current.world_x - previous.world_x) / 16.0))
+    reward = max(-MAX_PROGRESS_REWARD,
+                 min(MAX_PROGRESS_REWARD, (current.world_x - previous.world_x) / 16.0))
     reward += max(-0.2, min(0.2, (current.power - previous.power) * 0.1))
     if current.terminal:
         reward += VICTORY_REWARD_BONUS if current.reason == "victory" else -DEATH_REWARD_PENALTY
