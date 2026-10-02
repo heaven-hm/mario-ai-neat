@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 DEATH_REWARD_PENALTY = 20.0
 VICTORY_REWARD_BONUS = 20.0
 
+# Progress is capped just above the furthest a committed action can travel: 24
+# frames at SMB1's ~2.5 px/frame top running speed is 60 px, or 3.75 reward.
+# The old 2.0 cap paid a 24-frame commitment half the return per frame that a
+# 6-frame tap earned, so replay rewarded tapping over building speed and the
+# greedy policy learned to tap exactly where successful trajectories committed.
+MAX_PROGRESS_REWARD = 4.0
+
 # Ape-X exploration schedule: actor 0 explores most, actor 7 exploits most.
 # Matches the Ape-X paper's per-actor epsilon annealing philosophy.
 APEX_EPSILONS = (0.40, 0.20, 0.10, 0.05, 0.025, 0.012, 0.006, 0.003)
@@ -59,9 +66,20 @@ def _apex_epsilon(actor_index: int, total_actors: int) -> float:
 
 def training_epsilon(actor_index: int, total_actors: int, victories: int,
                      unsolved_floor: float = UNSOLVED_WORLD_EPSILON_FLOOR) -> float:
-    """Give an unsolved assigned level meaningful exploration."""
+    """Give an unsolved assigned level meaningful exploration in the exploring head.
+
+    Ape-X only works while its population spans exploration to exploitation.  A
+    floor applied to every actor while the assigned level is unsolved removes the
+    exploit end entirely, so the learner never sees the state distribution its
+    own greedy policy produces and the argmax drifts away from the trajectories
+    that actually earned reward.  Keep the floor on the exploring head of the
+    population and let the rest follow the Ape-X schedule.
+    """
     base = _apex_epsilon(actor_index, total_actors)
-    return max(base, unsolved_floor) if victories == 0 else base
+    if victories:
+        return base
+    exploring_head = max(1, total_actors // 3)
+    return max(base, unsolved_floor) if actor_index < exploring_head else base
 
 
 @dataclass
@@ -515,7 +533,8 @@ def actor_main(
 def _shaped_reward(previous: Observation, current: Observation,
                    duration_frames: int = LEGACY_DURATION_FRAMES) -> float:
     """Reward progress and charge game time so standing still loses value."""
-    reward = max(-2.0, min(2.0, (current.world_x - previous.world_x) / 16.0))
+    reward = max(-MAX_PROGRESS_REWARD,
+                 min(MAX_PROGRESS_REWARD, (current.world_x - previous.world_x) / 16.0))
     reward += max(-0.2, min(0.2, (current.power - previous.power) * 0.1))
     if current.terminal:
         reward += VICTORY_REWARD_BONUS if current.reason == "victory" else -DEATH_REWARD_PENALTY

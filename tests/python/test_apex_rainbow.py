@@ -304,9 +304,19 @@ class TestReplayCorrectness(unittest.TestCase):
 class TestApexEpsilon(unittest.TestCase):
 
     def test_unsolved_world_keeps_exploring_then_uses_base_schedule(self) -> None:
-        self.assertAlmostEqual(training_epsilon(7, 8, 0), 0.10)
-        self.assertAlmostEqual(training_epsilon(7, 8, 1), 0.003)
+        # The exploring head carries the floor while the level is unsolved...
         self.assertAlmostEqual(training_epsilon(0, 8, 0), 0.40)
+        # ...while the exploit tail keeps its Ape-X schedule, so the learner
+        # still sees the state distribution its own greedy policy produces.
+        self.assertAlmostEqual(training_epsilon(7, 8, 0), _apex_epsilon(7, 8))
+        self.assertAlmostEqual(training_epsilon(7, 8, 1), 0.003)
+        self.assertAlmostEqual(training_epsilon(2, 8, 0), _apex_epsilon(2, 8))
+
+    def test_unsolved_floor_still_raises_a_weak_exploring_actor(self) -> None:
+        # In a wide population the exploring head's own base falls below the
+        # floor, and the floor is what keeps that actor exploring.
+        self.assertLess(_apex_epsilon(3, 12), 0.2)
+        self.assertAlmostEqual(training_epsilon(3, 12, 0, unsolved_floor=0.2), 0.2)
 
     def test_first_actor_has_highest_epsilon(self) -> None:
         eps_0 = _apex_epsilon(0, 8)
@@ -485,7 +495,16 @@ class TestShapedReward(unittest.TestCase):
         prev = _make_observation(world_x=0)
         curr = _make_observation(world_x=100_000)
         reward = _shaped_reward(prev, curr)
-        self.assertLessEqual(reward, 22.0)  # 2.0 max progress + 20 victory max
+        self.assertLessEqual(reward, 24.0)  # 4.0 max progress + 20 victory max
+
+    def test_long_commitment_earns_the_same_return_per_frame_as_a_tap(self) -> None:
+        # The reward cap must sit above the fastest committed action, otherwise
+        # a 24-frame run earns less per frame than a 6-frame tap and replay
+        # teaches the greedy policy to tap instead of building speed.
+        prev = _make_observation(world_x=100)
+        tap = _shaped_reward(prev, _make_observation(world_x=115), 6)  # 2.5 px/frame
+        committed = _shaped_reward(prev, _make_observation(world_x=160), 24)
+        self.assertAlmostEqual(tap / 6, committed / 24, places=5)
 
 
 # ---------------------------------------------------------------------------
