@@ -1,0 +1,23 @@
+# Dependencies for the SMB1 PPO baseline (see docs/smb1-ppo.md).
+#
+# Install with scripts/smb1_ppo_setup.sh, or by hand:
+#   python -m venv .venv
+#   .venv/bin/python -m pip install -r requirements-smb1-ppo.txt
+#
+# The pins below are compatibility constraints, not preferences:
+#   * numpy < 2: nes-py 8.2.1 computes the PRG-ROM size as a uint8 and overflows
+#     under NumPy 2 scalar-promotion rules, so the environment cannot construct.
+#   * opencv < 5: OpenCV 5 requires NumPy 2.
+
+numpy>=1.26,<2
+torch>=2.2
+stable-baselines3>=2.3
+gym-super-mario-bros==7.4.0
+nes-py>=8.2.1
+opencv-python-headless>=4.8,<5
+pygame>=2.1
+tensorboard>=2.16
+rich>=13
+tqdm>=4.66
+pytest>=8.0
+ruff>=0.6
