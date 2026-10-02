@@ -79,6 +79,20 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(canonical.md5, "811b027eaf99c2def7b933c5208636de")
         self.assertEqual(canonical.crc32, "3337ec46")
 
+    def test_the_recognized_dumps_are_distinct_and_identify_real_releases(self) -> None:
+        checksums = [dump.sha256 for dump in rom.KNOWN_DUMPS]
+        self.assertEqual(len(checksums), len(set(checksums)))
+        self.assertGreaterEqual(len(rom.KNOWN_DUMPS), 2)
+        # The same ROM data behind a different iNES header; both are documented as
+        # Super Mario Bros. (World) with headerless CRC32 D445F698.
+        alternate = rom.KNOWN_DUMPS[1]
+        self.assertEqual(alternate.sha256, "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea")
+        self.assertEqual(alternate.md5, "f94bb9bb55f325d9af8a0fff80b9376d")
+        self.assertEqual(alternate.crc32, "393a432f")
+        for dump in rom.KNOWN_DUMPS:
+            for value in (dump.sha256, dump.md5, dump.sha1, dump.crc32):
+                self.assertRegex(value, r"^[0-9a-f]+$")
+
     def test_malformed_images_are_rejected_with_a_reason(self) -> None:
         cases = {
             "not a NES file": ines_image(magic=b"ZIP\x1a"),

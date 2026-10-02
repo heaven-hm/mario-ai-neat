@@ -51,8 +51,11 @@ the checksums, header fields, and import time. `*.nes` is already gitignored.
 
 The importer refuses images whose SHA-256 is not a known Super Mario Bros.
 (World) dump unless you pass `--allow-unverified`, because a run against an
-unidentified image produces unverifiable measurements. Structural checks always
-apply: iNES magic, mapper 0 (NROM), 32 KiB PRG, 8 KiB CHR, no trainer, NTSC.
+unidentified image produces unverifiable measurements. Two widely distributed
+iNES headers around the same SMB1 ROM data are recognized: both are named
+"Super Mario Bros. (World)" by No-Intro and share headerless CRC32 `D445F698`,
+differing only in the 16-byte header. Structural checks always apply: iNES
+magic, mapper 0 (NROM), 32 KiB PRG, 8 KiB CHR, no trainer, NTSC.
 
 Every run and every evaluation records the image it used:
 

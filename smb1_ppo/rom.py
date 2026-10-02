@@ -53,6 +53,14 @@ class Smb1Dump:
 # Fingerprints of the widely distributed "Super Mario Bros. (World)" dump, the
 # image the gym-super-mario-bros RAM map was written against. Several
 # independent public ROM databases list the same four checksums.
+#
+# The second entry is the same SMB1 ROM data behind a different 16-byte iNES
+# header: both are "Super Mario Bros. (World)" to No-Intro, both carry headerless
+# CRC32 D445F698, and the second one's headerless SHA-256 is
+# fcb6a0ef3a20c19b356005fbb21dc8009563b1cb5a9aaebc8e9386b4a8c5912e. The headers
+# differ in mirroring and the extended-format bits, which is why the whole-file
+# checksums differ while the game is identical. Recognizing both means a
+# legitimate dump is not reported as unidentified.
 KNOWN_DUMPS: tuple[Smb1Dump, ...] = (
     Smb1Dump(
         label="Super Mario Bros. (World)",
@@ -60,6 +68,13 @@ KNOWN_DUMPS: tuple[Smb1Dump, ...] = (
         md5="811b027eaf99c2def7b933c5208636de",
         sha1="ea343f4e445a9050d4b4fbac2c77d0693b1d0922",
         crc32="3337ec46",
+    ),
+    Smb1Dump(
+        label="Super Mario Bros. (World) (alternate iNES header)",
+        sha256="0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+        md5="f94bb9bb55f325d9af8a0fff80b9376d",
+        sha1="33d23c2f2cfa4c9efec87f7bc1321ce3ce6c89bd",
+        crc32="393a432f",
     ),
 )
 
