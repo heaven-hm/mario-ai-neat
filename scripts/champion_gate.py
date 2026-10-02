@@ -18,26 +18,16 @@ pool across lanes.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import math
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _load_benchmark_module():
-    """Load benchmark.py by path: its package __init__ imports torch, which the
-    gate does not need."""
-    path = PROJECT_ROOT / "python" / "mario_ai_fceux" / "benchmark.py"
-    spec = importlib.util.spec_from_file_location("mario_benchmark", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-REQUIRED_CONDITIONS = _load_benchmark_module().REQUIRED_CONDITIONS
+# Mirrors mario_ai_fceux.benchmark.REQUIRED_CONDITIONS so the gate stays
+# standalone (the package __init__ imports torch, which the gate never needs).
+REQUIRED_CONDITIONS = ("rom_sha256", "fceux_sha256", "world", "level", "action_repeat_frames",
+                       "start_protocol", "episodes_requested", "evaluation_mode",
+                       "evaluation_seed")
 
 Z_95 = 1.959963984540054
 
