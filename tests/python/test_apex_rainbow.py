@@ -238,6 +238,84 @@ class TestReplayCorrectness(unittest.TestCase):
         indices, _, _ = replay.sample(20, beta=0.4, protected_fraction=0.25)
         self.assertEqual(sum(replay.protected[index] for index in indices), 5)
 
+    def test_per_level_quota_prevents_one_level_from_evicting_another(self) -> None:
+        replay = PrioritizedReplayBuffer(2, capacity=100, seed=11,
+                                         success_quota_per_level=2)
+        for index in range(5):
+            state = np.full(2, 1_000 + index, dtype=np.float32)
+            replay.add(Transition(state, 1, 20.0, state, True, 0.0),
+                       protect=True, level=(0, 0))
+        for index in range(3):
+            state = np.full(2, 2_000 + index, dtype=np.float32)
+            replay.add(Transition(state, 1, 20.0, state, True, 0.0),
+                       protect=True, level=(1, 0))
+        tagged = {index: replay.protected_tags[index] for index in replay.protected_order}
+        level_one = [i for i, tag in tagged.items() if tag[0] == (0, 0)]
+        level_two = [i for i, tag in tagged.items() if tag[0] == (1, 0)]
+        self.assertEqual(len(level_one), 2)
+        self.assertEqual(len(level_two), 2)
+        self.assertEqual(float(replay.states[level_one[0], 0]), 1_003.0)
+        self.assertEqual(float(replay.states[level_one[1], 0]), 1_004.0)
+
+    def test_frontier_and_success_kinds_are_quoted_separately(self) -> None:
+        replay = PrioritizedReplayBuffer(2, capacity=100, seed=11,
+                                         success_quota_per_level=2,
+                                         frontier_window_per_level=3)
+        for index in range(6):
+            state = np.full(2, 3_000 + index, dtype=np.float32)
+            replay.add(Transition(state, 1, -20.0, state, True, 0.0),
+                       protect=True, level=(0, 0), kind=PrioritizedReplayBuffer.FRONTIER)
+        for index in range(2):
+            state = np.full(2, 4_000 + index, dtype=np.float32)
+            replay.add(Transition(state, 1, 20.0, state, True, 0.0),
+                       protect=True, level=(0, 0), kind=PrioritizedReplayBuffer.SUCCESS)
+        self.assertEqual(replay.protected_count(PrioritizedReplayBuffer.FRONTIER), 3)
+        self.assertEqual(replay.protected_count(PrioritizedReplayBuffer.SUCCESS), 2)
+        frontier = [i for i in replay.protected_order
+                    if replay.protected_tags[i][1] == PrioritizedReplayBuffer.FRONTIER]
+        self.assertEqual([float(replay.states[i, 0]) for i in frontier],
+                         [3_003.0, 3_004.0, 3_005.0])
+
+    def test_untagged_protection_keeps_global_fifo(self) -> None:
+        replay = PrioritizedReplayBuffer(2, capacity=20, seed=11,
+                                         success_quota_per_level=1)
+        replay.protected_limit = 3
+        for index in range(5):
+            state = np.full(2, 5_000 + index, dtype=np.float32)
+            replay.add(Transition(state, 1, 20.0, state, True, 0.0), protect=True)
+        self.assertEqual(len(replay.protected_order), 3)
+        self.assertEqual([float(replay.states[i, 0]) for i in replay.protected_order],
+                         [5_002.0, 5_003.0, 5_004.0])
+
+    def test_protected_tags_survive_checkpoint_round_trip(self) -> None:
+        replay = PrioritizedReplayBuffer(2, capacity=100, seed=11,
+                                         success_quota_per_level=2,
+                                         frontier_window_per_level=2)
+        for level in ((0, 0), (1, 0)):
+            for index in range(2):
+                state = np.full(2, 6_000 + 10 * level[0] + index, dtype=np.float32)
+                replay.add(Transition(state, 1, 20.0, state, True, 0.0),
+                           protect=True, level=level)
+        state = np.full(2, 7_000, dtype=np.float32)
+        replay.add(Transition(state, 1, -20.0, state, True, 0.0),
+                   protect=True, level=(0, 1), kind=PrioritizedReplayBuffer.FRONTIER)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "replay.npz"
+            replay.save(path)
+            restored = PrioritizedReplayBuffer.load(path, seed=11)
+        self.assertEqual(list(restored.protected_order), list(replay.protected_order))
+        self.assertEqual(restored.protected_tags, replay.protected_tags)
+        self.assertEqual(restored.protected_count(PrioritizedReplayBuffer.FRONTIER), 1)
+        # A new per-level write still respects the restored bucket quotas.
+        state = np.full(2, 8_000, dtype=np.float32)
+        restored.add(Transition(state, 1, 20.0, state, True, 0.0),
+                     protect=True, level=(0, 0))
+        # (0,0) holds its quota of 2 and (1,0) keeps its own 2.
+        self.assertEqual(restored.protected_count(PrioritizedReplayBuffer.SUCCESS), 4)
+        bucket = [i for i in restored.protected_order
+                  if restored.protected_tags[i] == ((0, 0), PrioritizedReplayBuffer.SUCCESS)]
+        self.assertEqual([float(restored.states[i, 0]) for i in bucket], [6_001.0, 8_000.0])
+
     def test_sum_tree_finds_global_prefixes_for_non_power_of_two_capacity(self) -> None:
         tree = SumTree(5)
         for index, priority in enumerate((1.0, 2.0, 4.0, 8.0, 16.0)):
