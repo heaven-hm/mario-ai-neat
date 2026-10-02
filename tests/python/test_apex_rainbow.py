@@ -347,6 +347,12 @@ class TestApexEpsilon(unittest.TestCase):
             arguments = parse_arguments()
         self.assertTrue(arguments.repeat_level_on_victory)
 
+    def test_evaluator_can_be_disabled_for_visible_training_runs(self) -> None:
+        with patch("sys.argv", ["apex_train", "--rom", "SuperMarioBros.nes",
+                                  "--disable-eval"]):
+            arguments = parse_arguments()
+        self.assertTrue(arguments.disable_eval)
+
     def test_saved_layout_assigns_four_powered_and_four_normal_workers(self) -> None:
         layout = PROJECT_ROOT / "config/fceux-window-layout.ini"
         self.assertEqual(worker_cheat_modes(layout, 8),

@@ -37,6 +37,7 @@ def main() -> int:
     except (OSError, json.JSONDecodeError):
         metadata = {}
     expected_workers = int(metadata.get("training_actors", 8))
+    evaluation_enabled = bool(metadata.get("evaluation_enabled", True))
     monitor = read_run_monitor(run_directory)
     trainers = int(bool(monitor["running"]))
     worker_processes = int(monitor["actor_alive"])
@@ -54,7 +55,7 @@ def main() -> int:
         repairs.append(f"expected {expected_workers} learner actors; found {worker_processes}")
     if emulator_processes != expected_workers:
         repairs.append(f"expected {expected_workers} FCEUX actors; found {emulator_processes}")
-    if eval_processes != 1 or eval_emulator_processes != 1:
+    if evaluation_enabled and (eval_processes != 1 or eval_emulator_processes != 1):
         repairs.append("greedy evaluator or its FCEUX process is not alive")
     if fresh_workers != expected_workers:
         repairs.append(f"expected {expected_workers} fresh observations; found {fresh_workers}")

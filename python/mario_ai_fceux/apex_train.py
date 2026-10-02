@@ -128,6 +128,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Episodes per evaluation run.")
     parser.add_argument("--eval-world", type=int, default=1,
                         help="World for the greedy evaluation actor.")
+    parser.add_argument("--disable-eval", action="store_true",
+                        help="Do not launch the periodic greedy evaluator or its FCEUX window.")
     parser.add_argument("--window-layout", type=Path,
                         default=Path("config/fceux-window-layout.ini"),
                         help="INI file containing worker window rectangles.")
@@ -306,6 +308,7 @@ def main() -> None:
         "architecture": "distributed_async",
         "training_actors": args.workers,
         "eval_actor": 1,
+        "evaluation_enabled": not args.disable_eval,
         "worlds": requested_worlds,
         "cheats_enabled_workers": [index for index, enabled in enumerate(worker_cheats) if enabled],
         "alternate_cheat_campaigns": bool(args.alternate_cheat_campaigns),
@@ -367,12 +370,12 @@ def main() -> None:
     # of dropping transitions. The default capacity is 10,000 batches.
     experience_queue: multiprocessing.Queue = context.Queue(maxsize=args.queue_capacity)
 
-    # One weight queue per actor (+ eval worker).
-    total_weight_queues = args.workers + 1  # +1 for eval
+    # One weight queue per actor, plus an optional evaluator queue.
+    total_weight_queues = args.workers + (0 if args.disable_eval else 1)
     weight_queues: list[multiprocessing.Queue] = [
         context.Queue(maxsize=2) for _ in range(total_weight_queues)
     ]
-    eval_weight_queue = weight_queues[-1]
+    eval_weight_queue = None if args.disable_eval else weight_queues[-1]
 
     # Status channel (learner health queries).
     status_inbox: multiprocessing.Queue = context.Queue(maxsize=10)
@@ -447,19 +450,21 @@ def main() -> None:
         for i in range(args.workers)
     ]
 
-    # ---- Launch FCEUX process for the eval worker.
+    # ---- Optionally launch a separate FCEUX process for greedy evaluation.
     eval_run_dir = args.run_dir / "eval"
-    eval_run_dir.mkdir(parents=True, exist_ok=True)
-    eval_fceux.extend(launch_fceux_workers(
-        args.fceux, args.rom, bridge_template,
-        eval_run_dir, 1, (args.eval_world,), action_profile="rainbow",
-        cheats_enabled=(False,), window_layout=None, cheat_file=None,
-        extra_args=("--xscale", "1", "--yscale", "1", "-qwindowgeometry", "512x469+851+205"),
-    ))
-    eval_file_worker = FileWorker("eval", eval_run_dir / "worker-00",
-                                  action_profile="rainbow")
+    eval_file_worker: FileWorker | None = None
+    if not args.disable_eval:
+        eval_run_dir.mkdir(parents=True, exist_ok=True)
+        eval_fceux.extend(launch_fceux_workers(
+            args.fceux, args.rom, bridge_template,
+            eval_run_dir, 1, (args.eval_world,), action_profile="rainbow",
+            cheats_enabled=(False,), window_layout=None, cheat_file=None,
+            extra_args=("--xscale", "1", "--yscale", "1", "-qwindowgeometry", "512x469+851+205"),
+        ))
+        eval_file_worker = FileWorker("eval", eval_run_dir / "worker-00",
+                                      action_profile="rainbow")
     worker_launched_at = [time.time()] * args.workers
-    eval_launched_at = time.time()
+    eval_launched_at = time.time() if not args.disable_eval else 0.0
 
     # ---- Launch learner process.
     learner_process = context.Process(
@@ -489,16 +494,21 @@ def main() -> None:
         logger.info("Actor %d started (PID %d, ε=%.4f)", i, p.pid,
                     _apex_epsilon(i, args.workers))
 
-    # ---- Launch eval worker process.
-    eval_process = context.Process(
-        target=eval_worker_main,
-        args=(eval_file_worker, eval_weight_queue, str(args.run_dir),
-              184, ACTION_COUNT, 51, -100.0, 100.0,
-              args.eval_every, args.eval_episodes, 300.0, args.device),
-        daemon=True,
-    )
-    eval_process.start()
-    logger.info("Eval worker started (PID %d)", eval_process.pid)
+    # ---- Launch eval worker process only when periodic evaluation is enabled.
+    eval_process: multiprocessing.Process | None = None
+    if not args.disable_eval:
+        assert eval_file_worker is not None and eval_weight_queue is not None
+        eval_process = context.Process(
+            target=eval_worker_main,
+            args=(eval_file_worker, eval_weight_queue, str(args.run_dir),
+                  184, ACTION_COUNT, 51, -100.0, 100.0,
+                  args.eval_every, args.eval_episodes, 300.0, args.device),
+            daemon=True,
+        )
+        eval_process.start()
+        logger.info("Eval worker started (PID %d)", eval_process.pid)
+    else:
+        logger.info("Periodic evaluator disabled; only training workers will launch")
 
     monitor_path = args.run_dir / "supervisor.json"
 
@@ -509,7 +519,7 @@ def main() -> None:
             "trainer_pid": os.getpid(),
             "actor_pids": [process.pid for process in actor_processes],
             "emulator_pids": [process.pid for process in fceux_processes],
-            "eval_pid": eval_process.pid,
+            "eval_pid": eval_process.pid if eval_process is not None else -1,
             "eval_emulator_pids": [process.pid for process in eval_fceux],
         })
 
@@ -628,7 +638,9 @@ def main() -> None:
                         stale_workers.append(index)
                 for index in stale_workers:
                     restart_stale_emulator(index)
-                if not eval_process.is_alive():
+                if eval_process is None:
+                    pass
+                elif not eval_process.is_alive():
                     logger.warning("Evaluation process exited; training continues without current eval data")
                 else:
                     eval_observation = eval_run_dir / "worker-00" / "observation.json"
@@ -688,10 +700,10 @@ def main() -> None:
         learner_process.join(timeout=90)
         if learner_process.is_alive():
             learner_process.kill()
-        for p in actor_processes + [eval_process]:
+        for p in actor_processes + ([eval_process] if eval_process is not None else []):
             if p.is_alive():
                 p.terminate()
-        for p in actor_processes + [eval_process]:
+        for p in actor_processes + ([eval_process] if eval_process is not None else []):
             try:
                 p.join(timeout=5)
             except Exception:
