@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 # terminal penalty was only a few maximum-sized (+2) progress decisions, so
 # replay taught the policy that repeatedly reaching a dangerous state was
 # still worthwhile.  Keep victory separate and strongly positive.
-DEATH_REWARD_PENALTY = 20.0
+# -20 was still only ~10%% of a level's total progress reward (~197), and the
+# frontier curriculum restores a death back onto the frontier, so the bootcamp
+# ran at ~1 win per 30 deaths: dying was cheap enough that learning safety was
+# never worth it.  -60 puts a death at roughly half a level's remaining value.
+DEATH_REWARD_PENALTY = 60.0
 VICTORY_REWARD_BONUS = 20.0
 
 # Progress is capped just above the furthest a committed action can travel: 24
