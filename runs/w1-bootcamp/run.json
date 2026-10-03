@@ -72,7 +72,7 @@
   "torch_version": "2.13.0",
   "numpy_version": "2.4.6",
   "python_version": "3.12.1",
-  "source_revision": "1003b50fdbbc18ada6d24af15c4044ed13e4ca6a",
+  "source_revision": "c7c4b87de67820a797ee816610e87ffec8b5d59f",
   "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
   "fceux_executable": "/opt/homebrew/Cellar/fceux/2.6.6_12/bin/fceux",
   "fceux_sha256": "2d84a8310d530745263cfeadf00de9a631162a8dd76c71e1bed659c73753f2f6"
