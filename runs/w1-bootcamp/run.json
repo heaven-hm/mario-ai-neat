@@ -9,10 +9,10 @@
     1,
     1,
     1,
-    1,
-    1,
-    1,
-    1
+    2,
+    2,
+    2,
+    2
   ],
   "cheats_enabled_workers": [],
   "alternate_cheat_campaigns": false,
@@ -38,8 +38,8 @@
   "exploration_schedule": "Per-level epsilon floor until that actor wins the level",
   "frontier_curriculum": {
     "strategy": "grounded savestate checkpoints with bounded retries",
-    "spacing_pixels": 256,
-    "retries": 3
+    "spacing_pixels": 128,
+    "retries": 6
   },
   "actor_seeds": [
     7,
@@ -72,7 +72,7 @@
   "torch_version": "2.13.0",
   "numpy_version": "2.4.6",
   "python_version": "3.12.1",
-  "source_revision": "0b3dafe75acdd9b2d96ae46a69a57a1084ad9d34",
+  "source_revision": "d5163f97a3d8303a6ebfb2066dd0086b7eba4d29",
   "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
   "fceux_executable": "/opt/homebrew/Cellar/fceux/2.6.6_12/bin/fceux",
   "fceux_sha256": "2d84a8310d530745263cfeadf00de9a631162a8dd76c71e1bed659c73753f2f6"
