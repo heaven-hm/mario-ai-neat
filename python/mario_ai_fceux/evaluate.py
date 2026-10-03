@@ -180,7 +180,7 @@ def main() -> None:
               "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
               "source_revision": run_metadata.get("source_revision"),
               "evaluation_mode": "greedy_no_learning",
-              "selection_policy": "agent.select_actions raw argmax (no greedy_action tie-break, no safe_start, no pit_edge_commit)",
+              "selection_policy": "agent.select_actions (greedy_action tie-break when action_count==21; NO safe_start, NO pit_edge_commit) -- verified against agent.py 2026-10-03, the argmax branch is legacy-6-action only",
               "evaluation_seed": options.evaluation_seed,
               "rom_sha256": rom_digest, "fceux_executable": str(fceux_path),
               "fceux_sha256": fceux_digest,
