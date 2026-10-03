@@ -41,6 +41,8 @@
     "spacing_pixels": 128,
     "retries": 6
   },
+  "enemy_separation_bonus": 0.0,
+  "stall_approach_penalty": 0.02,
   "actor_seeds": [
     7,
     1007,
@@ -72,7 +74,7 @@
   "torch_version": "2.13.0",
   "numpy_version": "2.4.6",
   "python_version": "3.12.1",
-  "source_revision": "c7c4b87de67820a797ee816610e87ffec8b5d59f",
+  "source_revision": "7f698037c037734c7b3e0d761e6403c930c3025d",
   "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
   "fceux_executable": "/opt/homebrew/Cellar/fceux/2.6.6_12/bin/fceux",
   "fceux_sha256": "2d84a8310d530745263cfeadf00de9a631162a8dd76c71e1bed659c73753f2f6"
