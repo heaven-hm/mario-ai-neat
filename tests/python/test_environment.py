@@ -174,3 +174,32 @@ class WorkerDirectoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    @unittest.skipUnless(shutil.which("luajit"), "LuaJIT is required")
+    def test_bridge_unpacks_readcommand_table_correctly(self) -> None:
+        """readCommand returns named table; unpacking must extract fields, not assign table itself."""
+        with tempfile.TemporaryDirectory() as directory:
+            worker_directory = Path(directory) / "worker"
+            bridge = prepare_worker_directory(
+                PROJECT_ROOT / "python/fceux_bridge/mario_ai_fceux_bridge.lua",
+                worker_directory, 1, "rainbow")
+            test_cases = [(0, 6), (0, 12), (0, 24), (9, 6), (9, 12), (9, 24), (20, 24)]
+            for action, duration in test_cases:
+                (bridge.parent / "command.json").write_text(
+                    f'{{"sequence":7,"action":{action},"duration_frames":{duration}}}',
+                    encoding="utf-8")
+                script = r'''
+                    MARIO_AI_TEST_PHASE=true
+                    memory={readbyte=function() return 0 end}
+                    local bridge=assert(loadfile(arg[0]))()
+                    local command = bridge.readCommand(7)
+                    assert(command ~= nil, "readCommand returned nil")
+                    assert(type(command) == "table", "readCommand should return a table")
+                    assert(type(command.action) == "number", "action must be number not "..type(command.action))
+                    assert(type(command.durationFrames) == "number", "durationFrames must be number not "..type(command.durationFrames))
+                    local action, durationFrames = command.action, command.durationFrames
+                    local baseIndex = math.floor(action / 3)
+                    assert(baseIndex >= 0 and baseIndex <= 6, "baseIndex out of range")
+                '''
+                subprocess.run([shutil.which("luajit"), "-e", script, str(bridge.parent / "mario_ai_fceux_bridge.lua")],
+                               check=True, capture_output=True, text=True)
