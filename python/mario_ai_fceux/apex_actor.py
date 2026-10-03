@@ -124,6 +124,15 @@ class ActorConfig:
     # feeding the contact, which the x~1780 wall traces show as speed_x collapsing
     # toward 0 with an enemy in the contact zone before the death. Capped at the
     # 6-frame time cost for symmetry with the separation bonus.
+    #
+    # MEASURED HARM (2026-10-03): at 0.02 for 50,922 steps it REGRESSED the clean
+    # wall - 0/10 median max_x 1454 versus 2/20 median 2757 for the identical
+    # pre-change pin at matched exposure (eval 20261003-105938 vs 20261003-102858).
+    # Hypothesis (unverified): it teaches never-lose-speed, so the policy stopped
+    # braking for pit approaches and died mid-air at the early pit. Keep at 0.0
+    # unless a redesign targets the approach *timing* rather than speed loss;
+    # any future trial must be a twin (same pin, lever on/off) per the project
+    # lesson on window attribution.
     stall_approach_penalty: float = 0.0
 
 
