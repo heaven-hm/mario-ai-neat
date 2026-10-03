@@ -1,0 +1,4 @@
+# PyTorch and NumPy are the only runtime dependencies for the learner.
+# Install a matching PyTorch build for the host/GPU before using this file.
+numpy>=1.26
+torch>=2.2

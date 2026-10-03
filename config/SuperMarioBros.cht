@@ -1,0 +1,23 @@
+075a:62:99 lives (SMB1 stores lives minus one)
+075e:63:99 coins
+:0756:01:Super Mario power
+S0756:02:Fire Mario power - alternative to Super Mario
+:079f:23:Star invincibility - disable before flagpole
+:07f8:09:Timer hundreds digit 9
+:07f9:09:Timer tens digit 9
+:07fa:09:Timer ones digit 9
+:07fc:01:Enable world select at title - press B to cycle worlds
+:076b:00:Title world select 1 (zero based) - use one world entry
+:076b:01:Title world select 2 (zero based) - use one world entry
+:076b:02:Title world select 3 (zero based) - use one world entry
+:076b:03:Title world select 4 (zero based) - use one world entry
+:076b:04:Title world select 5 (zero based) - use one world entry
+:076b:05:Title world select 6 (zero based) - use one world entry
+:076b:06:Title world select 7 (zero based) - use one world entry
+:076b:07:Title world select 8 (zero based) - use one world entry
+:075f:01:Current world 2 RAM value - poke once at title only
+:075c:00:Displayed level 1 RAM value - poke once at title only
+:0760:00:Internal area index 0 - poke once at title only
+:075c:01:Displayed level 2 RAM value - alternative level entry
+:075c:02:Displayed level 3 RAM value - alternative level entry
+:075c:03:Displayed level 4 RAM value - alternative level entry
