@@ -42,7 +42,7 @@ from mario_ai_fceux.apex_actor import (
     _shaped_reward,
 )
 from mario_ai_fceux.actions import (ACTION_COUNT, ACTION_NAMES, decode_action,
-                                    encode_action, greedy_action, migrate_legacy_action,
+                                    encode_action, greedy_action, pit_edge_commit, migrate_legacy_action,
                                     safe_start_action)
 from mario_ai_fceux.apex_learner import apex_learner_main, _serialize_weights
 from mario_ai_fceux.apex_train import parse_arguments, worker_cheat_modes
@@ -176,6 +176,24 @@ class TestSMB1Actions(unittest.TestCase):
         values[10] = 9.0   # brake@12
         values[4] = 8.0    # jump+run@12: best safe action
         self.assertEqual(safe_start_action(values), 4)
+
+    def test_pit_edge_commit_prefers_a_near_tied_jump(self) -> None:
+        values = np.zeros(ACTION_COUNT, dtype=np.float32)
+        values[9] = 10.0   # brake@6: the observed parking action
+        values[3] = 9.85   # jump+run@6: near-tied and actionable
+        self.assertEqual(pit_edge_commit(values, 9), 3)
+
+    def test_pit_edge_commit_never_forces_a_disliked_jump(self) -> None:
+        values = np.zeros(ACTION_COUNT, dtype=np.float32)
+        values[9] = 10.0
+        values[3] = 5.0    # jump+run@6 far below best
+        self.assertEqual(pit_edge_commit(values, 9), 9)
+
+    def test_pit_edge_commit_leaves_jump_choices_alone(self) -> None:
+        values = np.zeros(ACTION_COUNT, dtype=np.float32)
+        values[4] = 10.0   # jump+run@12 already selected
+        values[3] = 9.9    # jump+run@6 near-tied
+        self.assertEqual(pit_edge_commit(values, 4), 4)
 
     def test_legacy_network_heads_expand_and_preserve_medium_action_heads(self) -> None:
         old_network = RainbowNetwork(observation_size=4, action_count=6, atom_count=5)
