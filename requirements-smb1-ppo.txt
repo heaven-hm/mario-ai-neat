@@ -1,0 +1,29 @@
+# Dependencies for the SMB1 PPO baseline, modern environment stack.
+# See docs/smb1-ppo.md for the two-stack story.
+#
+# Requires Python 3.13 or 3.14. This stack is the recommended one:
+#   * nes-py 9.x and gym-super-mario-bros 9.x ship prebuilt wheels for Linux,
+#     macOS, and Windows, so no C++ toolchain is needed. On Windows the legacy
+#     stack has to build nes-py 8.2.1 from source with MSVC Build Tools.
+#   * nes-py 9.x is Gymnasium-native, so no legacy-API or space conversion is
+#     needed, although the adapter remains harmless.
+#   * NumPy 2 and OpenCV 5 are supported, so neither needs a ceiling.
+#
+# Install with scripts/smb1_ppo_setup.sh, or by hand:
+#   python3.13 -m venv .venv
+#   .venv/bin/python -m pip install -r requirements-smb1-ppo.txt
+#
+# On Python 3.12 or older use requirements-smb1-ppo-py312.txt instead.
+
+numpy>=1.26
+torch>=2.2
+stable-baselines3>=2.3
+gym-super-mario-bros>=9.0.0
+nes-py>=9.0.1
+opencv-python-headless>=4.8
+pyglet>=1.4.0
+tensorboard>=2.16
+rich>=13
+tqdm>=4.66
+pytest>=8.0
+ruff>=0.6

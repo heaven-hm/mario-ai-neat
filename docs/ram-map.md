@@ -21,7 +21,7 @@ The user-provided [SMB disassembly gist](https://gist.github.com/1wErt3r/4048722
 | `0x070F`, `0x010E` | Flagpole collision values | Inherited from legacy code |
 | `0x0754`, `0x0756` | Player size and power state | Inherited from legacy code |
 | `0x0770`, `0x0772` | Candidate game/operation mode bytes | `0x0772` is used in legacy death clear; exact phase meanings need disassembly confirmation |
-| `0x07F8..0x07FA` | Hundreds, tens, and ones timer digits | Confirmed by the legacy bot's commented `999 Timer` test aid; written only when `TESTING_FREEZE_TIMER` is enabled |
+| `0x07F8..0x07FA` | Hundreds, tens, and ones timer digits | Set to `999` at the start of each attempt; SMB1's normal countdown remains active |
 | `0x075A` | Lives counter | Confirmed by the legacy bot's commented lives test aid; refreshed to `9` only when `TESTING_INFINITE_LIVES` is enabled |
 | Power-up bytes in `checkPowerUp()` | Drawn/type/direction/screen position | Inherited, but world coordinates and semantics need confirmation |
 

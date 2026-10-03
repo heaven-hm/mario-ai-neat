@@ -1,0 +1,65 @@
+{
+  "algorithm": "Ape-X Rainbow (C51 + NoisyNet + Double DQN + Dueling + PER + N-step)",
+  "evaluation_number": 3,
+  "timestamp": "2026-10-02T08:07:01+0530",
+  "world": 1,
+  "level": 1,
+  "evaluation_mode": "greedy_no_learning",
+  "evaluation_seed": 7,
+  "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+  "fceux_sha256": "2d84a8310d530745263cfeadf00de9a631162a8dd76c71e1bed659c73753f2f6",
+  "fceux_executable": "/opt/homebrew/Cellar/fceux/2.6.6_12/bin/fceux",
+  "action_repeat_frames": [
+    6,
+    12,
+    24
+  ],
+  "start_protocol": "SMB1 clean selected-world start with course-start retries",
+  "episodes_requested": 5,
+  "episodes_finished": 5,
+  "victories": 0,
+  "completion_rate": 0.0,
+  "episodes": [
+    {
+      "episode": 1,
+      "reason": "death",
+      "max_x": 1953,
+      "terminal_x": 1953,
+      "action_decisions": 76,
+      "elapsed_seconds": 16.976
+    },
+    {
+      "episode": 2,
+      "reason": "death",
+      "max_x": 1796,
+      "terminal_x": 1796,
+      "action_decisions": 82,
+      "elapsed_seconds": 19.101
+    },
+    {
+      "episode": 3,
+      "reason": "death",
+      "max_x": 1956,
+      "terminal_x": 1956,
+      "action_decisions": 77,
+      "elapsed_seconds": 17.634
+    },
+    {
+      "episode": 4,
+      "reason": "death",
+      "max_x": 1795,
+      "terminal_x": 1795,
+      "action_decisions": 74,
+      "elapsed_seconds": 17.371
+    },
+    {
+      "episode": 5,
+      "reason": "death",
+      "max_x": 1956,
+      "terminal_x": 1956,
+      "action_decisions": 81,
+      "elapsed_seconds": 18.068
+    }
+  ],
+  "source_revision": "8689393adbc9a28caa9b0dffb1f6abee931f558f"
+}

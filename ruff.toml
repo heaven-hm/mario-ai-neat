@@ -1,0 +1,14 @@
+# Static and formatting checks for the SMB1 PPO baseline.
+#
+# Scoped to the new package and its tests: the rest of the repository keeps its
+# existing Python exactly as it is, and this config does not touch it.
+
+include = ["smb1_ppo/**/*.py", "tests/smb1_ppo/**/*.py"]
+line-length = 110
+target-version = "py312"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "W", "I", "B"]
+
+[lint.isort]
+known-first-party = ["smb1_ppo", "support"]

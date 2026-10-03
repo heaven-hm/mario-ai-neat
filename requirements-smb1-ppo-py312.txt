@@ -1,0 +1,30 @@
+# Dependencies for the SMB1 PPO baseline, legacy environment stack.
+# See docs/smb1-ppo.md for the two-stack story.
+#
+# Use this file on Python 3.12, where the modern stack (gym-super-mario-bros 9.x
+# / nes-py 9.x) is not installable because it requires Python 3.13 or newer.
+#
+# Every ceiling below is a compatibility constraint, not a preference:
+#   * nes-py == 8.2.1: the last release with the legacy API that
+#     gym-super-mario-bros 7.4.0 is written against. nes-py 9.x is Gymnasium
+#     native and incompatible. 8.2.1 publishes no wheel for Linux or Windows
+#     (only a macOS x86_64 wheel), so it builds from source and needs a C++
+#     toolchain: MSVC Build Tools 2022 with the C++ workload on Windows,
+#     clang++ or g++ elsewhere.
+#   * gym-super-mario-bros == 7.4.0: 8.0 and later require Python 3.13+.
+#   * numpy < 2: nes-py 8.2.1 computes the PRG-ROM size as a uint8 and overflows
+#     under NumPy 2 scalar-promotion rules, so the environment cannot construct.
+#   * opencv < 5: OpenCV 5 requires NumPy 2.
+
+numpy>=1.26,<2
+torch>=2.2
+stable-baselines3>=2.3
+gym-super-mario-bros==7.4.0
+nes-py==8.2.1
+opencv-python-headless>=4.8,<5
+pygame>=2.1
+tensorboard>=2.16
+rich>=13
+tqdm>=4.66
+pytest>=8.0
+ruff>=0.6
