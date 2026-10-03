@@ -590,4 +590,72 @@ test("sensor labels use one prebuilt image when FCEUX supports it",
 test("network heading says ACTIONS",hudTextOutput:find("ACTIONS",1,true)~=nil
   and hudTextOutput:find("INPUTS",1,true)==nil)
 
+-- Area transition misclassified as death: World 1-2 pipe entry test
+MARIO_AI_TEST_PHASE=true
+local bridgePath="python/fceux_bridge/mario_ai_fceux_bridge.lua"
+local bridgeFile=io.open(bridgePath,"r")
+if bridgeFile then bridgeFile:close() else bridgePath="../"..bridgePath end
+local bridge=dofile(bridgePath)
+MARIO_AI_TEST_PHASE=nil
+
+-- Verify existing death detection: death_music==1 and subroutine==0x06 still trigger death
+local deathTestBytes={[0x0770]=1,[0x000E]=8,[0x0712]=0}
+memory={readbyte=function(addr) return deathTestBytes[addr] or 0 end}
+assert(bridge.phase()=="playing")
+deathTestBytes[0x0712]=1
+assert(bridge.phase()=="death","death_music==1 must trigger death")
+deathTestBytes[0x0712]=0
+deathTestBytes[0x000E]=6
+assert(bridge.phase()=="death","subroutine==0x06 must trigger death")
+deathTestBytes[0x000E]=0x0B
+assert(bridge.phase()=="death","subroutine==0x0B must trigger death")
+memory=nil
+
+-- Simulate sequence:
+-- Frame 1: phase=playing, worldX=3000, subroutine=0x08
+-- Frame 2: phase=waiting, worldX=2950, subroutine=0x02 (SideExitPipeEntry)
+-- Frame 3: phase=waiting, worldX=2900, subroutine=0x02 (still in pipe)
+-- Frame 4: phase=waiting, worldX=24, subroutine=0x07 (PlayerEntrance in Area 2)
+local sequenceFrames={
+  {phase="playing", worldX=3000, subroutine=0x08},
+  {phase="waiting", worldX=2950, subroutine=0x02},
+  {phase="waiting", worldX=2900, subroutine=0x02},
+  {phase="waiting", worldX=24,   subroutine=0x07},
+}
+
+local initialWorldX=3000
+local terminalReported=false
+local frame4DeathReset,frame4Phase
+
+for i,frame in ipairs(sequenceFrames) do
+  local snapshot={
+    phase=frame.phase,
+    worldX=frame.worldX,
+    subroutine=frame.subroutine,
+    death_music=0,
+  }
+  local deathReset=bridge.checkDeathReset(snapshot,initialWorldX)
+  local terminal=snapshot.phase=="death" or snapshot.phase=="victory" or deathReset
+  local reported=false
+  if snapshot.phase=="waiting" and not deathReset then
+    reported=false
+  else
+    reported=terminal
+  end
+  if reported then terminalReported=true end
+  if i==4 then
+    frame4DeathReset=deathReset
+    frame4Phase=snapshot.phase
+  end
+end
+
+assert(frame4DeathReset==false,"deathReset must be false")
+assert(frame4Phase~="victory","phase must not be victory")
+assert(frame4Phase=="waiting","phase must be waiting")
+assert(not terminalReported,"no terminal=true reported during this sequence")
+
+test("World 1-2 pipe entry does not trigger false death",
+  frame4DeathReset==false and frame4Phase~="victory" and frame4Phase=="waiting"
+    and not terminalReported)
+
 print(string.format("%d NEAT behavior checks passed",checks))

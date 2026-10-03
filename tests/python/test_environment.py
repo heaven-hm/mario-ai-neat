@@ -33,6 +33,70 @@ class NoProgressTrackerTests(unittest.TestCase):
         tracker.reset()
         self.assertFalse(tracker.update(40, 24))
 
+    def test_area_number_transitions_reset_progress_tracker_without_stuck_reset(self) -> None:
+        # Area-aware progress tracking for multi-area levels:
+        # area_number transitions reset progress_tracker without stuck reset.
+        tracker = NoProgressTracker(limit_frames=240)
+
+        # 1. Simulate observation sequence with (world=0, level=1, area=0) for 300 frames at world_x=24.
+        for seq in range(1, 26):  # 25 updates * 12 frames = 300 frames
+            obs = Observation(
+                sequence=seq, state=np.zeros(184, dtype=np.float32),
+                world_x=24, power=0, terminal=False, reason="",
+                world=0, level=1, area=0,
+            )
+            tracker.update(obs.world_x, action_frames=12, area=obs.area)
+
+        # 2. Warp to outdoor area (world=0, level=1, area=1) at world_x=40.
+        obs_area1 = Observation(
+            sequence=26, state=np.zeros(184, dtype=np.float32),
+            world_x=40, power=0, terminal=False, reason="",
+            world=0, level=1, area=1,
+        )
+        # Assert: does NOT trigger stuck reset after 240 frames in area 1
+        stuck = tracker.update(obs_area1.world_x, action_frames=12, area=obs_area1.area)
+        self.assertFalse(stuck)
+        # Assert: correctly detects true progress in area 2 (area=1)
+        self.assertEqual(tracker.best_world_x, 40)
+        self.assertEqual(tracker.frames_without_progress, 0)
+
+        # 3. Simulate root-cause case: underground area reaches world_x=2000+,
+        # then warps to outdoor area at world_x=24 and makes true progress to 40.
+        tracker_root_cause = NoProgressTracker(limit_frames=240)
+        obs_underground = Observation(
+            sequence=1, state=np.zeros(184, dtype=np.float32),
+            world_x=2000, power=0, terminal=False, reason="",
+            world=0, level=1, area=0,
+        )
+        self.assertFalse(tracker_root_cause.update(obs_underground.world_x, action_frames=0, area=obs_underground.area))
+        self.assertEqual(tracker_root_cause.best_world_x, 2000)
+
+        # Warp to outdoor area at world_x=24
+        obs_outdoor_entry = Observation(
+            sequence=2, state=np.zeros(184, dtype=np.float32),
+            world_x=24, power=0, terminal=False, reason="",
+            world=0, level=1, area=1,
+        )
+        # Transition resets best_world_x and frames_without_progress
+        self.assertFalse(tracker_root_cause.update(obs_outdoor_entry.world_x, action_frames=12, area=obs_outdoor_entry.area))
+        self.assertEqual(tracker_root_cause.best_world_x, 24)
+        self.assertEqual(tracker_root_cause.frames_without_progress, 0)
+
+        # Feed observations in area 1 with no X progress beyond 24 for 18 updates (216 frames)
+        for _ in range(18):
+            self.assertFalse(tracker_root_cause.update(obs_outdoor_entry.world_x, action_frames=12, area=obs_outdoor_entry.area))
+
+        # Mario makes true progress in area 2 (area=1) by moving to world_x=40
+        obs_outdoor_progress = Observation(
+            sequence=3, state=np.zeros(184, dtype=np.float32),
+            world_x=40, power=0, terminal=False, reason="",
+            world=0, level=1, area=1,
+        )
+        self.assertFalse(tracker_root_cause.update(obs_outdoor_progress.world_x, action_frames=12, area=obs_outdoor_progress.area))
+        # Assert: correctly detects true progress in area 2
+        self.assertEqual(tracker_root_cause.best_world_x, 40)
+        self.assertEqual(tracker_root_cause.frames_without_progress, 0)
+
 
 class WorkerDirectoryTests(unittest.TestCase):
     def test_campaign_commands_are_sequence_bound(self) -> None:

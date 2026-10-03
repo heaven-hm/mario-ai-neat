@@ -103,7 +103,22 @@ local function phase()
   return "playing"
 end
 
-if rawget(_G,"MARIO_AI_TEST_PHASE") then return {phase=phase,readCommand=readCommand} end
+-- Area transition misclassified as death:
+-- Exclude pipe entry/exit/entrance states (0x02 SideExitPipeEntry, 0x03 VerticalPipeEntry, 0x07 PlayerEntrance)
+-- and do not trigger deathReset if death_music == 0 and subroutine not in {0x06, 0x0B}.
+local function checkDeathReset(snapshot, initialWorldX)
+  if not (snapshot and snapshot.phase=="waiting" and initialWorldX~=nil and snapshot.worldX<initialWorldX-8) then
+    return false
+  end
+  local subroutine=(snapshot and snapshot.subroutine) or (memory and memory.readbyte and read(RAM.game_engine_subroutine)) or 0
+  local deathMusic=(snapshot and (snapshot.death_music or snapshot.deathMusic)) or (memory and memory.readbyte and read(RAM.death_music)) or 0
+  return subroutine~=0x02 and subroutine~=0x03 and subroutine~=0x07
+    and not (deathMusic==0 and subroutine~=0x06 and subroutine~=0x0B)
+end
+
+if rawget(_G,"MARIO_AI_TEST_PHASE") then
+  return {phase=phase,readCommand=readCommand,checkDeathReset=checkDeathReset,RAM=RAM}
+end
 
 local function solidAt(worldX,worldY)
   local column=math.floor((worldX+8)/16)
@@ -160,8 +175,11 @@ local function observe()
     clamp(worldNumber/7*2-1,-1,1),clamp(levelNumber/3*2-1,-1,1),clamp(areaNumber/31*2-1,-1,1),0,
     gap,nearestEnemy and enemyDX>0 and enemyDX<0.25 and 1 or 0}
   for _,value in ipairs(globals) do features[#features+1]=value end
+  local subroutine=read(RAM.game_engine_subroutine)
+  local deathMusic=read(RAM.death_music)
   return {features=features,worldX=worldX,power=power,world=worldNumber,level=levelNumber,phase=phase(),
-    operationMode=read(RAM.operation_mode),playerState=read(RAM.game_engine_subroutine)}
+    operationMode=read(RAM.operation_mode),playerState=subroutine,subroutine=subroutine,
+    death_music=deathMusic,deathMusic=deathMusic}
 end
 
 local function jsonArray(values)
@@ -454,8 +472,12 @@ while true do
     -- Never ask the policy to act on a transition/title/death frame. Some
     -- SMB1 death states skip the explicit death marker between observations;
     -- the player being returned before the saved spawn is a reliable fallback.
-    local deathReset=snapshot.phase=="waiting" and initialWorldX~=nil
-      and snapshot.worldX<initialWorldX-8
+    -- Area transition misclassified as death:
+    -- Exclude pipe entry/exit/entrance states (0x02 SideExitPipeEntry, 0x03 VerticalPipeEntry, 0x07 PlayerEntrance)
+    -- and do not trigger deathReset if death_music == 0 and subroutine not in {0x06, 0x0B}.
+    local subroutine=snapshot.subroutine or read(RAM.game_engine_subroutine)
+    local deathMusic=snapshot.death_music or snapshot.deathMusic or read(RAM.death_music)
+    local deathReset=checkDeathReset(snapshot,initialWorldX)
     if snapshot.phase=="waiting" and not deathReset then
       joypad.set(1,{})
       drawPythonHud()

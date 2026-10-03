@@ -31,8 +31,10 @@ class Observation:
     reason: str
     # Zero-based SMB1 identifiers; defaults keep older fixed-level callers
     # compatible while campaign-aware actors use the bridge values.
+    # Area-aware progress tracking for multi-area levels
     world: int = 0
     level: int = 0
+    area: int = 0
 
 
 class NoProgressTracker:
@@ -42,17 +44,34 @@ class NoProgressTracker:
         self.limit_frames = limit_frames
         self.best_world_x: int | None = None
         self.frames_without_progress = 0
+        # Area-aware progress tracking for multi-area levels
+        self.previous_area: int | None = None
 
     def reset(self) -> None:
         self.best_world_x = None
         self.frames_without_progress = 0
+        # Area-aware progress tracking for multi-area levels
+        self.previous_area = None
 
-    def update(self, world_x: int, action_frames: int = 0) -> bool:
+    def update(self, world_x: int | Observation, action_frames: int = 0,
+               area: int | None = None) -> bool:
+        # Area-aware progress tracking for multi-area levels
+        if isinstance(world_x, Observation):
+            if area is None:
+                area = world_x.area
+            world_x = world_x.world_x
+
+        if area is not None and self.previous_area is not None and area != self.previous_area:
+            self.best_world_x = None
+            self.frames_without_progress = 0
+
         if self.best_world_x is None or world_x > self.best_world_x:
             self.best_world_x = world_x
             self.frames_without_progress = 0
         else:
             self.frames_without_progress += max(0, action_frames)
+
+        self.previous_area = area
         return self.frames_without_progress >= self.limit_frames
 
 
@@ -100,6 +119,8 @@ class FileWorker:
             # the protocol so campaign routing can identify levels 0..3.
             world=int(message.get("world", 0)),
             level=int(message.get("level", 0)),
+            # Area-aware progress tracking for multi-area levels
+            area=int(message.get("area", 0)),
             terminal=bool(message.get("terminal", False)),
             reason=str(message.get("reason", "")),
         )
