@@ -604,6 +604,58 @@ class TestShapedReward(unittest.TestCase):
         self.assertAlmostEqual(tap / 6, committed / 24, places=5)
 
 
+class TestEnemySeparationReward(unittest.TestCase):
+    """Enemy-clearance shaping for the x~1780 contact wall: off by default."""
+
+    @staticmethod
+    def _observation(enemy_dx: float, enemy_dy: float) -> Observation:
+        observation = _make_observation(world_x=100)
+        observation.state[174] = enemy_dx
+        observation.state[175] = enemy_dy
+        return observation
+
+    def test_disabled_by_default(self) -> None:
+        from mario_ai_fceux.apex_actor import _enemy_separation_reward
+        self.assertEqual(ActorConfig().enemy_separation_bonus, 0.0)
+        self.assertEqual(
+            _enemy_separation_reward(self._observation(0.1, 1.0).state, 0.0), 0.0)
+
+    def test_pays_for_separating_from_a_close_enemy(self) -> None:
+        prev = self._observation(0.1, 1.0)
+        above = self._observation(0.1, 1.0)
+        below = self._observation(0.1, -1.0)
+        self.assertGreater(
+            _shaped_reward(prev, above, 6, enemy_separation_bonus=1.0),
+            _shaped_reward(prev, above, 6))
+        self.assertLessEqual(
+            _shaped_reward(prev, below, 6, enemy_separation_bonus=1.0),
+            _shaped_reward(prev, below, 6))
+
+    def test_ignores_enemies_outside_the_contact_zone(self) -> None:
+        from mario_ai_fceux.apex_actor import _enemy_separation_reward
+        for enemy_dx in (-0.5, 0.0, 0.3, 1.0):
+            self.assertEqual(
+                _enemy_separation_reward(self._observation(enemy_dx, 1.0).state, 1.0),
+                0.0, f"enemy_dx={enemy_dx} must not earn the bonus")
+
+    def test_hovering_above_an_enemy_cannot_farm_the_bonus(self) -> None:
+        from mario_ai_fceux.apex_actor import _enemy_separation_reward
+        # Cap at half the 6-frame time cost: one decision of hovering never
+        # pays more than the 0.01 it burns in time.
+        highest = _enemy_separation_reward(self._observation(0.1, 1.0).state, 100.0)
+        self.assertLessEqual(highest, 0.01)
+        self.assertGreater(highest, 0.0)
+
+    def test_bonus_moves_reward_less_than_a_single_progress_tile(self) -> None:
+        # Shaping must stay a nudge, never the objective.
+        prev = self._observation(0.1, 1.0)
+        separated = self._observation(0.1, 1.0)
+        progress = _shaped_reward(prev, _make_observation(world_x=116), 6)
+        shaped = _shaped_reward(prev, separated, 6, enemy_separation_bonus=1.0)
+        base = _shaped_reward(prev, separated, 6)
+        self.assertLess(shaped - base, progress - base)
+
+
 # ---------------------------------------------------------------------------
 # Actor config defaults
 # ---------------------------------------------------------------------------
