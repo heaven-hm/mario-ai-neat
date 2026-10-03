@@ -458,9 +458,22 @@ while true do
       sequence=sequence+1
       local terminal=snapshot.phase=="death" or snapshot.phase=="victory" or deathReset
       publish(sequence,snapshot,terminal,deathReset and "death" or nil)
-      local action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats,checkpoint,restoreFrontier=nil,nil,false,false,false,false,nil,false,false
+      -- readCommand returns a named table; extract fields from it
+      local action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats,checkpoint,restoreFrontier
+      local command
       for _=1,RESPONSE_TIMEOUT_FRAMES do
-        action,durationFrames,reset,hold,advance,campaignReset,restartWithCheats,checkpoint,restoreFrontier=readCommand(sequence)
+        command = readCommand(sequence)
+        if command then
+          action = command.action
+          durationFrames = command.durationFrames
+          reset = command.reset
+          hold = command.hold
+          advance = command.advance
+          campaignReset = command.campaignReset
+          restartWithCheats = command.restartWithCheats
+          checkpoint = command.checkpoint
+          restoreFrontier = command.restoreFrontier
+        end
         if action~=nil then break end
         joypad.set(1,{})
         drawPythonHud()
