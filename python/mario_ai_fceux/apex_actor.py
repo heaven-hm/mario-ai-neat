@@ -112,6 +112,10 @@ class ActorConfig:
     unsolved_epsilon_floor: float = UNSOLVED_WORLD_EPSILON_FLOOR
     frontier_spacing: int = FRONTIER_SPACING_PIXELS
     frontier_retries: int = FRONTIER_RETRIES
+    # At a frontier death, the episode tail holds the recovery decisions the
+    # agent keeps getting wrong; protect them so PER cannot evict them as low
+    # priority. The learner bounds these per level.
+    frontier_tail_transitions: int = 64
     # Enemy-clearance shaping, off by default so existing runs and checkpoints
     # are unaffected. When enabled it pays a small bonus for being vertically
     # separated from a nearby enemy ahead -- the stomp/jump-over mechanic the
@@ -462,6 +466,14 @@ def actor_main(
                 # ordinary batch. The learner stores a bounded protected copy.
                 experience_queue.put(("success", actor_index, observation.world,
                                       observation.level, list(episode_replay)))
+            elif (observation.reason != "victory" and episode_replay
+                    and frontier_available):
+                # Death at a checkpointed frontier: the tail is the recovery
+                # behaviour this level keeps failing. Protect it per level so
+                # it survives replay turnover instead of being forgotten.
+                tail_window = list(episode_replay)[-config.frontier_tail_transitions:]
+                experience_queue.put(("frontier", actor_index, observation.world,
+                                      observation.level, tail_window))
             episode_replay.clear()
             if observation.reason == "victory":
                 # Each actor owns one SMB1 world campaign.  The bridge keeps

@@ -71,13 +71,20 @@ class SumTree:
 class PrioritizedReplayBuffer:
     """Array-backed replay with true global PER and no database transactions."""
 
+    SUCCESS = "success"
+    FRONTIER = "frontier"
+
     def __init__(self, observation_size: int, capacity: int = 100_000,
                  alpha: float = 0.6, priority_epsilon: float = 1e-5,
-                 seed: int = 0) -> None:
+                 seed: int = 0,
+                 success_quota_per_level: int | None = None,
+                 frontier_window_per_level: int = 256) -> None:
         if observation_size < 1 or capacity < 1:
             raise ValueError("observation_size and replay capacity must be positive")
         if not 0.0 <= alpha <= 1.0 or priority_epsilon <= 0.0:
             raise ValueError("PER alpha must be in [0, 1] and epsilon must be positive")
+        if frontier_window_per_level < 1:
+            raise ValueError("frontier_window_per_level must be positive")
         self.observation_size = observation_size
         self.capacity = capacity
         self.alpha = alpha
@@ -94,14 +101,67 @@ class PrioritizedReplayBuffer:
         self.position = 0
         self.max_priority = 1.0
         self.snapshot_id: str | None = None
-        # Keep a small bounded rehearsal set of completed runs. Ordinary PER
-        # still samples globally; normal writes skip these protected slots.
+        # Keep a bounded rehearsal set of completed runs and frontier recovery
+        # segments. Ordinary PER still samples globally; normal writes skip
+        # these protected slots. Each (level, kind) bucket is quota-limited so
+        # one level's evidence cannot evict another's.
         self.protected_limit = min(10_000, max(0, capacity // 20))
         self.protected = np.zeros(capacity, dtype=np.bool_)
         self.protected_order: deque[int] = deque()
+        self.success_quota_per_level = (success_quota_per_level if success_quota_per_level is not None
+                                        else max(1, self.protected_limit // 4))
+        self.frontier_window_per_level = frontier_window_per_level
+        self.protected_tags: dict[int, tuple[tuple[int, int] | None, str]] = {}
+        self.protected_buckets: dict[tuple[tuple[int, int] | None, str], deque[int]] = {}
 
     def __len__(self) -> int:
         return self.size
+
+    def _quota(self, level: tuple[int, int] | None, kind: str) -> int:
+        if self.protected_limit == 0:
+            return 0
+        if level is None:
+            # Untagged evidence (legacy snapshots, resume carries) has no level
+            # to quota by; it keeps global FIFO within the overall limit.
+            return self.protected_limit
+        if kind == self.FRONTIER:
+            return min(self.frontier_window_per_level, self.protected_limit)
+        return min(self.success_quota_per_level, self.protected_limit)
+
+    def _unprotect(self, index: int) -> None:
+        self.protected[index] = False
+        tag = self.protected_tags.pop(index, None)
+        if tag is not None:
+            bucket = self.protected_buckets.get(tag)
+            if bucket is not None:
+                try:
+                    bucket.remove(index)
+                except ValueError:
+                    pass
+                if not bucket:
+                    self.protected_buckets.pop(tag, None)
+        try:
+            self.protected_order.remove(index)
+        except ValueError:
+            pass
+
+    def _protect(self, index: int, level: tuple[int, int] | None,
+                 kind: str = SUCCESS) -> None:
+        if self.protected_limit == 0:
+            return
+        while len(self.protected_order) >= self.protected_limit:
+            self._unprotect(self.protected_order[0])
+        tag = (level, kind)
+        bucket = self.protected_buckets.setdefault(tag, deque())
+        while len(bucket) >= self._quota(level, kind):
+            self._unprotect(bucket[0])
+        self.protected[index] = True
+        self.protected_order.append(index)
+        self.protected_tags[index] = tag
+        bucket.append(index)
+
+    def protected_count(self, kind: str) -> int:
+        return sum(1 for _, tag_kind in self.protected_tags.values() if tag_kind == kind)
 
     def protect_existing_successes(self, minimum_reward: float = 10.0) -> int:
         """Carry surviving victory evidence forward from pre-memory snapshots."""
@@ -110,15 +170,14 @@ class PrioritizedReplayBuffer:
         indices = np.flatnonzero(self.terminated[:self.size]
                                   & (self.rewards[:self.size] >= minimum_reward))
         for index in indices[-self.protected_limit:]:
-            self.protected[int(index)] = True
-            self.protected_order.append(int(index))
+            self._protect(int(index), None, self.SUCCESS)
         return len(self.protected_order)
 
-    def add(self, transition: Transition, protect: bool = False) -> None:
+    def add(self, transition: Transition, protect: bool = False,
+            level: tuple[int, int] | None = None,
+            kind: str = SUCCESS) -> None:
         if protect and self.protected_limit == 0:
             protect = False
-        if protect and len(self.protected_order) >= self.protected_limit:
-            self.protected[self.protected_order.popleft()] = False
         index = self.position
         while self.protected[index]:
             index = (index + 1) % self.capacity
@@ -131,8 +190,7 @@ class PrioritizedReplayBuffer:
         priority = max(float(transition.priority), self.max_priority, self.priority_epsilon)
         self.tree.update(index, priority ** self.alpha)
         if protect:
-            self.protected[index] = True
-            self.protected_order.append(index)
+            self._protect(index, level, kind)
         self.max_priority = max(self.max_priority, priority)
         self.position = (index + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
@@ -200,9 +258,14 @@ class PrioritizedReplayBuffer:
             np.savez_compressed(handle, observation_size=self.observation_size, capacity=self.capacity,
                                 alpha=self.alpha, priority_epsilon=self.priority_epsilon, size=self.size,
                                 position=self.position, max_priority=self.max_priority,
-                                snapshot_id=self.snapshot_id, format_version=3,
+                                snapshot_id=self.snapshot_id, format_version=4,
                                 protected_limit=self.protected_limit,
+                                success_quota_per_level=self.success_quota_per_level,
+                                frontier_window_per_level=self.frontier_window_per_level,
                                 protected_order=np.asarray(self.protected_order, dtype=np.int64),
+                                protected_tags=np.asarray([self.protected_tags[index]
+                                                           for index in self.protected_order],
+                                                          dtype=object),
                                 states=self.states[:self.size],
                                 next_states=self.next_states[:self.size], actions=self.actions[:self.size],
                                 rewards=self.rewards[:self.size], discounts=self.discounts[:self.size],
@@ -217,7 +280,11 @@ class PrioritizedReplayBuffer:
     def load(cls, path: str | Path, seed: int = 0) -> "PrioritizedReplayBuffer":
         with np.load(Path(path), allow_pickle=True) as payload:
             buffer = cls(int(payload["observation_size"]), int(payload["capacity"]), float(payload["alpha"]),
-                         float(payload["priority_epsilon"]), seed)
+                         float(payload["priority_epsilon"]), seed,
+                         success_quota_per_level=int(payload["success_quota_per_level"])
+                         if "success_quota_per_level" in payload else None,
+                         frontier_window_per_level=int(payload["frontier_window_per_level"])
+                         if "frontier_window_per_level" in payload else 256)
             buffer.size = int(payload["size"])
             buffer.position = int(payload["position"])
             buffer.max_priority = float(payload["max_priority"])
@@ -231,6 +298,20 @@ class PrioritizedReplayBuffer:
                     raise ValueError("invalid protected replay indices in snapshot")
                 buffer.protected_order = deque(order)
                 buffer.protected[order] = True
+                if "protected_tags" in payload:
+                    tags = payload["protected_tags"]
+                    if len(tags) != len(order):
+                        raise ValueError("protected tags do not match protected indices")
+                    for index, raw in zip(order, tags, strict=True):
+                        level = tuple(raw[0]) if raw[0] is not None else None
+                        kind = str(raw[1])
+                        buffer.protected_tags[index] = (level, kind)
+                        buffer.protected_buckets.setdefault((level, kind), deque()).append(index)
+                else:
+                    # Pre-quota snapshots protected successes without tags.
+                    for index in order:
+                        buffer.protected_tags[index] = (None, buffer.SUCCESS)
+                        buffer.protected_buckets.setdefault((None, buffer.SUCCESS), deque()).append(index)
             buffer.states[:buffer.size] = payload["states"]
             buffer.next_states[:buffer.size] = payload["next_states"]
             buffer.actions[:buffer.size] = payload["actions"]
