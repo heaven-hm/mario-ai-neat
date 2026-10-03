@@ -73,13 +73,21 @@ local function readCommand(sequence)
   local durationFrames=ACTION_DURATIONS[durationIndex]
   local requestedDuration=tonumber(text:match('"duration_frames"%s*:%s*(%d+)'))
   if requestedDuration and requestedDuration~=durationFrames then return nil end
-  return baseIndex+1,durationFrames,
-    text:match('"reset"%s*:%s*true')~=nil,text:match('"hold"%s*:%s*true')~=nil,
-    text:match('"advance"%s*:%s*true')~=nil,
-    text:match('"campaign_reset"%s*:%s*true')~=nil,
-    text:match('"restart_with_cheats"%s*:%s*(%a+)'),action,
-    text:match('"checkpoint"%s*:%s*true')~=nil,
-    text:match('"restore_frontier"%s*:%s*true')~=nil
+  -- A named table keeps every protocol field bound to its own name. The old
+  -- positional unpack silently shifted when fields were appended, which made
+  -- the loop's checkpoint flag receive the raw action code.
+  return {
+    base=baseIndex+1,
+    action=action,
+    durationFrames=durationFrames,
+    reset=text:match('"reset"%s*:%s*true')~=nil,
+    hold=text:match('"hold"%s*:%s*true')~=nil,
+    advance=text:match('"advance"%s*:%s*true')~=nil,
+    campaignReset=text:match('"campaign_reset"%s*:%s*true')~=nil,
+    restartWithCheats=text:match('"restart_with_cheats"%s*:%s*(%a+)'),
+    checkpoint=text:match('"checkpoint"%s*:%s*true')~=nil,
+    restoreFrontier=text:match('"restore_frontier"%s*:%s*true')~=nil,
+  }
 end
 
 local function phase()
