@@ -111,6 +111,46 @@ class WorkerDirectoryTests(unittest.TestCase):
                            check=True, capture_output=True, text=True)
 
     @unittest.skipUnless(shutil.which("luajit"), "LuaJIT is required")
+    def test_command_fields_stay_bound_to_their_names(self) -> None:
+        """A field appended to the protocol must never shift another field.
+
+        The dispatch once unpacked readCommand's returns positionally, so the
+        loop's checkpoint flag received the raw action code and restoreFrontier
+        received the checkpoint flag. Named binding makes that impossible and
+        this test pins each field independently.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            worker_directory = Path(directory) / "worker"
+            bridge = prepare_worker_directory(
+                PROJECT_ROOT / "python/fceux_bridge/mario_ai_fceux_bridge.lua",
+                worker_directory, 1, "rainbow")
+            script = r'''
+                MARIO_AI_TEST_PHASE=true
+                memory={readbyte=function() return 0 end}
+                local bridge=assert(loadfile(arg[0]))()
+                local write=io.open(arg[0]:gsub("mario_ai_fceux_bridge%.lua$","").."command.json","w")
+                write:write('{"sequence":7,"action":8,"duration_frames":24}')
+                write:flush(); write:close()
+                local command=bridge.readCommand(7)
+                assert(command.base==3, "base should be action//3+1")
+                assert(command.action==8, "action must stay 8")
+                assert(command.durationFrames==24, "duration must stay 24")
+                assert(command.checkpoint==false, "checkpoint must default false")
+                assert(command.restoreFrontier==false, "restoreFrontier must default false")
+                assert(command.reset==false and command.hold==false and command.advance==false)
+                assert(command.campaignReset==false and command.restartWithCheats==nil)
+                local handle=io.open(arg[0]:gsub("mario_ai_fceux_bridge%.lua$","").."command.json","w")
+                handle:write('{"sequence":7,"action":3,"reset":true,"restore_frontier":true}')
+                handle:flush(); handle:close()
+                local resetCommand=bridge.readCommand(7)
+                assert(resetCommand.reset==true, "reset must bind to reset")
+                assert(resetCommand.restoreFrontier==true, "restore_frontier must bind to restoreFrontier")
+                assert(resetCommand.checkpoint==false, "checkpoint stays independent of reset")
+            '''
+            subprocess.run([shutil.which("luajit"), "-e", script, str(bridge)],
+                           check=True, capture_output=True, text=True)
+
+    @unittest.skipUnless(shutil.which("luajit"), "LuaJIT is required")
     def test_bridge_parses_frontier_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             worker_directory = Path(directory) / "worker"
@@ -124,8 +164,9 @@ class WorkerDirectoryTests(unittest.TestCase):
                 MARIO_AI_TEST_PHASE=true
                 memory={readbyte=function() return 0 end}
                 local bridge=assert(loadfile(arg[0]))()
-                local _,duration,reset,_,_,_,_,action,checkpoint,restore=bridge.readCommand(7)
-                assert(duration==24 and reset and action==8 and checkpoint and restore)
+                local command=bridge.readCommand(7)
+                assert(command.durationFrames==24 and command.reset and command.action==8
+                  and command.checkpoint and command.restoreFrontier)
             '''
             subprocess.run([shutil.which("luajit"), "-e", script, str(bridge)],
                            check=True, capture_output=True, text=True)
