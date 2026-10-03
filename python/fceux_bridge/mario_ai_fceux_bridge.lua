@@ -138,7 +138,13 @@ local function observe()
     enemyType=nearestEnemy.id/51
   end
   local gap=0
-  for offset=16,96,16 do if not solidAt(worldX+offset,worldY+16) then gap=1;break end end
+  -- Probe at the ground row, not at Mario's height: when airborne the old
+  -- probe sat in empty air and reported a gap on every airborne decision
+  -- (measured 497/497 on a clean trace; 89.2%% of airborne replay states here),
+  -- which blinded the policy to real pits ahead.
+  local groundY=worldY+16
+  while groundY<worldY+208 and not solidAt(worldX,groundY) do groundY=groundY+16 end
+  for offset=16,96,16 do if not solidAt(worldX+offset,groundY) then gap=1;break end end
   local size,power=read(RAM.player_size),read(RAM.power)
   local worldNumber,levelNumber,areaNumber=read(RAM.world_number),read(RAM.level_number),read(RAM.area_number)
   local globals={clamp(horizontalVelocity/4,-1,1),clamp(verticalVelocity/8,-1,1),grounded and 1 or -1,
