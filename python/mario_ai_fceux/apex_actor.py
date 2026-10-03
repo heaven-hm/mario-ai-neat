@@ -119,6 +119,13 @@ class ActorConfig:
     # Capped at the 6-frame time cost so parking above an enemy cannot farm it.
     enemy_separation_bonus: float = 0.0
 
+    # Stall-on-approach discipline: the mirror experiment to enemy_separation_bonus.
+    # That pays for the escape (vertical separation); this charges the failure mode
+    # feeding the contact, which the x~1780 wall traces show as speed_x collapsing
+    # toward 0 with an enemy in the contact zone before the death. Capped at the
+    # 6-frame time cost for symmetry with the separation bonus.
+    stall_approach_penalty: float = 0.0
+
 
 class NStepBuffer:
     """Per-worker n-step return accumulator. Trajectories are never mixed."""
@@ -239,11 +246,13 @@ def _enqueue_batch(experience_queue: Queue, actor_index: int,
 
 def _terminal_transition(previous: Observation, current: Observation,
                          action: int,
-                         enemy_separation_bonus: float = 0.0) -> Transition:
+                         enemy_separation_bonus: float = 0.0,
+                         stall_approach_penalty: float = 0.0) -> Transition:
     """Create the final state-action-reward record for death or level completion."""
     return Transition(previous.state, action,
                       _shaped_reward(previous, current,
-                                     enemy_separation_bonus=enemy_separation_bonus),
+                                     enemy_separation_bonus=enemy_separation_bonus,
+                                     stall_approach_penalty=stall_approach_penalty),
                       current.state, True, 0.0)
 
 
@@ -419,6 +428,7 @@ def actor_main(
                 ready = n_step_buf.push(_terminal_transition(
                     worker.previous, observation, getattr(worker, "previous_action", 0),
                     config.enemy_separation_bonus,
+                    config.stall_approach_penalty,
                 ))
                 batch.extend(ready)
                 episode_replay.extend(ready)
@@ -531,7 +541,8 @@ def actor_main(
             prev = worker.previous
             prev_action = getattr(worker, "previous_action", 0)
             raw_reward = _shaped_reward(prev, observation, previous_duration,
-                                        config.enemy_separation_bonus)
+                                        config.enemy_separation_bonus,
+                                        config.stall_approach_penalty)
             t = Transition(
                 state=prev.state,
                 action=prev_action,
@@ -581,14 +592,36 @@ def _enemy_separation_reward(state: np.ndarray, bonus: float) -> float:
     return min(0.5 * bonus * max(0.0, enemy_dy), 0.01)
 
 
+def _stall_approach_penalty(state: np.ndarray, penalty: float) -> float:
+    """Charge momentum loss while an enemy is in the contact-danger zone.
+
+    The mirror experiment to _enemy_separation_reward: that pays for the escape
+    (stomp/jump-over), this charges the approach failure that feeds the contact -
+    the x~1780 wall traces show speed_x collapsing toward 0 with an enemy close
+    ahead before the death. Capped at the 6-frame time cost so it is a nudge and
+    never dominates progress, victory, or the death penalty.
+    """
+    if penalty <= 0.0:
+        return 0.0
+    enemy_dx = float(state[174])
+    if not (0.0 < enemy_dx <= 0.25):
+        return 0.0
+    speed_x = float(state[169])
+    if speed_x >= 0.25:
+        return 0.0
+    return -min(penalty * (0.25 - speed_x) / 0.25, 0.01)
+
+
 def _shaped_reward(previous: Observation, current: Observation,
                    duration_frames: int = LEGACY_DURATION_FRAMES,
-                   enemy_separation_bonus: float = 0.0) -> float:
+                   enemy_separation_bonus: float = 0.0,
+                   stall_approach_penalty: float = 0.0) -> float:
     """Reward progress and charge game time so standing still loses value."""
     reward = max(-MAX_PROGRESS_REWARD,
                  min(MAX_PROGRESS_REWARD, (current.world_x - previous.world_x) / 16.0))
     reward += max(-0.2, min(0.2, (current.power - previous.power) * 0.1))
     reward += _enemy_separation_reward(current.state, enemy_separation_bonus)
+    reward += _stall_approach_penalty(current.state, stall_approach_penalty)
     if current.terminal:
         reward += VICTORY_REWARD_BONUS if current.reason == "victory" else -DEATH_REWARD_PENALTY
     else:

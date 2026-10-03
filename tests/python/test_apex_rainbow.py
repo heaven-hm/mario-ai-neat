@@ -526,6 +526,9 @@ class TestShapedReward(unittest.TestCase):
         self.assertAlmostEqual(tap / 6, committed / 24, places=5)
 
 
+from mario_ai_fceux.apex_actor import _stall_approach_penalty
+
+
 class TestEnemySeparationReward(unittest.TestCase):
     """Enemy-clearance shaping for the x~1780 contact wall: off by default."""
 
@@ -749,6 +752,37 @@ class TestResumeConfigGuard(unittest.TestCase):
             with self.assertRaises(ValueError) as context:
                 self._agent(observation_size=8).load(path, validate_replay=False)
             self.assertIn("observation_size", str(context.exception))
+
+
+
+class TestStallApproachPenalty(unittest.TestCase):
+    """Approach-discipline shaping for the x~1780 contact wall: off by default."""
+
+    @staticmethod
+    def _observation(enemy_dx: float, speed_x: float) -> Observation:
+        observation = _make_observation(world_x=100)
+        observation.state[174] = enemy_dx
+        observation.state[169] = speed_x
+        return observation
+
+    def test_off_by_default(self) -> None:
+        self.assertEqual(_stall_approach_penalty(self._observation(0.1, 0.0).state, 0.0), 0.0)
+
+    def test_charges_a_stall_in_the_contact_zone(self) -> None:
+        self.assertLess(_stall_approach_penalty(self._observation(0.1, 0.0).state, 0.02), 0.0)
+
+    def test_no_charge_outside_the_contact_zone(self) -> None:
+        for dx in (-0.2, 0.0, 0.3, 0.5):
+            self.assertEqual(_stall_approach_penalty(self._observation(dx, 0.0).state, 0.02), 0.0)
+
+    def test_no_charge_while_moving(self) -> None:
+        self.assertEqual(_stall_approach_penalty(self._observation(0.1, 0.5).state, 0.02), 0.0)
+
+    def test_capped_at_the_time_cost(self) -> None:
+        self.assertGreaterEqual(_stall_approach_penalty(self._observation(0.1, 0.0).state, 10.0), -0.01)
+
+    def test_smaller_than_one_progress_tile(self) -> None:
+        self.assertGreater(_stall_approach_penalty(self._observation(0.1, 0.0).state, 0.02), -1.0)
 
 
 if __name__ == "__main__":
