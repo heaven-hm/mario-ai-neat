@@ -88,3 +88,32 @@ def safe_start_action(q_values) -> int:
     masked = [value if index // len(ACTION_DURATIONS) in SAFE_START_BASES
               else float("-inf") for index, value in enumerate(values)]
     return greedy_action(masked)
+
+
+# At a gap edge the policy's top two actions are typically within a fraction of
+# a reward point of each other, and the tie repeatedly resolves to braking or a
+# short forward roll, which parks Mario on the edge. Prefer a committed jump
+# whenever one is already near-tied for best.
+PIT_EDGE_JUMP_MARGIN = 0.35
+
+
+def pit_edge_commit(q_values, selected: int) -> int:
+    """Resolve near-tied values at a gap edge toward a committed jump.
+
+    A narrow constraint, not a replacement policy: it only acts when the best
+    jump is already within PIT_EDGE_JUMP_MARGIN of the highest Q value, so it
+    cannot force a jump the policy genuinely dislikes. Measured effect of the
+    same rule as an eval-time override: 2370 -> 2594 median depth on the
+    lever-arm checkpoint, zero training.
+    """
+    values = [float(value) for value in q_values]
+    if len(values) != ACTION_COUNT:
+        raise ValueError(f"expected {ACTION_COUNT} Q values, got {len(values)}")
+    if not 0 <= selected < ACTION_COUNT:
+        raise ValueError(f"invalid SMB1 action: {selected}")
+    best_jump = max((encode_action(1, duration_index)
+                     for duration_index in range(len(ACTION_DURATIONS))),
+                    key=lambda index: values[index])
+    if max(values) - values[best_jump] > PIT_EDGE_JUMP_MARGIN:
+        return selected
+    return best_jump if selected // len(ACTION_DURATIONS) != 1 else selected

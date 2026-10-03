@@ -23,7 +23,7 @@ import numpy as np
 import torch
 
 from .actions import (ACTION_COUNT, LEGACY_DURATION_FRAMES, decode_action,
-                      greedy_action, safe_start_action)
+                      greedy_action, pit_edge_commit, safe_start_action)
 from .environment import FileWorker, NoProgressTracker, Observation
 from .model import RainbowNetwork
 from .protocol import atomic_write_json, read_json
@@ -233,6 +233,11 @@ def _action_details(
         # Do not let either an unstable Q estimate or exploratory noise turn
         # Mario around before the level's first hazard.
         action = safe_start_action(q_values[0].cpu().numpy())
+    if (action_count == ACTION_COUNT and epsilon == 0.0
+            and bool(state[171] > 0) and bool(state[182])):
+        # Greedy play at a gap edge: brake/roll ties park Mario on the edge
+        # (measured 2370 median depth). Prefer a committed near-tied jump.
+        action = pit_edge_commit(q_values[0].cpu().numpy(), action)
     hidden_summary = encoded.reshape(-1, 16, 16).mean(dim=2)
     return action, q_values[0].cpu().numpy(), hidden_summary[0].cpu().numpy()
 
