@@ -118,6 +118,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Grounded progress pixels between retryable savestate frontiers.")
     parser.add_argument("--frontier-retries", type=int, default=3,
                         help="Attempts from a saved frontier before returning to level start.")
+    parser.add_argument("--enemy-separation-bonus", type=float, default=0.0,
+                        help="Reward for vertical separation from a close enemy (0 disables).")
     parser.add_argument("--queue-capacity", type=int, default=10_000,
                         help="Max batches in experience queue (backpressure).")
     parser.add_argument("--n-step", type=int, default=3)
@@ -336,6 +338,7 @@ def main() -> None:
             "spacing_pixels": args.frontier_spacing,
             "retries": args.frontier_retries,
         },
+        "enemy_separation_bonus": args.enemy_separation_bonus,
         "actor_seeds": [args.seed + i * 1000 for i in range(args.workers)],
         "experience_queue_max_batches": args.queue_capacity,
         "actor_batch_size": args.actor_batch_size,
@@ -421,6 +424,7 @@ def main() -> None:
         unsolved_epsilon_floor=args.unsolved_epsilon_floor,
         frontier_spacing=args.frontier_spacing,
         frontier_retries=args.frontier_retries,
+        enemy_separation_bonus=args.enemy_separation_bonus,
         repeat_level_on_victory=args.repeat_level_on_victory,
         seed=args.seed,
     )

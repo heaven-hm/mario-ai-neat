@@ -112,6 +112,12 @@ class ActorConfig:
     unsolved_epsilon_floor: float = UNSOLVED_WORLD_EPSILON_FLOOR
     frontier_spacing: int = FRONTIER_SPACING_PIXELS
     frontier_retries: int = FRONTIER_RETRIES
+    # Enemy-clearance shaping, off by default so existing runs and checkpoints
+    # are unaffected. When enabled it pays a small bonus for being vertically
+    # separated from a nearby enemy ahead -- the stomp/jump-over mechanic the
+    # x~1780 wall trace shows the policy failing (approach, stall, contact death).
+    # Capped at the 6-frame time cost so parking above an enemy cannot farm it.
+    enemy_separation_bonus: float = 0.0
 
 
 class NStepBuffer:
@@ -232,9 +238,12 @@ def _enqueue_batch(experience_queue: Queue, actor_index: int,
 
 
 def _terminal_transition(previous: Observation, current: Observation,
-                         action: int) -> Transition:
+                         action: int,
+                         enemy_separation_bonus: float = 0.0) -> Transition:
     """Create the final state-action-reward record for death or level completion."""
-    return Transition(previous.state, action, _shaped_reward(previous, current),
+    return Transition(previous.state, action,
+                      _shaped_reward(previous, current,
+                                     enemy_separation_bonus=enemy_separation_bonus),
                       current.state, True, 0.0)
 
 
@@ -409,6 +418,7 @@ def actor_main(
             if worker.previous is not None:
                 ready = n_step_buf.push(_terminal_transition(
                     worker.previous, observation, getattr(worker, "previous_action", 0),
+                    config.enemy_separation_bonus,
                 ))
                 batch.extend(ready)
                 episode_replay.extend(ready)
@@ -520,7 +530,8 @@ def actor_main(
         if worker.previous is not None:
             prev = worker.previous
             prev_action = getattr(worker, "previous_action", 0)
-            raw_reward = _shaped_reward(prev, observation, previous_duration)
+            raw_reward = _shaped_reward(prev, observation, previous_duration,
+                                        config.enemy_separation_bonus)
             t = Transition(
                 state=prev.state,
                 action=prev_action,
@@ -553,12 +564,31 @@ def actor_main(
 # Reward shaping (same formula as the old train.py, kept actor-local)
 # ---------------------------------------------------------------------------
 
+def _enemy_separation_reward(state: np.ndarray, bonus: float) -> float:
+    """Reward vertical separation from a close enemy ahead (the stomp clearance).
+
+    A nearby enemy is the contact-danger zone (0 < enemy_dx <= 0.25). Standing
+    above it is what clears it; the x~1780 wall traces show the policy dying on
+    contact instead. The bonus is capped at half the 6-frame time cost so that
+    hovering above an enemy can never pay for itself.
+    """
+    if bonus <= 0.0:
+        return 0.0
+    enemy_dx = float(state[174])
+    enemy_dy = float(state[175])
+    if not (0.0 < enemy_dx <= 0.25):
+        return 0.0
+    return min(0.5 * bonus * max(0.0, enemy_dy), 0.01)
+
+
 def _shaped_reward(previous: Observation, current: Observation,
-                   duration_frames: int = LEGACY_DURATION_FRAMES) -> float:
+                   duration_frames: int = LEGACY_DURATION_FRAMES,
+                   enemy_separation_bonus: float = 0.0) -> float:
     """Reward progress and charge game time so standing still loses value."""
     reward = max(-MAX_PROGRESS_REWARD,
                  min(MAX_PROGRESS_REWARD, (current.world_x - previous.world_x) / 16.0))
     reward += max(-0.2, min(0.2, (current.power - previous.power) * 0.1))
+    reward += _enemy_separation_reward(current.state, enemy_separation_bonus)
     if current.terminal:
         reward += VICTORY_REWARD_BONUS if current.reason == "victory" else -DEATH_REWARD_PENALTY
     else:
