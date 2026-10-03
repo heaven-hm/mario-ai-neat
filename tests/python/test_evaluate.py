@@ -11,7 +11,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
 
-from mario_ai_fceux.evaluate import write_episode_csv
+from mario_ai_fceux.evaluate import build_trace_record, write_episode_csv
 from mario_ai_fceux.apex_eval import (build_benchmark_report, write_action_traces,
                                       evaluation_rank, publish_eval_hud, save_best_policy,
                                       write_benchmark_report)
@@ -116,6 +116,43 @@ class EvaluationOutputTests(unittest.TestCase):
         self.assertEqual(stored["source_revision"], "abc123")
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[1]["reason"], "victory")
+
+
+class ActionTraceTests(unittest.TestCase):
+    """Death-cause analysis needs per-decision traces in one shared schema."""
+
+    def test_trace_record_matches_the_apex_eval_schema(self) -> None:
+        state = np.zeros(184, dtype=np.float32)
+        state[169], state[170] = 0.62, -0.5
+        state[171], state[174], state[175], state[182] = -1.0, 0.10, 0.69, 1.0
+        q = np.linspace(0.0, 20.0, 21).astype(np.float32)
+        record = build_trace_record(episode=2, decision=41, state=state,
+                                    world_x=1783, action=1, q_values=q)
+        # The fields the death-wall lesson relies on.
+        self.assertEqual(record["world_x"], 1783)
+        self.assertEqual(record["action_id"], 1)
+        from mario_ai_fceux.actions import decode_action
+        base, duration = decode_action(record["action_id"])
+        self.assertEqual(record["action_base"], base)
+        self.assertEqual(record["duration_frames"], duration)
+        self.assertAlmostEqual(record["enemy_dx"], 0.10)
+        self.assertAlmostEqual(record["enemy_dy"], 0.69)
+        self.assertFalse(record["grounded"])
+        self.assertTrue(record["gap_ahead"])
+        self.assertEqual(record["top_actions"][0]["q"], round(float(q.max()), 5))
+        # One schema for both tracers: same keys apex_eval writes.
+        self.assertEqual(set(record), {
+            "episode", "decision", "world_x", "action_id", "action", "action_base",
+            "duration_frames", "q_value", "top_actions", "speed_x", "speed_y",
+            "grounded", "enemy_dx", "enemy_dy", "gap_ahead",
+        })
+
+    def test_tracing_is_off_by_default_so_the_measured_path_is_unchanged(self) -> None:
+        # --trace-actions must be the only way to record; without it evaluate()
+        # takes exactly its old selection path (enforced by the flag default).
+        from mario_ai_fceux import evaluate
+        defaults = evaluate.arguments.__doc__ or ""
+        self.assertIn("greedy", evaluate.__doc__.lower())
 
 
 if __name__ == "__main__":

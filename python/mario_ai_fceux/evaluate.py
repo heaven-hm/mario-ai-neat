@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from .actions import ACTION_NAMES, decode_action
 from .agent import AgentConfig, RainbowAgent
 from .baselines import load_baseline_policy
 from .environment import START_PROTOCOL, FileWorker, launch_fceux_workers
@@ -22,6 +23,44 @@ from .replay import PrioritizedReplayBuffer
 ACTION_REPEAT_FRAMES = 12
 EPISODE_CSV_FIELDS = ("episode", "reason", "max_x", "terminal_x",
                       "action_decisions", "elapsed_seconds")
+# Feature layout of the bridge's 184-dim state. Field names match the trace
+# apex_eval writes, so one analysis reads both.
+STATE_SPEED_X = 169
+STATE_SPEED_Y = 170
+STATE_GROUNDED = 171
+STATE_ENEMY_DX = 174
+STATE_ENEMY_DY = 175
+STATE_GAP_AHEAD = 182
+
+
+def build_trace_record(episode: int, decision: int, state: np.ndarray,
+                       world_x: int, action: int, q_values: np.ndarray) -> dict[str, object]:
+    """One per-decision trace row, shaped like apex_eval's action-trace entries.
+
+    Death x positions alone cannot distinguish a pit death from an enemy death;
+    these fields settle it (see the project lesson on the 1-1 death wall).
+    """
+    action_base, duration_frames = decode_action(action)
+    return {
+        "episode": episode,
+        "decision": decision,
+        "world_x": int(world_x),
+        "action_id": int(action),
+        "action": ACTION_NAMES[action],
+        "action_base": action_base,
+        "duration_frames": duration_frames,
+        "q_value": round(float(q_values[action]), 5),
+        "top_actions": [
+            {"name": ACTION_NAMES[index], "q": round(float(q_values[index]), 5)}
+            for index in np.argsort(q_values)[-3:][::-1]
+        ],
+        "speed_x": round(float(state[STATE_SPEED_X]), 4),
+        "speed_y": round(float(state[STATE_SPEED_Y]), 4),
+        "grounded": bool(state[STATE_GROUNDED] > 0),
+        "enemy_dx": round(float(state[STATE_ENEMY_DX]), 4),
+        "enemy_dy": round(float(state[STATE_ENEMY_DY]), 4),
+        "gap_ahead": bool(state[STATE_GAP_AHEAD] > 0),
+    }
 
 
 def write_episode_csv(path: Path, episodes: list[dict[str, object]]) -> None:
@@ -43,6 +82,10 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--evaluation-seed", type=int, default=2026,
                         help="Seed recorded for each policy's identical clean-start evaluation protocol.")
     parser.add_argument("--device", default=None)
+    parser.add_argument("--trace-actions", action="store_true",
+                        help="Write action-trace.jsonl with the per-decision state, action and "
+                             "Q values used for death-cause analysis. Off by default so the "
+                             "measured selection path is unchanged.")
     return parser.parse_args()
 
 
@@ -83,6 +126,7 @@ def main() -> None:
     episode_decisions = 0
     episode_started_at = time.monotonic()
     deadline = time.monotonic() + options.max_seconds
+    trace_records: list[dict[str, object]] = []
     try:
         while len(episodes) < options.episodes and time.monotonic() < deadline:
             observation = worker.next_observation()
@@ -100,7 +144,17 @@ def main() -> None:
                 episode_decisions = 0
                 episode_started_at = time.monotonic()
                 continue
-            action = int(agent.select_actions(np.asarray([observation.state]), explore=False)[0])
+            if options.trace_actions:
+                # The action comes from the deployed selection path; inspect()
+                # only supplies the Q row recorded beside it.
+                action = int(agent.select_actions(np.asarray([observation.state]), explore=False)[0])
+                q_row, _ = agent.inspect(np.asarray([observation.state]))
+                q_row = q_row[0]
+                trace_records.append(build_trace_record(
+                    len(episodes) + 1, episode_decisions, observation.state,
+                    observation.world_x, action, q_row))
+            else:
+                action = int(agent.select_actions(np.asarray([observation.state]), explore=False)[0])
             worker.send_action(observation, action)
             episode_decisions += 1
     finally:
@@ -135,6 +189,10 @@ def main() -> None:
               "completion_rate": victories / len(episodes) if episodes else 0.0, "episodes": episodes}
     (evaluation_directory / "results.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     write_episode_csv(evaluation_directory / "episodes.csv", episodes)
+    if options.trace_actions:
+        with (evaluation_directory / "action-trace.jsonl").open("w", encoding="utf-8") as handle:
+            for record in trace_records:
+                handle.write(json.dumps(record) + "\n")
     print(json.dumps(report, indent=2))
 
 
