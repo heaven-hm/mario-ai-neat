@@ -526,7 +526,8 @@ while true do
           -- FCEUX consumes joypad.set at each frame boundary. Reapply the
           -- action every frame, just as the Lua NEAT loop does, so a 24-frame
           -- run or jump is held for 24 frames rather than tapped once.
-          joypad.set(1,ACTIONS[action or 4])
+          local base = (command and command.base) or 4
+          joypad.set(1,ACTIONS[base])
           drawPythonHud()
           emu.frameadvance()
         end
